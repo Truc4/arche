@@ -2277,13 +2277,32 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 	case SN_SLICE_EXPR:
 		/* a read-only borrowed sub-view: base + optional bounds, consumes nothing */
 		analyze_base_chain(ctx, v, loc);
+		/* not-sliceable (E0201): a scalar cannot be sliced — same rule as indexing. This is what makes a
+		 * `rawptr` (an inert i64 foreign address) usable ONLY through `mem.bound`: `raw[0:n]` is a hard
+		 * error, so `bound` is structurally the only door from an address to memory. Unlike `INDEX`, a
+		 * slice never collapses an array to an element, so a scalar base is unambiguously wrong. */
+		if (sv_count(v, SN_FIELD_NAME) == 0) {
+			char *bn = sv_resolved_name(ctx, v);
+			VariableInfo *bv = bn ? find_variable(ctx, bn) : NULL;
+			TyKind bvk = bv ? tyid_kind(ctx->ty_arena, bv->type_id) : TYK_UNKNOWN;
+			if (bv && (bvk == TYK_PRIM || bvk == TYK_NOMINAL) && !name_is_static_array(ctx, bn)) {
+				const char *rn = sem_tyid_name(ctx, bv->type_id);
+				if (rn && is_primitive_type_name(rn) && strcmp(rn, "str") != 0 && strcmp(rn, "void") != 0)
+					sem_emit_not_indexable(ctx, loc, rn);
+			}
+			free(bn);
+		}
 		for (int i = 0; sv_present(sem_node_at_expr(v, i)); i++)
 			analyze_expression(ctx, sem_node_at_expr(v, i));
 		break;
 
 	case SN_BINARY_EXPR:
 		analyze_expression(ctx, sem_node_at_expr(v, 0));
-		analyze_expression(ctx, sem_node_at_expr(v, 1));
+		/* `eff |> fin`: the RHS is a pure func NAME (the finalizer) — recovered by name at codegen and
+		 * type-checked via find_func_sig (see OP_FMAP in binary_type_id), NOT a value to resolve. Analyzing
+		 * it as a variable would flag a QUALIFIED finalizer (`mem.bound`) as an undefined variable. */
+		if (sem_binary_op(v) != OP_FMAP)
+			analyze_expression(ctx, sem_node_at_expr(v, 1));
 		break;
 
 	case SN_UNARY_EXPR: {

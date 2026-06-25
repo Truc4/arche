@@ -1,4 +1,4 @@
-#import { os }
+#import { os mem }
 
 stdin :: func() -> fd {
   return fd.stdin;
@@ -38,30 +38,9 @@ read :: func(f: fd, n: int) -> Eff([]char, i64) {
   return fread(f, n); // layered over fread — yields (filled buffer, byte count)
 }
 
-fread_line :: proc(f: fd, own buf: []char, n: int)(out: []char) {
-  i := 0;
-  ch: [1]char;
-  for (; i < n - 1;) {
-    if (i >= buf.length) {
-      break;
-    }
-    os.sys_read(i64(f), _, 1)(ch, k:); // `_` ABI shadow; the kernel fills the existing `ch` (no `:`)
-    if (k <= 0) {
-      break;
-    }
-    if (ch[0] == 10) {
-      break;
-    }
-    buf[i] = ch[0];
-    i      = i + 1;
-  }
-  if (i >= buf.length) {
-    out = buf[0: buf.length];
-    return;
-  }
-  buf[i] = 0;
-  out    = buf[0: i];
-}
+// io-as-data line handling: there is no per-char `fread_line` proc. Bulk-read a chunk into a buffer column
+// (`io.read`/`io.read_chunk`, a `func→Eff` filling caller-allocated storage), then scan that column for
+// '\n' boundaries — a columnar pass, not a result-dependent per-byte read sequence.
 
 fclose :: func(f: fd) -> Eff(i64) {
   return os.syscall(3, f, 0, 0, 0, 0, 0);
@@ -92,18 +71,17 @@ open :: func(own path: []char) -> Eff(fd) {
 close :: func(f: fd) -> Eff(i64) {
   return fclose(f); // layered over fclose (func→Eff)
 }
-skip_header :: proc(f: fd) {
-  line: [256]char;
-  fread_line(f, move line, 256)(_discard:);
-}
 read_chunk :: func(f: fd, size: int) -> Eff([]char, i64) {
   return fread(f, size); // layered over fread — yields (filled buffer, byte count)
 }
 
-file_map :: proc(own path: []char)(data: []char) {
-  arche_file_map(move path)(raw:);
-  arche_file_size()(n: i64);
-  data = raw[0: n];
+// A pure `func → Eff`: `zip` the mmap (its base is an inert `rawptr`) with the file size, then `|> mem.bound`
+// folds (address, size) into a CHECKED whole-file `[]char` view INSIDE the Eff. `zip` runs the map before
+// the size (left-to-right), so `arche_file_size` reads the size stashed by the map. The raw address is never
+// sliceable on its own — `mem.bound` is the single audited FFI pointer→slice door.
+file_map :: func(own path: []char) -> Eff([]char) {
+  return zip(arche_file_map(move path), arche_file_size())
+    |> mem.bound;
 }
 file_size :: func() -> Eff(i64) {
   return arche_file_size();
@@ -114,7 +92,7 @@ file_unmap :: func(own data: []char, size: i64) -> Eff() {
 
 #module
 #foreign {
-  arche_file_map   :: proc(own path: []char)(data: []char);
+  arche_file_map   :: proc(own path: []char)(p: rawptr); // mmap base as an inert address; bound with the size
   arche_file_size  :: proc()(n: i64);
   arche_file_unmap :: proc(own data: []char, size: i64);
 }

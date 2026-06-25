@@ -16,7 +16,8 @@ combine :: func(a: int, b: int) -> int {
 }
 
 both :: func(x: int) -> Eff(int) {
-  return zip(geta(x), getb(x)) |> combine;
+  return zip(geta(x), getb(x))
+    |> combine;
 }
 
 main :: proc() {

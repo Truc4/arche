@@ -2843,6 +2843,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					if (g_lower_sem && nm && semantic_func_is_ctfe_only(g_lower_sem, nm))
 						return NULL;
 					HirDecl *fd = lower_func_from(rhs, nm);
+					/* `@intrinsic`: a bodyless PURE primitive (e.g. `bound(p: rawptr, n) -> []char`);
+					 * codegen emits a built-in instruction at call sites, not a real function. */
+					if (fd && fd->kind == HIR_DECL_FUNC && fd->data.func && syntax_decl_has_intrinsic_decorator(d))
+						fd->data.func->is_intrinsic = 1;
 					return fd;
 				}
 				case SN_POLICY_EXPR: {

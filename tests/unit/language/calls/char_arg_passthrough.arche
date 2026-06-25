@@ -1,8 +1,8 @@
-// Reading argv is an effect (os.os_argv is an extern), so its result is bound first, then passed
-// to the pure callees mylen / atoi. An extern call is an action, not a value — it can't be nested
-// directly inside another call's arguments; binding it names and sequences the effect.
-// A C-string crosses the FFI boundary as a raw pointer with no carried length, so `os.os_argv_len`
-// materializes the length (C-side strlen) and `raw[0:n]` is a normal `(ptr, len)` slice — no NUL.
+// Reading argv is an effect (`os.argv` is a `func → Eff`), so its result is bound first, then passed to
+// the pure callees mylen / atoi. An extern call is an action, not a value — it can't be nested directly
+// inside another call's arguments; binding it names and sequences the effect.
+// `os.argv` folds the foreign address + its C-side length into a CHECKED `[]char` via `mem.bound` (the
+// single FFI pointer→slice door) — the raw address is an inert `rawptr` and cannot be sliced directly.
 // RUN: %arche build -o %t %s && %t 42 | grep "len=2"
 // RUN: %t 42 | grep "n=42"
 #import { str parse os fmt }
@@ -10,9 +10,7 @@ mylen :: func(s: []char) -> int {
   return str.strlen(s);
 }
 main :: proc() {
-  os.os_argv(1)(raw:);
-  os.os_argv_len(1)(n: i64);
-  arg := raw[0: n];
+  os.argv(1)(arg:); // the wrapper does `zip(os_argv, os_argv_len) |> mem.bound` — a bounds-checked slice
   fmt.printf("len=%d\n", mylen(arg));
   fmt.printf("n=%d\n", parse.atoi(arg));
 }

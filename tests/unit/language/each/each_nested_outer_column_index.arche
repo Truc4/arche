@@ -1,0 +1,29 @@
+// RUN: %arche build -o %t %s && %t | grep "^9799$"
+// Regression (router's core bug): an OUTER `[N]char` array column indexed INSIDE an inner fan must read the
+// OUTER fan's row, not the ambient inner row. The index path must use the column's OWN binding-fan row
+// (`loop_idx`), set when the outer `each` binds `name`. Before the fix, `name[0]` always read outer row 0
+// ('a'=97), so the accumulator became 9797 instead of 9799.
+#import { fmt }
+
+T :: arche { name :: [4]char }
+Acc :: arche { got :: int }
+[2]T;
+[1]Acc;
+
+seed :: system {
+  insert(T { name: "ab" })(_:, _:);
+  insert(T { name: "cd" })(_:, _:);
+  insert(Acc { got: 0 })(_:, _:);
+}
+
+// Outer fans T (rows "ab","cd"); inner fans the single Acc row. `name[0]` (outer column) must be the
+// current outer row's first char: 'a'(97) then 'c'(99). got: 0 -> 97 -> 9799.
+fold :: each (query { name }) {
+  each (query { got }) {
+    got = got * 100 + name[0];
+  };
+}
+
+show :: each (query { got }) { fmt.printf("%d\n", got); }
+
+#run seq({ seed, fold, show })

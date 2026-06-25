@@ -1,35 +1,35 @@
 #import { net str fmt }
 
-/// Parse a request line "METHOD SP TARGET SP VERSION" into VIEWS of `req` plus an `ok` flag. The
-/// target's query string (`?...`) is trimmed. `ok` is false on a malformed line (method/target are
-/// then empty). Zero-copy: `method`/`target` are slices into `req`, not copies.
-///
-/// ```arche
-/// parse_request_line("GET /a?b=1 HTTP/1.1\r\n")(m:, t:, ok:);
-/// fmt.assert(ok, "ok\n");
-/// fmt.assert(streq(m, "GET"), "method\n");
-/// fmt.assert(streq(t, "/a"), "target query-trimmed\n");
-/// ```
-///
-parse_request_line :: proc(req: []char)(method: []char, target: []char, ok: bool) {
-  ok = false;
-  if (req.length < 5) {
-    return;
+// Parse the request line "METHOD SP TARGET SP VERSION" of each request ROW into SPANS over its own `raw`
+// buffer column (no copies): the method is `raw[method_start : method_start+method_len]`, the target
+// `raw[target_start : target_start+target_len]` (its `?query` trimmed), and `ok` flags a well-formed line
+// (0 on a malformed one). io-as-data, like `router.resolve`: the LOGIC lives here; the application owns the
+// request pool (rows with a `raw :: [N]char` + the result columns) and runs this each over it.
+parse_request_line :: each (
+  query { raw, method_start, method_len, target_start, target_len, ok }
+) {
+  ok           = 0;
+  method_start = 0;
+  method_len   = 0;
+  target_start = 0;
+  target_len   = 0;
+  n := str.strlen(raw);
+  if (n >= 5) {
+    sp1 := str.find_char(raw, 0, n, ' ');
+    sp2 := str.find_char(raw, sp1 + 1, n, ' ');
+    if (sp1 < n && sp2 < n) {
+      method_len = sp1;
+      tstart := sp1 + 1;
+      tend   := sp2;
+      q      := str.find_char(raw, tstart, tend, '?');
+      if (q < tend) {
+        tend = q;
+      }
+      target_start = tstart;
+      target_len   = tend - tstart;
+      ok           = 1;
+    }
   }
-  sp1 := str.find_char(req, 0, req.length, ' ');
-  sp2 := str.find_char(req, sp1 + 1, req.length, ' ');
-  if (sp1 >= req.length || sp2 >= req.length) {
-    return;
-  }
-  method = req[0: sp1];
-  tstart := sp1 + 1;
-  tend   := sp2;
-  q      := str.find_char(req, tstart, tend, '?');
-  if (q < tend) {
-    tend = q;
-  }
-  target = req[tstart: tend];
-  ok     = true;
 }
 
 /// Content-Type for a path, chosen by file extension. Returns a NUL-terminated string literal — safe

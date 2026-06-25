@@ -1,10 +1,52 @@
-// http.parse_request_line returns the method and target as zero-copy VIEWS into the request buffer,
-// with the query string (?...) trimmed, plus an `ok` flag. A malformed line (no two spaces) → ok=0.
-// This exercises the out-only char[] out-param feature (two slice views + an int from one proc).
+// http.parse_request_line is io-as-data LOGIC (an `each`): it parses each request row's `raw` buffer into
+// SPANS (method/target start+len) over that same buffer, with the target's `?query` trimmed, plus an `ok`
+// flag. A malformed line (no two spaces) → ok=0. The APP owns the request pool; this drives the each over
+// two rows and checks the parsed spans against the expected method/target (zero-copy, no slice copies).
 // RUN: %arche build -o %t %s && %t | grep -q "^ok=1 getm=1 tm=1 bad=0$"
-#import { http fmt }
-main :: proc() {
-  http.parse_request_line("GET /a?b=1 HTTP/1.1\r\n")(m:, t:, ok:);
-  http.parse_request_line("garbage")(_m2:, _t2:, bad:); // no spaces → ok=0
-  fmt.printf("ok=%d getm=%d tm=%d bad=%d\n", ok, streq(m, "GET"), streq(t, "/a"), bad);
+#import { http str fmt }
+
+Req :: arche {
+  raw          :: [64]char,
+  method_start :: int,
+  method_len   :: int,
+  target_start :: int,
+  target_len   :: int,
+  ok           :: int,
 }
+[4]Req;
+
+// Compare the span raw[start : start+len] to a NUL-terminated literal.
+span_eq :: func(raw: []char, start: int, len: int, lit: []char) -> int {
+  if (str.strlen(lit) != len) {
+    return 0;
+  }
+  for (i := 0; i < len; i = i + 1) {
+    k := start + i;
+    if (k < 0 || k >= raw.length || i >= lit.length) {
+      return 0;
+    }
+    if (raw[k] != lit[i]) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+seed :: system {
+  insert(Req { raw: "GET /a?b=1 HTTP/1.1\r\n", method_start: 0, method_len: 0, target_start: 0, target_len: 0, ok: 0 })(_:, _:);
+  insert(Req { raw: "garbage", method_start: 0, method_len: 0, target_start: 0, target_len: 0, ok: 0 })(_:, _:); // no spaces → ok=0
+}
+
+check :: each (query { raw, method_start, method_len, target_start, target_len, ok }) {
+  if (ok == 1) {
+    getm := span_eq(raw, method_start, method_len, "GET");
+    tm   := span_eq(raw, target_start, target_len, "/a"); // query-trimmed
+    fmt.printf("ok=%d getm=%d tm=%d ", ok, getm, tm);
+  } else {
+    fmt.printf("bad=%d", ok);
+  }
+}
+
+done :: system { fmt.printf("\n"); }
+
+#run seq({ seed, http.parse_request_line, check, done })

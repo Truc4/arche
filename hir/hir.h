@@ -213,6 +213,10 @@ typedef struct {
 	HirType **return_types;
 	int return_type_count;
 	int is_extern;
+	int is_intrinsic;    /* 1 if `@intrinsic`: a bodyless PURE primitive whose calls lower to a built-in
+	                      * instruction (e.g. `bound(p: rawptr, n) -> []char` = inttoptr + checked slice),
+	                      * not a real LLVM function. Usable as a pure `|>` finalizer. Codegen checks this
+	                      * flag (not the name) + dispatches by name. */
 	int is_policy;       /* lowered from a `policy` form: a failure-policy MACRO, inlined at fallible op sites
 	                      * (operands bound as mutable locals), never emitted as its own LLVM function. */
 	int policy_category; /* for a policy: 1=bounds (index/slice), 2=pool (insert), 3=divide. So a `clamp`

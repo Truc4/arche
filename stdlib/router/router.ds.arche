@@ -1,3 +1,1 @@
-nodeKind :: enum { kstatic, kparam, kcatchall }
-
-[256]TrieNode;
+// flat-table router: LOGIC only; the app owns the Route/Req shapes and allocates them.

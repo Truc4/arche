@@ -1,0 +1,28 @@
+// RUN: %arche build -o %t %s && %t | grep "^98 120 $"
+// Regression: indexing a `[N]char` ARRAY column `word[i]` inside a per-element fan must (a) bound the index
+// against the column WIDTH (N), not the pool row count, and (b) read the CURRENT row's array — re-adding the
+// fan's row offset (row*N) that base evaluation suppresses. Before the fix, `word[1]` at row>0 read row 0's
+// data (so r1 printed row 0's 'b'=98 instead of row 1's 'x'=120), or out-of-bounds-aborted on `word[i]`
+// when i >= count.
+#import { fmt }
+
+W :: arche { word :: [8]char, c :: int }
+[2]W;
+
+seed :: system {
+  insert(W { word: "abc", c: 0 })(_:, _:);
+  insert(W { word: "wxyz", c: 0 })(_:, _:);
+}
+
+// word[1]: row 0 -> 'b' (98), row 1 -> 'x' (120). Reads must respect the per-row offset.
+pick :: each (query { word, c }) {
+  c = word[1];
+}
+
+show :: each (query { c }) {
+  fmt.printf("%d ", c);
+}
+
+done :: system { fmt.printf("\n"); }
+
+#run seq({ seed, pick, show, done })

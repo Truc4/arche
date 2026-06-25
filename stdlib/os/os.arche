@@ -1,7 +1,9 @@
+#import { mem }
+
 #foreign {
   os_now_sec  :: proc()(t: float);
   os_argc     :: proc()(n: int);
-  os_argv     :: proc(i: int)(s: []char);
+  os_argv     :: proc(i: int)(p: rawptr); // argv[i]'s raw address (inert i64); bound with its length
   os_argv_len :: proc(i: int)(n: i64);
 
   // Scalar-only raw syscall: number + up to 6 INTEGER args. Buffers may NOT be passed here — a syscall
@@ -27,10 +29,13 @@
   sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64);                    // ts IN-OUT (the VALUE); status dropped
 }
 
-argv :: proc(i: int)(out: []char) {
-  os_argv(i)(raw:);
-  os_argv_len(i)(n:);
-  out = raw[0: n];
+// A pure `func → Eff`: `zip` the address effect with the length effect (the applicative product), then
+// `|> mem.bound` folds the (address, length) pair into a checked `[]char` slice INSIDE the Eff. `bound` is
+// the single audited FFI pointer→slice door (an intrinsic; the address stays an inert `rawptr` until then).
+// Callers are UNCHANGED: `os.argv(i)(out:)`.
+argv :: func(i: int) -> Eff([]char) {
+  return zip(os_argv(i), os_argv_len(i))
+    |> mem.bound;
 }
 
 // Monotonic-clock / nanosleep PRIMITIVES (`func → Eff`). The timespec `ts` is a caller-owned `[2]i64`

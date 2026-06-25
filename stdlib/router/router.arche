@@ -1,171 +1,73 @@
 #import { str }
 
-TrieNode :: arche {
-  seg          :: [32]char,
-  seg_len      :: int,
-  kind         :: nodeKind,
-  first_child  :: int,
-  next_sibling :: int,
-  handler_id   :: int,
-}
-
-init :: proc() {
-  empty: [32]char;
-  empty[0] = 0;
-  new_node(empty, 0, nodeKind.kstatic)(_root:, _:);
-}
-
-add :: proc(pattern: []char, handler_id: int) {
-  n   := str.strlen(pattern);
-  cur := 0;
-  s   := 0;
-  if (n > 0) {
-    if (pattern.length > 0) {
-      if (pattern[0] == '/') {
-        s = 1;
-      }
+// Flat-table routing LOGIC — no data shapes here. The application owns the data: a route table (rows with
+// `pattern :: [64]char` + `hid :: int`) and a request pool (rows with `path :: [64]char`, the result
+// columns `out_h`/`cap0_start`/`cap0_len :: int`, and a running `best :: int`). `resolve` fans the
+// requests against every route, scores each match (static 3 > param 2 > catchall 1 > 0), and writes the
+// best handler + first capture span onto the request row. A trie would link nodes by index (hand-indexing,
+// forbidden); a flat scan stays pure-columnar.
+resolve :: each (query { pattern, hid }) {
+  each (query { path, out_h, cap0_start, cap0_len, best }) {
+    sc := -1;
+    cs := -1;
+    cl := -1;
+    pn := str.strlen(path);
+    qn := str.strlen(pattern);
+    ps := 0;
+    qs := 0;
+    if (pn > 0 && path.length > 0 && path[0] == '/') {
+      ps = 1;
     }
-  }
-  for (; s < n;) {
-    if (s < 0) {
-      break;
+    if (qn > 0 && pattern.length > 0 && pattern[0] == '/') {
+      qs = 1;
     }
-    if (s >= pattern.length) {
-      break;
-    }
-    e := seg_end(pattern, s, n);
-
-    kind   := nodeKind.kstatic;
-    tstart := s;
-    if (pattern[s] == ':') {
-      kind   = nodeKind.kparam;
-      tstart = s + 1;
-    }
-    if (pattern[s] == '*') {
-      kind   = nodeKind.kcatchall;
-      tstart = s + 1;
-    }
-
-    found := -1;
-    child := TrieNode.first_child[cur];
-    for (; child >= 0;) {
-      if (TrieNode.kind[child] == kind) {
-        if (kind == nodeKind.kstatic) {
-          cs := TrieNode.seg[child];
-          if (seg_eq(cs, TrieNode.seg_len[child], pattern, tstart, e)) {
-            found = child;
-          }
+    bestseg := 3;
+    for (; qs < qn;) {
+      qe := seg_end(pattern, qs, qn);
+      if (qs < pattern.length && pattern[qs] == '*') {
+        if (cs < 0) {
+          cs = ps;
+          cl = pn - ps;
         }
-        else {
-          found = child;
-        }
-      }
-      if (found >= 0) {
+        sc = 1;
         break;
       }
-      child = TrieNode.next_sibling[child];
-    }
-
-    if (found < 0) {
-      segbuf: [32]char;
-      j := 0;
-      for (i := tstart; i < e; i = i + 1) {
-        if (i < 0) {
+      if (ps >= pn) {
+        sc = 0;
+        break;
+      }
+      pe := seg_end(path, ps, pn);
+      if (qs < pattern.length && pattern[qs] == ':') {
+        if (cs < 0) {
+          cs = ps;
+          cl = pe - ps;
+        }
+        if (bestseg > 2) {
+          bestseg = 2;
+        }
+      } else {
+        if (!seg_eq_spans(pattern, qs, qe, path, ps, pe)) {
+          sc = 0;
           break;
         }
-        if (i >= pattern.length) {
-          break;
-        }
-        if (j >= segbuf.length) {
-          break;
-        }
-        segbuf[j] = pattern[i];
-        j         = j + 1;
       }
-      if (j >= 0 && j < segbuf.length) {
-        segbuf[j] = 0;
-      }
-      new_node(segbuf, e - tstart, kind)(found:, _:);
-      TrieNode.next_sibling[found] = TrieNode.first_child[cur];
-      TrieNode.first_child[cur]    = found;
+      qs = qe + 1;
+      ps = pe + 1;
     }
-
-    cur = found;
-    s   = e + 1;
-  }
-  TrieNode.handler_id[cur] = handler_id;
-}
-
-// Resolve `path` to a handler id, and hand back the captured spans (`:param` / `*` catchall) as
-// caller-allocated OUT arrays — `resolve(path)(h:, cs: [8]int, cl: [8]int, nc:)`. No module state: the
-// captures belong to the caller, so there is no stash to read back and nothing to share.
-resolve :: proc(path: []char)(handler_id: int, cap_start: [8]int, cap_len: [8]int, n_caps: int) {
-  n   := str.strlen(path);
-  cur := 0;
-  n_caps     = 0;
-  handler_id = -1;
-  s := 0;
-  if (n > 0) {
-    if (path.length > 0) {
-      if (path[0] == '/') {
-        s = 1;
+    if (sc < 0) {
+      if (ps < pn) {
+        sc = 0;
+      } else {
+        sc = bestseg;
       }
     }
-  }
-  for (; s < n;) {
-    e := seg_end(path, s, n);
-
-    static_hit   := -1;
-    param_hit    := -1;
-    catchall_hit := -1;
-    child        := TrieNode.first_child[cur] !undefined;
-    for (; child >= 0;) {
-      k := TrieNode.kind[child] !undefined;
-      if (k == nodeKind.kstatic) {
-        cs := TrieNode.seg[child] !undefined;
-        if (seg_eq(cs, TrieNode.seg_len[child] !undefined, path, s, e)) {
-          static_hit = child;
-        }
-      }
-      if (k == nodeKind.kparam) {
-        param_hit = child;
-      }
-      if (k == nodeKind.kcatchall) {
-        catchall_hit = child;
-      }
-      child = TrieNode.next_sibling[child] !undefined;
+    if (sc > best) {
+      best       = sc;
+      out_h      = hid;
+      cap0_start = cs;
+      cap0_len   = cl;
     }
-
-    chosen := static_hit;
-    if (chosen < 0) {
-      chosen = param_hit;
-    }
-    if (chosen < 0) {
-      chosen = catchall_hit;
-    }
-    if (chosen < 0) {
-      handler_id = -1;
-      return;
-    }
-
-    ck := TrieNode.kind[chosen] !undefined;
-    if (ck == nodeKind.kstatic) {
-      cur = chosen;
-      s   = e + 1;
-    }
-    else {
-      cend := e;
-      if (ck == nodeKind.kcatchall) {
-        cend = n;
-      }
-      cap_start[n_caps] = s;
-      cap_len[n_caps]   = cend - s;
-      n_caps            = n_caps + 1;
-      cur               = chosen;
-      s                 = cend + 1;
-    }
-  }
-  handler_id = TrieNode.handler_id[cur];
+  };
 }
 
 #file
@@ -185,38 +87,20 @@ seg_end :: func(p: []char, start: int, n: int) -> int {
   return n;
 }
 
-seg_eq :: func(stored: [32]char, stored_len: int, p: []char, start: int, end: int) -> bool {
-  if (stored_len != end - start) {
+// Byte-equal two spans `a[as:ae)` and `b[bs:be)`.
+seg_eq_spans :: func(a: []char, as: int, ae: int, b: []char, bs: int, be: int) -> bool {
+  if (ae - as != be - bs) {
     return false;
   }
-  for (i := 0; i < end - start; i = i + 1) {
-    if (i >= stored.length) {
+  for (i := 0; i < ae - as; i = i + 1) {
+    ka := as + i;
+    kb := bs + i;
+    if (ka < 0 || ka >= a.length || kb < 0 || kb >= b.length) {
       return false;
     }
-    k := start + i;
-    if (k < 0) {
-      return false;
-    }
-    if (k >= p.length) {
-      return false;
-    }
-    if (stored[i] != p[k]) {
+    if (a[ka] != b[kb]) {
       return false;
     }
   }
   return true;
-}
-
-new_node :: proc(seg: []char, seg_len: int, kind: nodeKind)(idx: int, ok: int) {
-  insert(
-    TrieNode {
-      seg          : seg,
-      seg_len      : seg_len,
-      kind         : kind,
-      first_child  : -1,
-      next_sibling : -1,
-      handler_id   : -1,
-    },
-  )(slot:, ok);
-  idx = i32(slot);
 }

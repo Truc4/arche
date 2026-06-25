@@ -19,7 +19,8 @@ ms_of :: func(ts: []i64) -> i64 {
   return ts[0] * 1000 + ts[1] / 1000000;
 }
 now :: func() -> Eff(i64) {
-  return clock() |> ms_of; // fmap folds the timespec buffer to ms INSIDE the Eff
+  return clock()
+    |> ms_of; // fmap folds the timespec buffer to ms INSIDE the Eff
 }
 
 main :: proc() {

@@ -92,6 +92,9 @@ static int no_space_before(TokenKind t, TokenKind prev, TokenKind next, SyntaxNo
 		 * list the same way (`proc!(...)`); this also tightens unary `!(expr)`. */
 		return prev == TOK_IDENT || prev == TOK_RPAREN || prev == TOK_RBRACKET || prev == TOK_PROC ||
 		       prev == TOK_FUNC || prev == TOK_BANG ||
+		       /* an opening `(`/`[` hugs a preceding `(`/`[`: `([]char)` (slice type in parens), `([1,2])`
+		        * (array literal as first paren content), `((x))` (nested parens) — no interior space. */
+		       prev == TOK_LPAREN || prev == TOK_LBRACKET ||
 		       /* `policy` hugs its param list like `proc`/`func` — both the `@policy(cat)` decorator and
 		        * the decl form `name :: policy(in)`. */
 		       prev == TOK_POLICY;
@@ -585,8 +588,12 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				indent--; /* closer dedents to the group's own level */
 				eff_indent = indent;
 				nl = 1;
-				add_trailing_comma = (prev_noncomment !=
-				                      TOK_COMMA); /* one trailing comma before the closer (past any trailing comment) */
+				/* one trailing comma before the closer (past any trailing comment) — EXCEPT a query-header
+				 * paren (`each (query {…})`, `system(…)`, `map(…)`), which holds a SINGLE `query{…}`, not a
+				 * comma-list: a trailing comma there is invalid syntax (re-parse fails → empty output). */
+				add_trailing_comma = (prev_noncomment != TOK_COMMA) && f->parent != SN_EACH_EXPR &&
+				                     f->parent != SN_SYSTEM_EXPR && f->parent != SN_MAP_EXPR &&
+				                     f->parent != SN_MAP_DECL && f->parent != SN_QUERY_EXPR;
 			} else if (f->closer == TOK_RBRACE) {
 				space = 1; /* `{ … }` interior space; `)` hugs */
 			}
@@ -632,8 +639,13 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 			int block_close = (l->kind == TOK_RBRACE && is_block_brace(l));
 			int after_block_open = (prev == TOK_LBRACE);
 			int after_deco = (deco_end && i > 0 && deco_end[i - 1]); /* break after each decl-level decorator */
+			/* `|>` (fmap/pipe): always start a continuation line, so a pipeline reads top-to-bottom with
+			 * each stage on its own line under the source expression (leading-operator layout, as in F#/Elm/
+			 * Gleam). `a |> b |> c` becomes three lines; the stage name rides the same line as its `|>`. */
+			int pipe_break = (l->kind == TOK_PIPE_GT);
 			int want_nl = force_nl || block_close || after_block_open || (prev == TOK_SEMI && !for_header_semi) ||
-			              prev == TOK_RBRACE || vis_marker || after_vis_marker || l->decl_start || after_deco;
+			              prev == TOK_RBRACE || vis_marker || after_vis_marker || l->decl_start || after_deco ||
+			              pipe_break;
 			if (l->kind == TOK_COMMENT)
 				want_nl = (l->line != prev_line);
 			if (for_header_semi && l->line > prev_line)
@@ -644,7 +656,9 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				indent--;
 			if (want_nl) {
 				nl = 1;
-				eff_indent = indent;
+				/* A `|>` continuation indents one level under its expression; the line itself doesn't open a
+				 * block, so the extra level is per-line (not pushed onto `indent`). */
+				eff_indent = indent + (pipe_break ? 1 : 0);
 			} else {
 				int after_unary = (prev_parent == SN_UNARY_EXPR && (prev == TOK_MINUS || prev == TOK_BANG));
 				int compact = (l->parent == prev_parent && (l->parent == SN_TYPE_REF || l->parent == SN_TYPE_ARRAY ||

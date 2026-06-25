@@ -4744,6 +4744,34 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		                  expr->data.index.index_count > 0 && !shaped_elem, expr->data.index.policy_elided, type6_bound,
 		                  slice_len, expr->data.index.policy, final_idx_buf, &final_idx);
 
+		/* An ARRAY column `col[i]` (each row is `[N]T`) selects WITHIN the current row: the explicit index
+		 * is the within-row offset, but evaluating the base above SUPPRESSED the loop index to get the flat
+		 * column base (row 0). Re-add the binding fan's row offset (loop_idx * N) so each row reads its own
+		 * array — preferring the column's OWN binding-fan row (`loop_idx`, e.g. an outer-each column read
+		 * inside an inner fan) over the ambient loop. Scalar columns (`i` IS the row) skip this. */
+		if (!nested_slice_base && !shaped_elem && expr->data.index.base->kind == HIR_EXPR_NAME) {
+			ValueInfo *bvi = find_value(ctx, expr->data.index.base->data.name.name);
+			if (bvi && bvi->type == 4 && bvi->arch_name) {
+				HirArchetypeDecl *ba = find_archetype_decl(ctx, bvi->arch_name);
+				int wn = 0;
+				if (ba)
+					for (int fi = 0; fi < ba->field_count; fi++)
+						if (ba->fields[fi]->kind == FIELD_COLUMN && ba->fields[fi]->name &&
+						    strcmp(ba->fields[fi]->name, expr->data.index.base->data.name.name) == 0) {
+							wn = field_total_elements(ba->fields[fi]->type);
+							break;
+						}
+				const char *ridx = (bvi->loop_idx && bvi->loop_idx[0]) ? bvi->loop_idx : ctx->implicit_loop_index;
+				if (wn > 1 && ridx && ridx[0]) {
+					char *roff = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", roff, ridx, wn);
+					char *fidx = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", fidx, roff, final_idx);
+					final_idx = fidx;
+				}
+			}
+		}
+
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
 		                  base_buf, final_idx);
@@ -4927,6 +4955,27 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				}
 				break;
 			}
+		}
+
+		/* `@intrinsic` pure FFI primitive `mem.bound(p: rawptr, n) -> []char`: the single audited door from a
+		 * foreign address to memory. Emit `inttoptr` on the i64 address + build a checked `{ i8*, i64 }` slice
+		 * aggregate (same shape any slice-returning func yields), so all downstream binding/finalizer paths
+		 * treat it like an ordinary slice call. Recognized by the resolved callee's `@intrinsic` flag. */
+		HirFuncDecl *intrinsic_fn = func_name ? find_func_decl(ctx, func_name) : NULL;
+		if (intrinsic_fn && intrinsic_fn->is_intrinsic && expr->data.call.arg_count == 2) {
+			char addr_raw[256], len_raw[256], addr64[256], len64[256];
+			codegen_expression(ctx, expr->data.call.args[0], addr_raw); /* i64 address (rawptr) */
+			codegen_expression(ctx, expr->data.call.args[1], len_raw);  /* i64 length */
+			emit_index_i64(ctx, addr_raw, expr->data.call.args[0], addr64);
+			emit_index_i64(ctx, len_raw, expr->data.call.args[1], len64);
+			char *p = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = inttoptr i64 %s to i8*\n", p, addr64);
+			char *a1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = insertvalue { i8*, i64 } undef, i8* %s, 0\n", a1, p);
+			char *a2 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = insertvalue { i8*, i64 } %s, i64 %s, 1\n", a2, a1, len64);
+			strcpy(result_buf, a2);
+			break;
 		}
 
 		/* Raw Linux/x86-64 syscall intrinsic: syscall(n, a0..a5) -> i64.
@@ -5343,6 +5392,46 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			int callee_wants_slice = callee_pt && callee_pt->tag == HIR_TYPE_ARRAY && !callee_is_extern;
 			if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
 				callee_wants_shaped_arr = 1;
+
+			/* An ARRAY column (`[N]T`) passed to a callee param: `arg_bufs[i]` already holds the row's
+			 * element pointer (the auto-indexed array-column read). A non-extern `T[]` param is a (ptr,len)
+			 * slice — pass the column width N as the length (so e.g. `str.strlen(s)` sees the whole row, not
+			 * a ptr with a zero length); a shaped/extern param takes the bare pointer. */
+			if ((callee_wants_slice || callee_wants_shaped_arr) &&
+			    expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
+				ValueInfo *avi = find_value(ctx, expr->data.call.args[i]->data.name.name);
+				if (avi && avi->type == 4 && avi->arch_name) {
+					HirArchetypeDecl *aa = find_archetype_decl(ctx, avi->arch_name);
+					const char *cn = expr->data.call.args[i]->data.name.name;
+					int wn = 0;
+					const char *eb = "char";
+					if (aa)
+						for (int fi = 0; fi < aa->field_count; fi++)
+							if (aa->fields[fi]->kind == FIELD_COLUMN && aa->fields[fi]->name &&
+							    strcmp(aa->fields[fi]->name, cn) == 0) {
+								wn = field_total_elements(aa->fields[fi]->type);
+								eb = field_base_type_name(aa->fields[fi]->type);
+								break;
+							}
+					if (wn > 1) {
+						const char *llt = llvm_type_from_arche(eb);
+						strcpy(call_arg_vals[i], arg_bufs[i]);
+						if (strcmp(llt, "i32") == 0)
+							call_arg_types[i] = "i32*";
+						else if (strcmp(llt, "i64") == 0)
+							call_arg_types[i] = "i64*";
+						else if (strcmp(llt, "float") == 0)
+							call_arg_types[i] = "float*";
+						else
+							call_arg_types[i] = "i8*";
+						if (callee_wants_slice) {
+							call_arg_len[i] = malloc(32);
+							snprintf(call_arg_len[i], 32, "%d", wn);
+						}
+						continue;
+					}
+				}
+			}
 
 			/* A matrix-const ROW `M[i]` decays to a slice: arg_bufs[i] already holds the row
 			 * element-pointer (`@M + i*stride`); the row width (stride) is the carried length. This
@@ -6221,9 +6310,29 @@ static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_e
 		return; /* `elided` = the bounds prover proved this in-bounds (SemModel verdict) → no policy */
 	/* The base length as an i32 (`int`, matching the policy signature). One of: a fixed `T[N]`'s N, a
 	 * pool column's live count, or a slice's runtime .len. */
+	/* An ARRAY column (`[N]T`) indexed `col[i]` is the CURRENT ROW's i-th element — its bound is the
+	 * column width N, NOT the pool row count (which bounds a SCALAR column's row index). */
+	int arr_w = 0;
+	if (base->kind == HIR_EXPR_NAME) {
+		ValueInfo *bvi = find_value(ctx, base->data.name.name);
+		if (bvi && bvi->type == 4 && bvi->arch_name) {
+			HirArchetypeDecl *ba = find_archetype_decl(ctx, bvi->arch_name);
+			if (ba)
+				for (int fi = 0; fi < ba->field_count; fi++)
+					if (ba->fields[fi]->kind == FIELD_COLUMN && ba->fields[fi]->name &&
+					    strcmp(ba->fields[fi]->name, base->data.name.name) == 0) {
+						int w = field_total_elements(ba->fields[fi]->type);
+						if (w > 1)
+							arr_w = w;
+						break;
+					}
+		}
+	}
 	char len_i32[256] = "";
 	if (type6_bound > 0) {
 		snprintf(len_i32, sizeof len_i32, "%d", type6_bound);
+	} else if (arr_w > 0) {
+		snprintf(len_i32, sizeof len_i32, "%d", arr_w);
 	} else {
 		const char *an = NULL, *ap = NULL;
 		int ci = -1, ii = 0;
@@ -7552,6 +7661,31 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					}
 				}
 				if (eff_fin) {
+					/* `@intrinsic` finalizer (`mem.bound`): the single audited FFI pointer→slice door. An
+					 * `@intrinsic` func is never an LLVM function, so emit the built-in INLINE rather than
+					 * call it: `inttoptr` the address out-slot + form a checked `{ptr,len}` slice from the two
+					 * scalar zip out-slots (address, length), bound to the target as a type-6 slice. This is
+					 * how `os.argv`/`io.file_map` become pure funcs — `zip(addr, len) |> mem.bound`. */
+					if (eff_fin->is_intrinsic && zn == 2) {
+						char *ptr = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = inttoptr i64 %s to i8*\n", ptr, zval[0]);
+						if (target_count >= 1 && targets[0].name && strcmp(targets[0].name, "_") != 0 &&
+						    ctx->scope_count > 0) {
+							ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+							vi->name = strdup(targets[0].name);
+							vi->llvm_name = strdup(ptr);
+							vi->type = 6;
+							vi->string_len = -1;
+							vi->field_type = "char";
+							vi->bit_width = 8;
+							vi->is_slice = 1;
+							vi->len_ssa = strdup(zval[1]);
+							ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+							sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+							sc->values[sc->value_count++] = vi;
+						}
+						break;
+					}
 					/* generalized `|>`: pass ALL out-slots to the finalizer as args, then bind its scalar
 					 * result. SCALAR slots are supported — the applicative combine `zip(a, b) |> f`. Slice/
 					 * buffer slots in a `|> fin`, and slice RETURNS, are the DEFERRED case: a bare-pointer +
@@ -10470,6 +10604,11 @@ static void emit_func_params(CodegenContext *ctx, HirFuncDecl *func) {
 
 static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	ctx->entity_bind_count = 0; /* entity bindings are body-local (mirrors codegen_proc_decl) */
+	/* An `@intrinsic` func is a built-in primitive (e.g. `mem.bound` = inttoptr + checked slice): its calls
+	 * lower to inline IR at each call site (see the call path), so it is never emitted as an LLVM function.
+	 * The placeholder body in source exists only to type-check. */
+	if (func->is_intrinsic)
+		return;
 	/* An Eff-returning func is a compile-time effect BUILDER: it is inlined at each run site (the underlying
 	 * extern + args are recovered there) and never emitted as an LLVM function — an Eff has no runtime type.
 	 * It stays in the HIR so the fusion (eff_inline_build) can read its body. */

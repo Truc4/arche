@@ -1,12 +1,22 @@
 // RUN: %arche build -o %t %s && %t | grep "home user=42 static=css/app.css notfound"
-// Radix router: static / :param / * catchall, captured as zero-copy spans. Handler ids are a
-// `handler` enum (registered via `router.add`, dispatched via `match`). The miss sentinel (-1) is
-// remapped to an explicit `not_found` variant, so the `match` is exhaustive with NO `_` arm.
+// Flat-table router: the APP owns the data (a `Route` table + a `Req` pool); `router.resolve` is just the
+// fan-and-score LOGIC operating on those pools by query. No trie (index-chasing is hand-indexing, forbidden).
 #import { router fmt }
 
 handler :: enum { not_found, home, user, static_files }
 
-[256]TrieNode; // the driver owns router's storage (router is a device; it declares the requirement)
+// Application data shapes (owned here, not by the router device).
+Route :: arche { pattern :: [64]char, hid :: int }
+Req :: arche {
+  path       :: [64]char,
+  out_h      :: int,
+  cap0_start :: int,
+  cap0_len   :: int,
+  best       :: int,
+}
+
+[8]Route;
+[8]Req;
 
 // Copy path[start..start+len) into buf as a NUL-terminated string (caller-side materialization).
 slice :: func(own buf: []char, path: []char, start: int, len: int) -> []char {
@@ -29,12 +39,21 @@ slice :: func(own buf: []char, path: []char, start: int, len: int) -> []char {
   return buf;
 }
 
-dispatch :: proc(path: []char) {
-  // `resolve` hands back the captured spans as OUT arrays — no stateful `param` read-back. The first
-  // capture (span 0) is the one this router's routes use (`:id`, `*`).
-  router.resolve(path)(h:, cs: [8]int, cl: [8]int, _:); // count discarded — these routes use only span 0
-  st := cs[0];
-  ln := cl[0];
+seed :: system {
+  insert(Route { pattern: "/", hid: handler.home })(_:, _:);
+  insert(Route { pattern: "/users/:id", hid: handler.user })(_:, _:);
+  insert(Route { pattern: "/static/*", hid: handler.static_files })(_:, _:);
+
+  insert(Req { path: "/", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
+  insert(Req { path: "/users/42", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
+  insert(Req { path: "/static/css/app.css", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
+  insert(Req { path: "/nope", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
+}
+
+dispatch :: each (query { path, out_h, cap0_start, cap0_len }) {
+  h  := out_h;
+  st := cap0_start;
+  ln := cap0_len;
   if (h < 0) {
     h = handler.not_found; // remap miss to an explicit variant — no `_` in the enum match
   }
@@ -54,15 +73,6 @@ dispatch :: proc(path: []char) {
   }
 }
 
-main :: proc() {
-  router.init();
-  router.add("/", handler.home);
-  router.add("/users/:id", handler.user);
-  router.add("/static/*", handler.static_files);
+done :: system { fmt.printf("\n"); }
 
-  dispatch("/");
-  dispatch("/users/42");
-  dispatch("/static/css/app.css");
-  dispatch("/nope");
-  fmt.printf("\n");
-}
+#run seq({ seed, router.resolve, dispatch, done })

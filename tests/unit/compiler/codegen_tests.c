@@ -69,17 +69,32 @@ static char *read_file(const char *path) {
 static void register_stdlib_modules(void) {
 	lower_reset_modules();
 	semantic_reset_modules();
-	static const char *mods[] = {"os", "io", "fmt", "net", "str", "parse", "csv", "router", "term"};
+	static const char *mods[] = {"mem", "os", "io", "fmt", "net", "str", "parse", "csv", "router", "term"};
 	for (size_t i = 0; i < sizeof(mods) / sizeof(mods[0]); i++) {
 		char path[512];
+		/* A device's DATASHEET (`.ds.arche`) holds its exported global types (e.g. `mem.rawptr`,
+		 * `net.socket`) — load it FIRST so the impl's signatures resolve. The `.ds.arche` filename is what
+		 * flags its decls as datasheet vocabulary (semantic_add_module keys off the path), so pass the path. */
+		char dspath[512];
+		snprintf(dspath, sizeof(dspath), "%s/%s/%s.ds.arche", ARCHE_STDLIB_DIR, mods[i], mods[i]);
+		char *dssrc = read_file(dspath);
+		if (dssrc) {
+			ParseResult dpr = parse_source(dssrc);
+			if (dpr.syntax_root) {
+				lower_add_module(mods[i], dpr.syntax_root, dssrc, dspath);
+				semantic_add_module(mods[i], dpr.syntax_root, dssrc, dspath, DECL_ORIGIN_STDLIB);
+				dpr.syntax_root = NULL;
+			}
+			parse_result_free(&dpr);
+		}
 		snprintf(path, sizeof(path), "%s/%s/%s.arche", ARCHE_STDLIB_DIR, mods[i], mods[i]);
 		char *src = read_file(path);
 		if (!src)
 			continue;
 		ParseResult pr = parse_source(src);
 		if (pr.syntax_root) {
-			lower_add_module(mods[i], pr.syntax_root, src, NULL);
-			semantic_add_module(mods[i], pr.syntax_root, src, NULL, DECL_ORIGIN_STDLIB);
+			lower_add_module(mods[i], pr.syntax_root, src, path);
+			semantic_add_module(mods[i], pr.syntax_root, src, path, DECL_ORIGIN_STDLIB);
 			pr.syntax_root = NULL; /* keep the module syntax tree alive past parse_result_free */
 		}
 		parse_result_free(&pr);

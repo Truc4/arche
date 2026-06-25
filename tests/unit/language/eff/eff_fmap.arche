@@ -13,7 +13,8 @@ neg :: func(v: int) -> int {
 }
 
 bumpneg :: func(x: int) -> Eff(int) {
-  return eff_add1(x) |> neg;
+  return eff_add1(x)
+    |> neg;
 }
 
 main :: proc() {

@@ -7,7 +7,6 @@ CharBuf :: arche { cb }
 
 main :: proc() {
   io.open("tests/fixtures/data.csv")(fd:);
-  io.skip_header(fd);
   rows := 0;
   scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
   io.read_chunk(fd, 65536)(scratch, rd_v:);
@@ -20,5 +19,7 @@ main :: proc() {
     pos = pos + 1;
   }
   io.close(move fd)(_:);
+  rows = rows - 1; // io-as-data: bulk-read the whole file + count newlines in a columnar scan; the first line
+                   // is the CSV header, so a header-skip is just `newlines - 1` — not a per-char read proc.
   fmt.printf("rows: %d\n", rows);
 }

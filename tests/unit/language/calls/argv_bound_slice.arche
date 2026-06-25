@@ -1,0 +1,11 @@
+// RUN: %arche build -o %t %s && %t alpha bravo | grep "^arg1=bravo len=5$"
+// `os.argv` is a pure `func → Eff` built as `zip(os_argv(i), os_argv_len(i)) |> mem.bound`: the foreign
+// address (an inert `rawptr` = i64) is folded with its length into a CHECKED `[]char` slice by the single
+// audited FFI primitive `mem.bound` (inttoptr + bounded slice). This exercises the non-empty path — the
+// returned slice must carry the real bytes AND the right length (regression for the rawptr→bound mechanism).
+#import { os fmt }
+
+main :: proc() {
+  os.argv(2)(a:); // argv[2] = "bravo" (argv[0] is the program, argv[1] = "alpha")
+  fmt.printf("arg1=%s len=%d\n", a, a.length);
+}
