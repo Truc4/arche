@@ -23,10 +23,8 @@ clear :: system {
   each (query { handle, bg }) {
     frame(handle)(px:, w:, h:);
     n := w * h;
-    i := 0;
-    for (; i < n;) {
+    for (i := 0; i < n; i += 1) {
       px[i] = bg;
-      i     = i + 1;
     }
   };
 }
