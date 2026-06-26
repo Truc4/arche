@@ -1,18 +1,15 @@
-// Unified grammar: func and proc declared as RHS value forms (`name :: func/proc(...)`).
+// Unified grammar: func value form; what was a proc out-param is now a func return.
 // RUN: %arche build -o %t %s && %t | grep "sum=12 d=6"
 #import { fmt }
 add :: func(a: int, b: int) -> int {
   return a + b;
 }
-
-double :: proc(x: int)(out: int) {
-  out = x + x;
+double :: func(x: int) -> int {
+  return x + x;
 }
-
 entry :: system {
   s := add(5, 7);
-  double(3)(d:);
+  d := double(3);
   fmt.printf("sum=%d d=%d\n", s, d);
 }
-
 #run entry

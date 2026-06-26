@@ -1,6 +1,6 @@
 // x11 variant. Not a standalone test.
 // RUN: true
 #import { fmt }
-backend :: proc() {
-  fmt.print("mgfx x11\n")(_:);
+backend :: func() -> Eff(i64) {
+  return fmt.print("mgfx x11\n");
 }

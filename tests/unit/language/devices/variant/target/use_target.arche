@@ -11,9 +11,9 @@
 // RUN: %arche build --target windows --select tgfx=wayland -o %t %s && %t > %t.out && grep "tgfx wayland" %t.out && grep "tnet winsock" %t.out
 #import { tgfx tnet tsnd }
 entry :: system {
-  tgfx.render();
-  tnet.send();
-  tsnd.beep();
+  tgfx.render()(_:);
+  tnet.send()(_:);
+  tsnd.beep()(_:);
 }
 
 #run entry

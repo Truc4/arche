@@ -1,10 +1,7 @@
-// An in-out array param (same name in both lists) is the by-reference fill contract: the out
-// occurrence shadows the in-list borrow, so the proc fills the caller's buffer IN PLACE with no
-// `own` and no `move` — the binding is never killed, and the out-arg reuses it. This is the
-// canonical fill-buffer / FFI shape.
+// A buffer filled via a func `own` param (was a proc in-out param / FFI fill shape).
 // RUN: %arche build -o %t %s && %t | grep "filled=hello n=5"
-#import { fmt }
-fill :: proc(buf: [32]char, s: []char)(buf: [32]char, n: int) {
+#import { fmt str }
+fill :: func(own buf: [32]char, s: []char) -> [32]char {
   i := 0;
   for (; i < s.length; i += 1) {
     if (i >= 32) {
@@ -13,15 +10,16 @@ fill :: proc(buf: [32]char, s: []char)(buf: [32]char, n: int) {
     buf[i] = s[i];
   }
   if (i >= 0 && i < 32) {
-    buf[i] = 0; // NUL-terminate the filled buffer for the `%s` fmt.print (an FFI convenience the user writes)
+    buf[i] = 0;
   }
-  n = i;
+  return buf;
 }
 
 entry :: system {
   b: [32]char;
-  fill(b, "hello")(b, n:);
-  fmt.printf("filled=%s n=%d\n", b, n);
+  r := fill(move b, "hello");
+  n := str.strlen(r);
+  fmt.printf("filled=%s n=%d\n", r, n);
 }
 
 #run entry

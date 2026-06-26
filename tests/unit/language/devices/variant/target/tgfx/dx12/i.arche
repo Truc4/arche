@@ -2,6 +2,6 @@
 // windows target is unresolved, in BOTH the compiler and the analyzer. Not a standalone test.
 // RUN: true
 #import { fmt }
-render :: proc() {
-  fmt.print("tgfx dx12\n")(_:);
+render :: func() -> Eff(i64) {
+  return fmt.print("tgfx dx12\n");
 }

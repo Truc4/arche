@@ -1,19 +1,26 @@
-// match on string literals → if-chain of streq (pure-arche byte compare); `_` is
-// the catch-all. The scrutinee is inlined per arm.
+// match on string literals → if-chain of streq (pure-arche byte compare); `_` is the catch-all.
+// Inlined in the system now that procs are gone; exercises all three arms.
 // RUN: %arche build -o %t %s && %t | grep "about"
 #import { fmt }
-route :: proc(path: []char)() {
-  match path {
+entry :: system {
+  a := "/about";
+  match a {
   "/"      : fmt.printf("home\n");
   "/about" : fmt.printf("about\n");
   _        : fmt.printf("404\n");
   }
-}
-
-entry :: system {
-  route("/about")();
-  route("/")();
-  route("/xyz")();
+  h := "/";
+  match h {
+  "/"      : fmt.printf("home\n");
+  "/about" : fmt.printf("about\n");
+  _        : fmt.printf("404\n");
+  }
+  x := "/xyz";
+  match x {
+  "/"      : fmt.printf("home\n");
+  "/about" : fmt.printf("about\n");
+  _        : fmt.printf("404\n");
+  }
 }
 
 #run entry

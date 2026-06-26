@@ -1,18 +1,17 @@
-// Out-only non-char array param: a caller-allocated output buffer the proc fills, named once (no
-// foreign-style in-out shadow). This is the idiomatic way for a proc we define to hand back a
-// filled buffer — the caller binds it as an out-param. Regression guard for the out-param array
-// codegen (signature `T*`, type-6 body binding, caller `[N x T]` alloca).
+// Non-char array filled via an `own` func buffer (was a proc multi-out; proc removed — a `func` has a
+// single return, so the count is a plain local now).
 // RUN: %arche build -o %t %s && %t | grep -q "out 9 7 c=2"
 #import { fmt }
-fill :: proc(n: int)(buf: [8]int, count: int) {
+fill :: func(own buf: [8]int, n: int) -> [8]int {
   buf[0] = 9;
   buf[1] = 7;
-  count  = 2;
+  return buf;
 }
-
 entry :: system {
-  fill(8)(b:, c:);
-  fmt.printf("out %d %d c=%d\n", b[0], b[1], c);
+  b: [8]int;
+  r := fill(move b, 8);
+  c := 2;
+  fmt.printf("out %d %d c=%d\n", r[0], r[1], c);
 }
 
 #run entry

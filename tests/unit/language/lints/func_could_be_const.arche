@@ -32,7 +32,7 @@ doubled :: func() -> int { // computes its result — NOT flagged
 hushed :: func() -> int { // would fire, but silenced — NOT flagged
   return 7;
 }
-main :: proc() {
+entry :: system {
   g := greeting(); // call greeting (so it isn't unused); use .length to stay all-int
   fmt.printf(
     "%d %d %d %d %d %d\n",
@@ -44,3 +44,5 @@ main :: proc() {
     hushed(),
   );
 }
+
+#run entry

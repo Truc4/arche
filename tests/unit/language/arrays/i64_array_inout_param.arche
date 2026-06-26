@@ -1,13 +1,14 @@
-// i64 in-out array param round-trip.
+// i64 array round-trip via an `own` buffer (was a proc in-out param; proc removed).
 // RUN: %arche build -o %t %s && %t | grep -q "v=5000000000"
 #import { fmt }
-fill :: proc(buf: [4]i64)(buf: [4]i64) {
+fill :: func(own buf: [4]i64) -> [4]i64 {
   buf[0] = 5000000000;
+  return buf;
 }
 entry :: system {
   a: [4]i64;
-  fill(a)(a);
-  fmt.printf("v=%lld\n", a[0]);
+  r := fill(move a);
+  fmt.printf("v=%lld\n", r[0]);
 }
 
 #run entry

@@ -3,6 +3,6 @@
 // backend, in BOTH the compiler and the analyzer. Not a standalone test.
 // RUN: true
 #import { fmt }
-open_window :: proc() {
-  fmt.print("wayland window\n")(_:);
+open_window :: func() -> Eff(i64) {
+  return fmt.print("wayland window\n");
 }

@@ -1,19 +1,13 @@
 // FEATURE: an indexed tuple-subcolumn read inside a SYSTEM body (`Mover.pos.x[i]`) addresses the pool's
-// column, exactly as it does in a proc. (The seed is in a proc — where the scatter already works — to
-// ISOLATE the read path. Currently the system path emits `getelementptr i32, i32* x`, leaking the bare
-// subcomponent name as the GEP base → invalid IR / build failure.)
+// column. (Scatter in `boot`, read in `show` — both systems now that procs are gone.)
 // RUN: %arche build -o %t %s && %t | grep -qF "v=7"
 #import { fmt }
 pos(x, y) :: int;
 Mover     :: arche { pos }
 [4]Mover(2);
 
-seed :: proc() {
-  Mover.pos.x = { 7, 9 };
-}
-
 boot :: system {
-  seed();
+  Mover.pos.x = { 7, 9 };
 }
 
 show :: system {

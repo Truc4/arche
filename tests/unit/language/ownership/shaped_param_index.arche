@@ -1,16 +1,8 @@
-// A sized char[N] parameter indexes like an unbounded char[] — readable inside both a
-// func and a proc. (Passed plainly it is copied in; mutations would not leak without `move`.)
+// A sized char[N] parameter indexes like an unbounded char[], readable inside a func.
 // RUN: %arche build -o %t %s && %t | grep "head=72 sum=105"
 #import { fmt }
 head :: func(buf: [8]char) -> int {
   return buf[0];
-}
-dump :: proc(buf: [8]char) {
-  total := 0;
-  for (i := 0; i < 2; i = i + 1) {
-    total = total + buf[i];
-  }
-  fmt.printf("sum=%d\n", total);
 }
 
 entry :: system {
@@ -18,7 +10,11 @@ entry :: system {
   b[0] = 72;
   b[1] = 33;
   fmt.printf("head=%d ", head(b));
-  dump(b);
+  total := 0;
+  for (i := 0; i < 2; i = i + 1) {
+    total = total + b[i];
+  }
+  fmt.printf("sum=%d\n", total);
 }
 
 #run entry

@@ -5,7 +5,7 @@
 // RUN: %arche build --select mgfx=x11 -o %t %s && %t | grep "mgfx x11"
 #import { mgfx }
 entry :: system {
-  mgfx.backend();
+  mgfx.backend()(_:);
 }
 
 #run entry

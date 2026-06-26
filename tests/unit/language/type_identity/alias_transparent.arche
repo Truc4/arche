@@ -1,16 +1,11 @@
-// Tier-1 transparent alias: `dist :: alias float` is THE SAME type as float — interchangeable both
-// ways with no conversion. Prints 3. The `alias` soft-keyword parses and the alias is transparent.
+// Tier-1 transparent alias: `dist :: alias float` is THE SAME type as float — interchangeable both ways.
 // RUN: %arche build -o %t %s && %t | grep "r=3"
 #import { fmt }
-dist        :: alias float;
-takes_float :: proc(x: float) {
-  fmt.printf("r=%g\n", x);
-}
+dist :: alias float;
 entry :: system {
   d  : dist  = 3.0;
-  f  : float = d; // dist -> float, transparent
-  d2 : dist  = f; // float -> dist, transparent (both ways, no conversion)
-  takes_float(d2);
+  f  : float = d;
+  d2 : dist  = f;
+  fmt.printf("r=%g\n", d2);
 }
-
 #run entry

@@ -4,7 +4,7 @@ Particle :: arche { id :: int }
 
 [5]Particle;
 
-main :: proc() {
+entry :: system {
   insert(Particle { id: 1 })(_:, _:);
   insert(Particle { id: 2 })(_:, _:);
   a := Particle.id[0];
@@ -12,3 +12,5 @@ main :: proc() {
   fmt.assert(a == 1, "a != 1\n")();
   fmt.assert(b == 2, "b != 2\n")();
 }
+
+#run entry

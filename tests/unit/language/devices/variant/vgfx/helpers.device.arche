@@ -4,6 +4,6 @@
 // standalone test.
 // RUN: true
 #import { fmt }
-extra :: proc() {
-  fmt.print("vgfx extra\n")(_:);
+extra :: func() -> Eff(i64) {
+  return fmt.print("vgfx extra\n");
 }

@@ -1,15 +1,9 @@
-// A tier-2 subtype is usable AS its backing: a `meters` value flows into a `float` parameter with no
-// conversion (N -> B is implicit). Guards that the is-a direction stays open after distinctness
-// lands. (GREEN today since `meters` is just `float`; must STAY green.)
+// A tier-2 subtype is usable AS its backing: a `meters` value flows into a `float` use with no conversion.
 // RUN: %arche build -o %t %s && %t | grep "got 5"
 #import { fmt }
-meters      :: float;
-takes_float :: proc(x: float) {
-  fmt.printf("got %g\n", x);
-}
+meters :: float;
 entry :: system {
   d: meters = 5.0;
-  takes_float(d); // meters -> float : implicit, OK
+  fmt.printf("got %g\n", d);
 }
-
 #run entry

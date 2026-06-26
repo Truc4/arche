@@ -1,12 +1,14 @@
-// float out-only array param: caller-allocated buffer filled by the proc.
+// float array filled via an `own` buffer (was a proc out param; proc removed).
 // RUN: %arche build -o %t %s && %t | grep -q "fout=3.25"
 #import { fmt }
-fill :: proc()(buf: [4]float) {
+fill :: func(own buf: [4]float) -> [4]float {
   buf[0] = 3.25;
+  return buf;
 }
 entry :: system {
-  fill()(f:);
-  fmt.printf("fout=%g\n", f[0]);
+  f: [4]float;
+  r := fill(move f);
+  fmt.printf("fout=%g\n", r[0]);
 }
 
 #run entry

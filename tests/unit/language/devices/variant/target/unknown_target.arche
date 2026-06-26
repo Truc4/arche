@@ -5,7 +5,7 @@
 // RUN: %t | grep -qF "tsnd alsa"
 #import { tsnd }
 entry :: system {
-  tsnd.beep();
+  tsnd.beep()(_:);
 }
 
 #run entry

@@ -1,10 +1,9 @@
 // RUN: true
 // A library module that ALSO declares a `#run`. Imported by ../module_run_ignored.arche, where its `#run`
-// (and `greet`) must be IGNORED — a schedule belongs to the file you run, not a library. By design this is
-// silent (no error, no warning). Not a standalone test — only imported.
+// (and `greet`) must be IGNORED. By design silent. Not a standalone test — only imported.
 #import { fmt }
 
-greet :: proc() {
+greet :: system {
   fmt.printf("from lib\n");
 }
 

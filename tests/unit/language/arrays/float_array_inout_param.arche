@@ -1,14 +1,15 @@
-// float in-out array param round-trips through the element pointer.
+// float array round-tripped through an `own` buffer (was a proc in-out param; proc removed).
 // RUN: %arche build -o %t %s && %t | grep -q "f=1.5,2.5"
 #import { fmt }
-fill :: proc(buf: [4]float, n: int)(buf: [4]float) {
+fill :: func(own buf: [4]float, n: int) -> [4]float {
   buf[0] = 1.5;
   buf[1] = 2.5;
+  return buf;
 }
 entry :: system {
   b: [4]float;
-  fill(b, 4)(b);
-  fmt.printf("f=%g,%g\n", b[0], b[1]);
+  r := fill(move b, 4);
+  fmt.printf("f=%g,%g\n", r[0], r[1]);
 }
 
 #run entry

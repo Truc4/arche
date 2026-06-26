@@ -1,25 +1,19 @@
-// The explicit longhand `name : type : <callable>` must work the same as `name :: <callable>`
-// — if it didn't, it would mean the `::` shorthand was special-cased rather than flowing through
-// the general `name : meta : value` grammar.
+// The explicit longhand `name : type : <callable>` works the same as `::` (was proc types; proc removed).
 // RUN: %arche build -o %t %s && %t | grep "code=404 r=-7"
 #import { fmt }
-handler : type : proc()(code: int); // explicit longhand, proc type
-unop    : type : func(a: int) -> int; // explicit longhand, func type
-
-not_found :: proc()(code: int) {
-  code = 404;
+handler : type : func() -> int;
+unop    : type : func(a: int) -> int;
+not_found :: func() -> int {
+  return 404;
 }
 negate :: func(a: int) -> int {
   return -a;
 }
-
 h : handler : not_found;
 g : unop    : negate;
-
 entry :: system {
-  h()(c:);
+  c := h();
   r := g(7);
   fmt.printf("code=%d r=%d\n", c, r);
 }
-
 #run entry

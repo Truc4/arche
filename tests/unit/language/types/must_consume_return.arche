@@ -1,7 +1,5 @@
-// Returning an opaque local moves it out of the scope — that counts as consumption, so
-// `make_resource` does not trip the must-consume check. It is a `proc` (it performs an effect —
-// opening the resource — and returns the handle); a func couldn't call the extern. The caller
-// then retires it.
+// Returning an opaque from a func→Eff moves it out (consumption). Was a proc; now a func builds the
+// open-Eff over the extern, and the run binds the handle.
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep "value=7"
 #import { fmt }
 resource :: opaque;
@@ -10,16 +8,13 @@ resource :: opaque;
   resource_get   :: proc(r: resource)(ret: int);
   resource_close :: proc(own r: resource);
 }
-
-make_resource :: proc(v: int)(r: resource) {
-  resource_open(v)(r);
+make_resource :: func(v: int) -> Eff(resource) {
+  return resource_open(v);
 }
-
 entry :: system {
   make_resource(7)(r:);
   resource_get(r)(v:);
   fmt.printf("value=%d\n", v);
   resource_close(move r);
 }
-
 #run entry

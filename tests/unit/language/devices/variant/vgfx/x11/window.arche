@@ -3,9 +3,9 @@
 // compiler and the analyzer agree about the active backend). Not a standalone test.
 // RUN: true
 #import { fmt }
-open_window :: proc() {
-  fmt.print("x11 window\n")(_:);
+open_window :: func() -> Eff(i64) {
+  return fmt.print("x11 window\n");
 }
-x11_only :: proc() {
-  fmt.print("x11 only\n")(_:);
+x11_only :: func() -> Eff(i64) {
+  return fmt.print("x11 only\n");
 }

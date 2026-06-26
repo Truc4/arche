@@ -198,7 +198,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_pointless_move]                = { "W0027", "pointless_move",                CLASS_LINT, 1 },
 	[SEM_LINT_proc_calls_proc]               = { "W0028", "proc_calls_proc",               CLASS_LINT, 1 },
 	[SEM_LINT_pool_index_outside_query]      = { "W0029", "pool_index_outside_query",      CLASS_LINT, 1 },
-	[SEM_LINT_proc_not_primitive]            = { "W0030", "proc_not_primitive",            CLASS_LINT, 0 },
+	[SEM_LINT_proc_not_primitive]            = { "W0030", "proc_not_primitive",            CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -224,6 +224,10 @@ static void ensure_init(void) {
 	 * but error-by-default, since a foreign-pool write in a per-entity map silently runs once, not per
 	 * row. `--map-foreign-write=warn|allow` demotes it. */
 	g_werror[SEM_LINT_map_writes_foreign_pool] = 1;
+	/* W0030 proc_not_primitive: the proc-elimination ban — a non-foreign/non-primitive/non-`@drop` proc is
+	 * a hard ERROR by default at every entry point (build/run/check/LSP). Its message names the fix
+	 * (`func`/`system`/`each`/`map`, or decompose across systems). */
+	g_werror[SEM_LINT_proc_not_primitive] = 1;
 	g_init_done = 1;
 }
 

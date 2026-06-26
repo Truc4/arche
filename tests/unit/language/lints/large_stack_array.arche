@@ -1,7 +1,6 @@
 // W0026 large_stack_array: a local sized array `[N]T` whose storage exceeds 1 KB warns and steers
-// the author to a single-type archetype pool (or a #module-private global). A small array stays
-// silent (under threshold), an `@allow(large_stack_array)` decl is suppressed, `-Wno-large-stack-array`
-// disables it, and `-Werror=large-stack-array` promotes it to a hard error.
+// the author to a single-type archetype pool. `@allow(large_stack_array)` suppresses;
+// `-Wno-large-stack-array` disables; `-Werror=large-stack-array` promotes to a hard error.
 // RUN: %arche check %s 2>&1 | grep -q "large_stack_array.*'big'"
 // RUN: test "$(%arche check %s 2>&1 | grep -c large_stack_array)" -eq 1
 // RUN: test "$(%arche check -Wno-large-stack-array %s 2>&1 | grep -c large_stack_array)" -eq 0
@@ -9,17 +8,18 @@
 #import { fmt }
 
 @allow(large_stack_array)
-allowed :: proc() {
+allowed :: system {
   ok: [2000]float; // 8000 bytes, but @allow'd → silent
   ok[0] = 1.0;
   fmt.printf("%f\n", ok[0]);
 }
 
-main :: proc() {
-  allowed();
+entry :: system {
   big   : [2000]float; // 8000 bytes → W0026
   small : [200]char; // 200 bytes → under the 1 KB threshold, silent
   big[0]   = 1.0;
   small[0] = 65;
   fmt.printf("%d\n", small[0]);
 }
+
+#run seq({ allowed, entry })

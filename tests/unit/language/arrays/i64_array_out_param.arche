@@ -1,12 +1,14 @@
-// i64 out-only array param.
+// i64 array filled via an `own` buffer threaded through a func (was a proc out-param; proc removed).
 // RUN: %arche build -o %t %s && %t | grep -q "o=5000000000"
 #import { fmt }
-fill :: proc()(buf: [4]i64) {
+fill :: func(own buf: [4]i64) -> [4]i64 {
   buf[0] = 5000000000;
+  return buf;
 }
 entry :: system {
-  fill()(a:);
-  fmt.printf("o=%lld\n", a[0]);
+  a: [4]i64;
+  r := fill(move a);
+  fmt.printf("o=%lld\n", r[0]);
 }
 
 #run entry

@@ -2,9 +2,9 @@
 // sync test uses to prove the compiler and analyzer agree on the active target. Not a standalone test.
 // RUN: true
 #import { fmt }
-render :: proc() {
-  fmt.print("tgfx wayland\n")(_:);
+render :: func() -> Eff(i64) {
+  return fmt.print("tgfx wayland\n");
 }
-wl_only :: proc() {
-  fmt.print("wayland only\n")(_:);
+wl_only :: func() -> Eff(i64) {
+  return fmt.print("wayland only\n");
 }

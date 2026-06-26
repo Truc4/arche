@@ -1,18 +1,16 @@
-// Non-char arrays work as in-out params (write through the caller's buffer by reference, read it
-// back) — the `io.fread` pattern for `int[N]`. Regression guard for the array-param codegen
-// generalization (params were previously emitted as a scalar `i32` for non-char element types).
+// Non-char array threaded through an `own` func param (was a proc in-out param; proc removed).
 // RUN: %arche build -o %t %s && %t | grep -q "9 7 12"
 #import { fmt }
-fill :: proc(buf: [8]int, n: int)(buf: [8]int) {
+fill :: func(own buf: [8]int, n: int) -> [8]int {
   buf[0] = 9;
   buf[1] = 7;
   buf[2] = buf[0] + 3;
+  return buf;
 }
-
 entry :: system {
   b: [8]int;
-  fill(b, 8)(b);
-  fmt.printf("%d %d %d\n", b[0], b[1], b[2]);
+  r := fill(move b, 8);
+  fmt.printf("%d %d %d\n", r[0], r[1], r[2]);
 }
 
 #run entry

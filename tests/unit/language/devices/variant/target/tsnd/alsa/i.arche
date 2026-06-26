@@ -1,6 +1,6 @@
 // tsnd alsa variant (selected by the [select] base, no target table). Not a standalone test.
 // RUN: true
 #import { fmt }
-beep :: proc() {
-  fmt.print("tsnd alsa\n")(_:);
+beep :: func() -> Eff(i64) {
+  return fmt.print("tsnd alsa\n");
 }

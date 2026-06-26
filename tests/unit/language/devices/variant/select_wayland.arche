@@ -3,9 +3,9 @@
 // RUN: env ARCHE_SELECT=vgfx=wayland %arche build -o %t %s && %t | grep "wayland window"
 #import { vgfx }
 entry :: system {
-  vgfx.hello();
-  vgfx.extra();
-  vgfx.open_window(); // wayland variant
+  vgfx.hello()(_:);
+  vgfx.extra()(_:);
+  vgfx.open_window()(_:); // wayland variant
 }
 
 #run entry
