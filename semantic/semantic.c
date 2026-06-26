@@ -2118,6 +2118,22 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 			}
 			if (ok)
 				result = tyid_of_eff_named(ctx->ty_arena, NULL, slots, names, total);
+		} else if (strcmp(func_name, "pure") == 0 && seq_argc <= 1) {
+			/* `pure(x)` lifts x into an `Eff` yielding x; `pure()` is the empty `Eff()`. */
+			if (seq_argc == 1) {
+				TypeId xt = sem_expr_type_id(ctx, sem_node_at_expr(v, 0));
+				const char *nm = NULL;
+				result = tyid_of_eff_named(ctx->ty_arena, NULL, &xt, &nm, 1);
+			} else {
+				result = tyid_of_eff_named(ctx->ty_arena, NULL, NULL, NULL, 0);
+			}
+		} else if (strcmp(func_name, "ifS") == 0 && seq_argc == 3) {
+			/* GUARD form (else = `pure()`): the then-result is discarded, so `ifS` yields `Eff()` — same as
+			 * `whenS`. Value-producing `ifS` (arms unifying to a non-empty `Eff(T)`) is the deferred case. */
+			result = tyid_of_eff_named(ctx->ty_arena, NULL, NULL, NULL, 0);
+		} else if (strcmp(func_name, "whenS") == 0 && seq_argc == 2) {
+			/* `whenS(cond, body)` runs `body` or nothing — the skip arm has no value, so it yields `Eff()`. */
+			result = tyid_of_eff_named(ctx->ty_arena, NULL, NULL, NULL, 0);
 		} else {
 			GroupInfo *gi = find_group(ctx, func_name);
 			if (gi) {
@@ -2407,6 +2423,32 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		 * out-slots (a `|> fin` then folds them). Recognized here so the name isn't flagged undefined; codegen
 		 * runs the N externs and binds their out-slots via the build-func fusion. Gated on ≥2 args. */
 		if (func_name && strcmp(func_name, "zip") == 0 && argc >= 2) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* `pure(x)` / `pure()` — the applicative UNIT: lift a value into an `Eff`, or the empty `Eff()` (the
+		 * explicit no-op arm for `ifS`/`whenS`). Recognized here so the name isn't flagged undefined; codegen
+		 * folds it to a value-only no-op (no effect leaf runs). */
+		if (func_name && strcmp(func_name, "pure") == 0 && argc <= 1) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* `ifS(cond, then, else)` / `whenS(cond, body)` — the SELECTIVE (§5): run `then`/`body` iff `cond`
+		 * (a PURE value), else the `else` arm (ifS) or nothing (whenS = implicit `pure()`). The conditional
+		 * layer over the static applicative — arms stay statically visible, only WHICH runs is gated (no
+		 * `bind`). Recognized here; codegen emits the guard/branch around the folded arm(s). */
+		if (func_name && ((strcmp(func_name, "ifS") == 0 && argc == 3) ||
+		                  (strcmp(func_name, "whenS") == 0 && argc == 2))) {
 			for (int i = 0; i < argc; i++) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));

@@ -1,0 +1,21 @@
+// RUN: %arche build -o %t %s && %t | grep -qxF "w1 i1 end"
+// Selective combinators (guard form): `whenS(cond, body)` and `ifS(cond, then, pure())` run their
+// effect IFF `cond` (a pure value), else nothing — the conditional layer over the static applicative
+// (effect set stays visible, only execution is gated; no `bind`). Used the idiomatic way: wrapped in a
+// builder `func` (this is how `assert` rides on `whenS`). Every arm yields `Eff()` and falls through,
+// so both the run and skip paths are observable. The fire-then-exit path (`assert`) is covered by the
+// buffer/exit tests; here every selective falls through so the output is checkable.
+#import { os }
+
+note :: func(m: []char) -> Eff(i64) { return os.write(1, m, m.length); }
+gw   :: func(c: int, m: []char) -> Eff() { return whenS(c, note(m)); }            // run note iff c
+gi   :: func(c: int, m: []char) -> Eff() { return ifS(c, note(m), pure()); }      // ditto, explicit else
+
+t :: system {
+  gw(1 == 1, "w1 ")();    // true  -> run  -> "w1 "
+  gw(1 == 2, "wX ")();    // false -> skip
+  gi(1 == 1, "i1 ")();    // true  -> run  -> "i1 "
+  gi(1 == 2, "iX ")();    // false -> skip
+  os.write(1, "end\n", 4)(_:);
+}
+#run t

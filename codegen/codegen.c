@@ -1415,6 +1415,18 @@ static HirExpr *eff_subst_arg(HirFuncDecl *fn, HirExpr **actual_args, int actual
 			nc->data.call.args[i] = eff_subst_arg(fn, actual_args, actual_argc, eu->data.call.args[i]);
 		return nc;
 	}
+	/* A param inside a BINARY (e.g. `condition == 0` handed to an `ifS`/`whenS` cond): substitute both
+	 * operands so the param reaches the run-site. New node; operands substituted, op + policy preserved. */
+	if (eu && eu->kind == HIR_EXPR_BINARY) {
+		HirExpr *nb = hir_expr_create(HIR_EXPR_BINARY);
+		nb->loc = eu->loc;
+		nb->resolved = eu->resolved;
+		nb->data.binary.op = eu->data.binary.op;
+		nb->data.binary.policy = eu->data.binary.policy;
+		nb->data.binary.left = eff_subst_arg(fn, actual_args, actual_argc, eu->data.binary.left);
+		nb->data.binary.right = eff_subst_arg(fn, actual_args, actual_argc, eu->data.binary.right);
+		return nb;
+	}
 	return ea;
 }
 
@@ -1491,13 +1503,15 @@ static HirExpr *eff_subst_call(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **a
 static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **actual_args, int actual_argc,
                                  HirProcDecl **out_proc, HirFuncDecl **out_finalizer, HirExpr **out_prefix,
                                  HirProcDecl **out_prefix_proc, HirExpr **out_zip_calls, HirProcDecl **out_zip_procs,
-                                 int *out_zip_count) {
+                                 int *out_zip_count, HirExpr **out_select_cond) {
 	*out_proc = NULL;
 	*out_finalizer = NULL;
 	*out_prefix = NULL;
 	*out_prefix_proc = NULL;
 	if (out_zip_count)
 		*out_zip_count = 0;
+	if (out_select_cond)
+		*out_select_cond = NULL;
 	if (!fn)
 		return NULL;
 	/* the builder body is a single `return <expr>` (allow other no-op stmts before it defensively) */
@@ -1519,6 +1533,53 @@ static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr *
 	while (bcall && bcall->kind == HIR_EXPR_UNARY &&
 	       (bcall->data.unary.op == UNARY_MOVE || bcall->data.unary.op == UNARY_COPY))
 		bcall = bcall->data.unary.operand;
+	/* `ifS(cond, then, else)` — the SELECTIVE. GUARD form (else = `pure()`): set *out_select_cond to the
+	 * substituted condition and fold the THEN arm through the normal machinery (recursing if it's a builder
+	 * like `fail`, whose own `seq` body must fold), so the run-site wraps the emission in `if (cond) { … }`.
+	 * A non-`pure()` else (value-producing ifS) is deferred. */
+	const char *sel_nm = (out_select_cond && bcall && bcall->kind == HIR_EXPR_CALL && bcall->data.call.callee &&
+	                      bcall->data.call.callee->kind == HIR_EXPR_NAME)
+	                         ? bcall->data.call.callee->data.name.name
+	                         : NULL;
+	if (sel_nm && ((strcmp(sel_nm, "ifS") == 0 && bcall->data.call.arg_count == 3) ||
+	               (strcmp(sel_nm, "whenS") == 0 && bcall->data.call.arg_count == 2))) {
+		if (strcmp(sel_nm, "ifS") == 0) {
+			/* ifS: the else arm must be `pure()` for the GUARD form (value-producing ifS is deferred). */
+			HirExpr *else_arm = bcall->data.call.args[2];
+			while (else_arm && else_arm->kind == HIR_EXPR_UNARY &&
+			       (else_arm->data.unary.op == UNARY_MOVE || else_arm->data.unary.op == UNARY_COPY))
+				else_arm = else_arm->data.unary.operand;
+			int else_pure = (else_arm && else_arm->kind == HIR_EXPR_CALL && else_arm->data.call.callee &&
+			                 else_arm->data.call.callee->kind == HIR_EXPR_NAME &&
+			                 else_arm->data.call.callee->data.name.name &&
+			                 strcmp(else_arm->data.call.callee->data.name.name, "pure") == 0);
+			if (!else_pure) {
+				fprintf(stderr, "Error: value-producing `ifS` (non-`pure()` else arm) is not yet supported\n");
+				ctx->had_error = 1;
+				return NULL;
+			}
+		}
+		HirExpr *cond = eff_subst_arg(fn, actual_args, actual_argc, bcall->data.call.args[0]);
+		HirExpr *then_call = eff_subst_arg(fn, actual_args, actual_argc, bcall->data.call.args[1]);
+		while (then_call && then_call->kind == HIR_EXPR_UNARY &&
+		       (then_call->data.unary.op == UNARY_MOVE || then_call->data.unary.op == UNARY_COPY))
+			then_call = then_call->data.unary.operand;
+		HirFuncDecl *tf = (then_call && then_call->kind == HIR_EXPR_CALL && then_call->data.call.callee &&
+		                   then_call->data.call.callee->kind == HIR_EXPR_NAME)
+		                      ? find_func_decl(ctx, then_call->data.call.callee->data.name.name)
+		                      : NULL;
+		if (tf) {
+			/* THEN is a builder (e.g. `fail` = `seq(write, exit)`): recurse so its seq body folds. */
+			HirExpr *r = eff_inline_build(ctx, tf, then_call->data.call.args, then_call->data.call.arg_count,
+			                              out_proc, out_finalizer, out_prefix, out_prefix_proc, out_zip_calls,
+			                              out_zip_procs, out_zip_count, out_select_cond);
+			*out_select_cond = cond; /* set AFTER recursion so the recursive prologue doesn't reset it */
+			return r;
+		}
+		/* THEN is a direct extern: fold it through the normal seq/zip/extern path below. */
+		*out_select_cond = cond;
+		bcall = then_call;
+	}
 	/* `seq(a, b)` — run `a` for effect first (the prefix), then `b` is the result-bearing main. Each side may
 	 * itself be a func->Eff builder (eff_subst_call recurses); the prefix's own result is discarded, so any
 	 * finalizer on it is moot (accepted into a throwaway). */
@@ -7644,8 +7705,41 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			HirExpr *zip_calls[16];
 			HirProcDecl *zip_procs[16];
 			int zip_count = 0;
+			HirExpr *select_cond = NULL;
 			eff_inlined = eff_inline_build(ctx, callee_func, rhs->data.call.args, rhs->data.call.arg_count, &eff_ext,
-			                               &eff_fin, &eff_prefix, &eff_prefix_proc, zip_calls, zip_procs, &zip_count);
+			                               &eff_fin, &eff_prefix, &eff_prefix_proc, zip_calls, zip_procs, &zip_count,
+			                               &select_cond);
+			if (eff_inlined && select_cond) {
+				/* `ifS` GUARD form: `if (cond) { <then effect> }`. The THEN arm folded into eff_prefix +
+				 * eff_inlined (main); emit it inside the taken branch. Eff() result → nothing to bind. */
+				if (zip_count > 0) {
+					fprintf(stderr, "Error: `ifS` with a `zip` THEN arm is not yet supported\n");
+					ctx->had_error = 1;
+					break;
+				}
+				char cbuf[256];
+				codegen_expression(ctx, select_cond, cbuf);
+				int sid = ctx->value_counter++;
+				char then_lbl[48], cont_lbl[48];
+				snprintf(then_lbl, sizeof(then_lbl), "sel_then_%d", sid);
+				snprintf(cont_lbl, sizeof(cont_lbl), "sel_cont_%d", sid);
+				char *cbool = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", cbool, cbuf);
+				buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n%s:\n", cbool, then_lbl, cont_lbl,
+				                  then_lbl);
+				ctx->block_terminated = 0;
+				if (eff_prefix) {
+					char pres[256];
+					codegen_expression(ctx, eff_prefix, pres);
+				}
+				char mres[256];
+				codegen_expression(ctx, eff_inlined, mres);
+				if (!ctx->block_terminated)
+					buffer_append_fmt(ctx, "  br label %%%s\n", cont_lbl);
+				buffer_append_fmt(ctx, "%s:\n", cont_lbl);
+				ctx->block_terminated = 0;
+				break;
+			}
 			if (eff_inlined && zip_count > 0) {
 				/* `zip(e1, …, eN)` — the applicative PRODUCT: run each effect, COLLECT all their out-slot
 				 * values, then either fold them through a `|> fin` (one bound result) or bind each positionally

@@ -56,6 +56,11 @@ converged on one model for "pass a borrowed substring of a buffer between system
 stored into a column must trace to a column of the *same* archetype). Capture the model in `docs/design/`
 (views, substrings, the same-row rule, the three axes). Defer the handle-view.
 
+## Doc edits (done)
+
+- **`docs/design/the-flat-effect-model.md`** — added `###` "The free applicative, fully compile-time
+  — what it buys, what it costs" at the end of §5. ✅ written.
+
 ## Mechanisms (build/confirm first)
 
 1. **Lints (the discipline).** Strengthen the proc rule (`semantic.c` `lint_proc_decl` ~4564): a `proc` is

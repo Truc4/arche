@@ -394,6 +394,48 @@ applicative/imperative line restated as a rule, and it has three cases:
   iteration into a value and reintroduce the depth the model exists to forbid. Repeated `each (query {…})`
   fan headers across draw systems are structural skeleton, not duplication to abstract away.
 
+### The free selective, fully compile-time — what it buys, what it costs
+
+The value layer is a **free selective** (`pure`, `zip`, `seq`, `|>`, plus `ifS`/`whenS`) — the middle
+rung between applicative and monad (Mokhov et al., ICFP 2019). It can **conditionally execute** a
+statically-known set of effects — gate an effect on a *pure* value (`whenS(cond, eff)` runs `eff` iff
+`cond`; `ifS(cond, a, b)` picks one) — but it has **no value-level `bind`**: a later effect's *shape* can
+never depend on an earlier's *runtime result*. And it is a **fully compile-time abstraction** — with no
+heap, an `Eff` is never a runtime tree of nodes the way Haskell's `IO`/free structures are. The compiler
+**folds the `Eff` graph at compile time** and lowers it to flat, straight-line leaf calls (a selective
+node lowers to a guarded branch, `if (cond) { … }`); the tree lives in the compiler, never the program.
+That single fact is why the combinators are **compiler intrinsics, not library functions you write**:
+there is no runtime structure for an ordinary `func` to build or walk, and arche has neither the heap nor
+the generics to express `zip :: Eff a -> Eff b -> Eff (a, b)` as user code. (Haskell makes all of these
+ordinary library code precisely *because* it has both; arche's own `Schedule` — combinators as `func`s
+over a `sum`, folded at `#run` — shows the CTFE middle path exists, so this is an implementation choice,
+not a law.)
+
+**What it buys:**
+- **Heap-free and interpreter-free.** No runtime effect tree, no walk, no RTS — an `Eff` compiles
+  *away* into the leaf calls it described.
+- **A statically-known effect set — even with conditionals.** The whole graph is known before anything
+  runs; a selective gates *which* effects execute but never hides *what* effects *could* (the scheduler
+  over-approximates: "this might run `fail`"). So the compiler can still batch a column into one kernel,
+  reorder `zip`'s independent legs, and fuse `|>` cooks. Inspectability survives the conditional.
+- **A provably bounded stack** (§6): the spine is `system → proc → extern`, depth-1, computable.
+
+**What it costs:**
+- **No value-level `bind`** — the one real limit. Result-dependent sequencing (a later effect's *shape*
+  from an earlier's *result*) can't be a value; it runs imperatively in a proc (§5). The selective rung
+  buys conditional *execution* of a static set; `bind` would make the set itself depend on runtime
+  values — unbounded, heap-needing — the line arche won't cross. (A self-recursive selective builder is
+  rejected for exactly this reason: it would be a free monad.)
+
+The through-line: **the `Eff` stays a fully static, compile-time-foldable value with a statically-known
+effect set.** Conditional *execution* (selective) is in; making the effect *set* depend on a runtime
+value (`bind`) is out — pushed to the proc/system, or left unbuilt until a concrete case forces a
+stronger algebra. That discipline is what makes "effects as values" cost zero runtime machinery.
+
+(`assert` rides on this: `assert(c, m) = whenS(c == 0, fail(m))` — a pure `func -> Eff()`, run with `()`.
+Today the **guard form** is wired — `whenS`, and `ifS` with a `pure()` else; value-producing `ifS`, where
+both arms yield a non-empty `Eff(T)` and the run binds the chosen result, is the next step.)
+
 ## 6. Why this is *specifically* cool in arche
 
 Other languages could adopt "effects as values." What makes it sing here is that every piece lands on
@@ -727,11 +769,13 @@ earns its keep only in a no-GC systems language:
    the bound is *trivial* — `max(system) + max(proc) + max(extern)`, by inspection. `IO`, whose spine
    nests to arbitrary depth, gives you neither the triviality nor (without a totality checker) the
    bound.
-2. **The value layer is a free *applicative*, not a monad.** In Haskell you can write
-   `eff1 >>= \x -> eff2 x` as a value, anywhere. In arche you cannot: `Eff` composes only *statically*
-   (no runtime value flows between pieces at the value level). Result-dependent sequencing exists only
-   imperatively, inside one flat proc. So arche's coloring is in fact *stricter* than `IO`'s —
-   a pure func can't even consume an effect's result; it can only build the `Eff` and hand it up.
+2. **The value layer is a free *selective*, not a monad.** In Haskell you can write
+   `eff1 >>= \x -> eff2 x` as a value, anywhere. In arche you cannot: `Eff`'s effect *set* is fixed
+   statically — `whenS`/`ifS` can conditionally *execute* a known effect (gate it on a pure value), but
+   no runtime result can change *which* effects exist. Result-dependent sequencing exists only
+   imperatively, inside one flat proc. So arche's coloring is in fact *stricter* than `IO`'s — a pure
+   func can gate effects but can't *consume* an effect's result to choose the next; it builds the `Eff`
+   and hands it up.
 
 Two mechanism differences sit on top (not coloring): dispatch is **static and swappable** (the system
 picks the executor at compile time — the testability story; `IO` is one fixed RTS interpreter), and
@@ -748,9 +792,10 @@ what it buys.
 
 - **Algebraic effects (Koka, Eff, OCaml 5):** we keep the vocabulary, drop the dynamic handler stack
   and continuations. Our dispatch is static and local — closer to dependency injection.
-- **Free applicative / free monad:** a column of `Eff` values built by pure code and drained by one
-  interpreter *is* a free applicative; the run-it-inline-in-a-proc tail is the controlled climb to the
-  monadic rung for result-dependent cases.
+- **Free applicative / selective / monad (Mokhov, Lukyanov, Marlow, Dimino, ICFP 2019):** a column of
+  `Eff` values built by pure code and drained by one interpreter *is* a free applicative; `whenS`/`ifS`
+  lift it to the **selective** rung (conditional execution of a static effect set); the
+  run-it-inline-in-a-proc tail is the controlled climb to the monadic rung for result-dependent cases.
 - **Call-by-push-value:** `func` (value) vs `proc` (computation) is the CBPV distinction, drawn as
   kinds.
 - **Bevy `Commands`:** the deferred structural command buffer flushed at a barrier — which arche ships
