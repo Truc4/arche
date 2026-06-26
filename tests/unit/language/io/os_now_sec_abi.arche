@@ -8,9 +8,9 @@ entry :: system {
   os.os_now_sec()(s0:);
   os.os_now_sec()(s1:);
   diff := s1 - s0;
-  fmt.assert(s0 > 0.0, "os_now_sec non-positive (f32/double ABI mismatch)\n");
-  fmt.assert(s1 >= s0, "os_now_sec not monotonic (f32/double ABI mismatch)\n");
-  fmt.assert(diff < 1.0, "os_now_sec adjacent reads >1s apart (f32/double ABI mismatch)\n");
+  fmt.assert(s0 > 0.0, "os_now_sec non-positive (f32/double ABI mismatch)\n")();
+  fmt.assert(s1 >= s0, "os_now_sec not monotonic (f32/double ABI mismatch)\n")();
+  fmt.assert(diff < 1.0, "os_now_sec adjacent reads >1s apart (f32/double ABI mismatch)\n")();
   fmt.printf("PASS\n");
 }
 

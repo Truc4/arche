@@ -7,7 +7,7 @@ entry :: system {
   s[2] = '5';
   s[3] = 0;
   v := parse.atof(s);
-  fmt.assert(v == 1.5, "atof failed\n");
+  fmt.assert(v == 1.5, "atof failed\n")();
   fmt.printf("atof ok\n");
 }
 

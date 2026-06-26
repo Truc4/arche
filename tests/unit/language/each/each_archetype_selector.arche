@@ -15,8 +15,8 @@ shift :: each (Ball) {
 }
 
 check :: system {
-  fmt.assert(Ball.pos.x[0] == 8, "row 0\n");
-  fmt.assert(Ball.pos.x[1] == 11, "row 1\n");
+  fmt.assert(Ball.pos.x[0] == 8, "row 0\n")();
+  fmt.assert(Ball.pos.x[1] == 11, "row 1\n")();
   fmt.printf("each-archetype ok\n");
 }
 

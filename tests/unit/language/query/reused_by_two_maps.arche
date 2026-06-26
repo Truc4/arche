@@ -23,8 +23,8 @@ seed :: system {
 verify :: system {
   p := P.pos[0] * 10.0;
   v := P.vel[0] * 10.0;
-  fmt.assert(p == 130.0, "pos should be 13\n");
-  fmt.assert(v == 10.0, "vel should be 1\n");
+  fmt.assert(p == 130.0, "pos should be 13\n")();
+  fmt.assert(v == 10.0, "vel should be 1\n")();
   fmt.printf("ok\n");
 }
 

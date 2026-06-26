@@ -20,7 +20,7 @@ seed :: system {
 verify :: system {
   v := Movers.pos[0] * 10.0;
   // read a column THROUGH the query
-  fmt.assert(v == 110.0, "pos should be 11\n");
+  fmt.assert(v == 110.0, "pos should be 11\n")();
   fmt.printf("ok\n");
 }
 

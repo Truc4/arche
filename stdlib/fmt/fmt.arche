@@ -12,14 +12,11 @@ print_float :: func(f: float) -> Eff() {
 print :: func(msg: []char) -> Eff(i64) {
   return os.write(1, msg, msg.length); // layered over os.write — fusion recurses to the syscall
 }
-// assert stays a proc (conditional, multi-effect leaf) — it RUNS the effects explicitly.
-// DEPRECATED: being replaced by assertion-as-data (`Result` + `report` below); kept until call sites migrate.
-assert :: proc(condition: int, message: []char) {
-  if (condition == 0) {
-    fflush(0)();
-    print(message)(_:);
-    os.exit(1)(_:);
-  }
+// `assert(condition, message)` — abort with `message` iff `condition` is false (== 0). A pure `func`
+// building a SELECTIVE `Eff`: `whenS` runs the `fail` leaf only on the failing branch (no `bind`). It is
+// an `Eff`, so the call site RUNS it with the run-marker: `fmt.assert(x == 5, "x")();`.
+assert :: func(condition: int, message: []char) -> Eff() {
+  return whenS(condition == 0, fail(message));
 }
 
 // Assertions in the flat-effect model: the CONDITION is pure control flow (a system's `if`); the FAILURE

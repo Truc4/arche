@@ -13,7 +13,7 @@ Particle :: arche { pos, vel }
 ///   insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);
 /// }
 /// check :: system {
-///   fmt.assert(Particle.pos[0] * 10 == 110, "device doctest did not drive its shape\n");
+///   fmt.assert(Particle.pos[0] * 10 == 110, "device doctest did not drive its shape\n")();
 ///   fmt.printf("widget_doctest_ok\n");
 /// }
 /// #run seq({ seed, integrate, check })

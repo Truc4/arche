@@ -19,7 +19,7 @@ seed :: system {
 
 verify :: system {
   // bump reads `foo` == bound `bar`: 10 + 1 = 11
-  fmt.assert(Thing.bar[0] == 11.0, "@implements binding did not rebind foo -> bar\n");
+  fmt.assert(Thing.bar[0] == 11.0, "@implements binding did not rebind foo -> bar\n")();
   fmt.printf("implements_ok\n");
 }
 

@@ -9,6 +9,6 @@ main :: proc() {
   insert(Particle { id: 2 })(_:, _:);
   a := Particle.id[0];
   b := Particle.id[1];
-  fmt.assert(a == 1, "bounds check failed: a != 1\n");
-  fmt.assert(b == 2, "bounds check failed: b != 2\n");
+  fmt.assert(a == 1, "bounds check failed: a != 1\n")();
+  fmt.assert(b == 2, "bounds check failed: b != 2\n")();
 }

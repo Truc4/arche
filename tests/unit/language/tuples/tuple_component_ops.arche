@@ -20,8 +20,8 @@ entry :: system {
   x0i := x0 * 10.0;
   y2i := y2 * 10.0;
   fmt.printf("x0i=%g (expect 5), y2i=%g (expect 52)\n", x0i, y2i);
-  fmt.assert(x0i == 5, "FAIL: pos_x[0]\n");
-  fmt.assert(y2i == 52, "FAIL: pos_y[2]\n");
+  fmt.assert(x0i == 5, "FAIL: pos_x[0]\n")();
+  fmt.assert(y2i == 52, "FAIL: pos_y[2]\n")();
   fmt.printf("PASS\n");
 }
 

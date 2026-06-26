@@ -66,8 +66,8 @@ entry :: system {
     line_start                = line_end + 1;
   }
   fmt.printf("Loaded %d rows from 256-byte buffer\n", idx);
-  fmt.assert(idx > 0, "should load at least 1 row\n");
-  fmt.assert(Transaction.price[0] == 1.0, "first price should be 1.0\n");
+  fmt.assert(idx > 0, "should load at least 1 row\n")();
+  fmt.assert(Transaction.price[0] == 1.0, "first price should be 1.0\n")();
 }
 
 #run entry

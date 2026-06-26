@@ -20,8 +20,8 @@ entry :: system {
   y4  := Entity.y[4];
   x0i := x0 * 10.0;
   y4i := y4 * 10.0;
-  fmt.assert(x0i == 20, "x[0] != 2.0\n");
-  fmt.assert(y4i == 200, "y[4] != 20.0\n");
+  fmt.assert(x0i == 20, "x[0] != 2.0\n")();
+  fmt.assert(y4i == 200, "y[4] != 20.0\n")();
   fmt.printf("ok\n");
 }
 

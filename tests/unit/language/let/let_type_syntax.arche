@@ -2,13 +2,13 @@
 #import { fmt }
 entry :: system {
   x := 42;
-  fmt.assert(x == 42, "with int type failed\n");
+  fmt.assert(x == 42, "with int type failed\n")();
   y := 3.14;
-  fmt.assert(y > 3.0, "with float type failed\n");
+  fmt.assert(y > 3.0, "with float type failed\n")();
   z := 10 + 20;
-  fmt.assert(z == 30, "with expression failed\n");
+  fmt.assert(z == 30, "with expression failed\n")();
   a := x + 8;
-  fmt.assert(a == 50, "with int addition failed\n");
+  fmt.assert(a == 50, "with int addition failed\n")();
   fmt.print("all type syntax tests passed\n")(_:);
 }
 

@@ -12,7 +12,7 @@ seed :: system {
 
 verify :: system {
   v := Particle.pos[0] * 10.0;
-  fmt.assert(v == 110, "pos[0] != 11.0 after integrate\n");
+  fmt.assert(v == 110, "pos[0] != 11.0 after integrate\n")();
   fmt.printf("ran_ok\n");
 }
 

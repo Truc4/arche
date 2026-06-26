@@ -15,7 +15,7 @@ bump :: system (query { v }) {
 }
 
 check :: system {
-  fmt.assert(S.v[0] == 15, "singleton column write lost\n");
+  fmt.assert(S.v[0] == 15, "singleton column write lost\n")();
   fmt.printf("ok\n");
 }
 

@@ -2,7 +2,7 @@
 #import { fmt }
 entry :: system {
   x := 42;
-  fmt.assert(x == 42, "type syntax failed\n");
+  fmt.assert(x == 42, "type syntax failed\n")();
   fmt.print("test passed\n")(_:);
 }
 

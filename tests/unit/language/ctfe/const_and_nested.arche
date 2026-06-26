@@ -15,7 +15,7 @@ Grid :: arche { cell :: int }
   cell: 0,
 }
 entry :: system {
-  fmt.assert(Grid.cell[11] == 0, "capacity should fold to 12\n");
+  fmt.assert(Grid.cell[11] == 0, "capacity should fold to 12\n")();
   fmt.printf("ok MAX=%d\n", MAX);
 }
 

@@ -68,7 +68,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "///   insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
 		    "/// }\n"
 		    "/// check :: system {\n"
-		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
+		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\")();\n"
 		    "/// }\n"
 		    "/// #run seq({ seed, integrate, check })\n"
 		    "/// ```\n"
@@ -114,7 +114,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		         "  insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
 		         "}\n"
 		         "check :: system {\n"
-		         "  fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\");\n"
+		         "  fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\")();\n"
 		         "  fmt.printf(\"ran\\n\");\n"
 		         "}\n"
 		         "#run seq({ seed, physics.integrate, check })\n",

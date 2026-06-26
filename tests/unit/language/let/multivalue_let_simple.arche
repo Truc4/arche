@@ -7,8 +7,8 @@ pair :: proc()(x: int, y: int) {
 
 entry :: system {
   pair()(x:, y:);
-  fmt.assert(x == 42, "x not 42\n");
-  fmt.assert(y == 7, "y not 7\n");
+  fmt.assert(x == 42, "x not 42\n")();
+  fmt.assert(y == 7, "y not 7\n")();
   fmt.printf("multivalue test ok\n");
 }
 

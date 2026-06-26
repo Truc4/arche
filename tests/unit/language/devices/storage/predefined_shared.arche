@@ -11,8 +11,8 @@ seed :: system {
 }
 
 verify :: system {
-  fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n");
-  fmt.assert(Cell.a[0] == 2.0, "vcache.vtouch did not run\n");
+  fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n")();
+  fmt.assert(Cell.a[0] == 2.0, "vcache.vtouch did not run\n")();
   fmt.printf("predef_shared_ok\n");
 }
 

@@ -5,7 +5,7 @@
 #import { "./pathmod" fmt }
 
 entry :: system {
-  fmt.assert(pathmod.greet() == 42, "path-imported module did not resolve\n");
+  fmt.assert(pathmod.greet() == 42, "path-imported module did not resolve\n")();
   fmt.printf("path_import_ok\n");
 }
 

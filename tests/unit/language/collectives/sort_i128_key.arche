@@ -24,8 +24,8 @@ seed :: system {
 
 verify :: system {
   sort(N.k);
-  fmt.assert(N.tag[0] == 40, "t0\n");
-  fmt.assert(N.tag[39] == 1, "t39\n");
+  fmt.assert(N.tag[0] == 40, "t0\n")();
+  fmt.assert(N.tag[39] == 1, "t39\n")();
   fmt.printf("PASS\n");
 }
 

@@ -7,7 +7,7 @@ entry :: system {
   v := buf[0: rd_v];
   io.fclose(move fd)(_:);
   fmt.printf("read 256 returned: %d\n", v.length);
-  fmt.assert(v.length == 256, "should read 256 bytes\n");
+  fmt.assert(v.length == 256, "should read 256 bytes\n")();
 }
 
 #run entry

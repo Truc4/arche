@@ -5,8 +5,8 @@ Counter :: arche { val :: int }
 [10]Counter(3);
 
 entry :: system {
-  fmt.assert(Counter.val[0] == 0, "val[0] not 0\n");
-  fmt.assert(Counter.val[2] == 0, "val[2] not 0\n");
+  fmt.assert(Counter.val[0] == 0, "val[0] not 0\n")();
+  fmt.assert(Counter.val[2] == 0, "val[2] not 0\n")();
   fmt.printf("two-arg alloc ok\n");
 }
 

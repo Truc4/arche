@@ -14,8 +14,8 @@ entry :: system {
   y  := Particle.pos_y[0];
   xi := x * 10.0;
   yi := y * 10.0;
-  fmt.assert(xi == 15, "x != 1.5\n");
-  fmt.assert(yi == 21, "y != 2.1\n");
+  fmt.assert(xi == 15, "x != 1.5\n")();
+  fmt.assert(yi == 21, "y != 2.1\n")();
 }
 
 #run entry

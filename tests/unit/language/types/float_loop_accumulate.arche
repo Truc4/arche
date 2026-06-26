@@ -8,7 +8,7 @@ entry :: system {
     total = total + v;
     i     = i + 1;
   }
-  fmt.assert(total == 2.0, "float loop accumulate failed\n");
+  fmt.assert(total == 2.0, "float loop accumulate failed\n")();
 }
 
 #run entry

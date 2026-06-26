@@ -12,7 +12,7 @@ Grid :: arche { cell :: int }
 }
 
 entry :: system {
-  fmt.assert(Grid.cell[11] == 0, "last cell should exist (capacity 12)\n");
+  fmt.assert(Grid.cell[11] == 0, "last cell should exist (capacity 12)\n")();
   fmt.printf("ok\n");
 }
 

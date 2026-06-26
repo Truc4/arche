@@ -12,7 +12,7 @@ seed :: system {
 
 verify :: system {
   // b: 2 -> 3
-  fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n");
+  fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n")();
   fmt.printf("predef_ok\n");
 }
 

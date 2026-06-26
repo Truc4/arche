@@ -23,8 +23,8 @@ seed :: system {
 verify :: system {
   fp := Full.pos[0] * 10.0;
   pp := PosOnly.pos[0] * 10.0;
-  fmt.assert(fp == 110.0, "Full.pos should be 11\n");
-  fmt.assert(pp == 500.0, "PosOnly should be untouched (still 50)\n");
+  fmt.assert(fp == 110.0, "Full.pos should be 11\n")();
+  fmt.assert(pp == 500.0, "PosOnly should be untouched (still 50)\n")();
   fmt.printf("ok\n");
 }
 

@@ -27,9 +27,9 @@ run :: system {
 }
 
 check :: system {
-  fmt.assert(P.v[0] == 11, "row 0\n");
-  fmt.assert(P.v[1] == 12, "row 1\n");
-  fmt.assert(P.v[2] == 13, "row 2\n");
+  fmt.assert(P.v[0] == 11, "row 0\n")();
+  fmt.assert(P.v[1] == 12, "row 1\n")();
+  fmt.assert(P.v[2] == 13, "row 2\n")();
   fmt.printf("each-nested ok\n");
 }
 

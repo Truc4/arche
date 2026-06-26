@@ -9,9 +9,9 @@ entry :: system {
   a := i64(f);
   b := i32(f);
   c := i64(g);
-  fmt.assert(a == 3, "i64(float) wrong\n");
-  fmt.assert(b == 3, "i32(float) wrong\n");
-  fmt.assert(c == 0 - 2, "i64(negative float) wrong\n");
+  fmt.assert(a == 3, "i64(float) wrong\n")();
+  fmt.assert(b == 3, "i32(float) wrong\n")();
+  fmt.assert(c == 0 - 2, "i64(negative float) wrong\n")();
   fmt.printf("PASS\n");
 }
 

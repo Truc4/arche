@@ -26,10 +26,10 @@ seed :: system {
 verify :: system {
   sort(N.k);
   b0 := N.b[0];
-  fmt.assert(N.a[0] == 40, "a0\n");
-  fmt.assert(b0 == 40, "b0\n");
-  fmt.assert(N.a[39] == 1, "a39\n");
-  fmt.assert(N.c[0] > N.c[39], "c\n");
+  fmt.assert(N.a[0] == 40, "a0\n")();
+  fmt.assert(b0 == 40, "b0\n")();
+  fmt.assert(N.a[39] == 1, "a39\n")();
+  fmt.assert(N.c[0] > N.c[39], "c\n")();
   fmt.printf("PASS\n");
 }
 

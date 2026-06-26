@@ -93,10 +93,10 @@ entry :: system {
     40,
   };
   sort(N.k); // ascending: k → 1..40, tag → 40..1
-  fmt.assert(N.k[0] == 1, "k0\n");
-  fmt.assert(N.k[39] == 40, "k39\n");
-  fmt.assert(N.tag[0] == 40, "t0\n");
-  fmt.assert(N.tag[39] == 1, "t39\n");
+  fmt.assert(N.k[0] == 1, "k0\n")();
+  fmt.assert(N.k[39] == 40, "k39\n")();
+  fmt.assert(N.tag[0] == 40, "t0\n")();
+  fmt.assert(N.tag[39] == 1, "t39\n")();
   fmt.printf("PASS\n");
 }
 

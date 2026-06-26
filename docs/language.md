@@ -133,7 +133,7 @@ This is the entire basis of foreign-resource safety (`file :: opaque` != `socket
 a := 3;
 b := 7;
 x := a < b;   // x is 0 or 1
-fmt.assert(x == 1, "a < b\n");
+fmt.assert(x == 1, "a < b\n")();
 ```
 
 **Fixed-width integers** are always available alongside `int`: `i8`/`u8`, `i16`/`u16`,
@@ -155,7 +155,7 @@ Convert between widths with a call-style cast (`sext`/`zext` to widen, `trunc` t
 offset: i64 = 5;
 small := i32(offset);   // truncate i64 -> i32
 wide: i64 = i64(small); // widen i32 -> i64
-fmt.assert(wide == 5, "round trip\n");
+fmt.assert(wide == 5, "round trip\n")();
 ```
 
 Integer literals adopt the type of their context (`x: i64 = 3000000000` types the literal
@@ -255,7 +255,7 @@ Particle :: arche { pos_x, vel_x };
 ```arche
 // updates each position by its velocity, across the whole column
 Particle.pos_x = Particle.pos_x + Particle.vel_x;
-fmt.assert(Particle.pos_x[0] == 2.0, "whole-column add\n");
+fmt.assert(Particle.pos_x[0] == 2.0, "whole-column add\n")();
 ```
 
 This iterates all elements, updating each position by its velocity. Inside a map the
@@ -335,9 +335,9 @@ length isn't statically known), so that is rejected.
 a: [8]int;
 for (i := 0; i < a.length; i = i + 1) { a[i] = 2; }
 total := sum(a);        // a decays to []int (a borrow) — a stays alive, .length == 8 at runtime
-fmt.assert(total == 16, "eight 2s sum to 16\n");
+fmt.assert(total == 16, "eight 2s sum to 16\n")();
 view := fill(move a);   // move a in (a consumed), mutate, hand the fat pointer back, rebind
-fmt.assert(sum(view) == 28, "0+1+...+7 == 28\n");
+fmt.assert(sum(view) == 28, "0+1+...+7 == 28\n")();
 ```
 
 **Sub-slicing.** `buf[lo:hi]` is a read-only borrowed sub-view — `{ptr+lo, hi-lo}`, no copy. `lo`/`hi`
@@ -351,8 +351,8 @@ for (i := 0; i < a.length; i = i + 1) { a[i] = 3; }
 n := 5;
 total := sum(a[2:5]);   // borrow elements 2..4 — a untouched
 mid := a[:n];           // prefix view; mid.length == n
-fmt.assert(mid.length == 5, "prefix length\n");
-fmt.assert(total == 9, "three 3s sum to 9\n");
+fmt.assert(mid.length == 5, "prefix length\n")();
+fmt.assert(total == 9, "three 3s sum to 9\n")();
 ```
 
 **Lifetime.** Storage lives in the stack frame that declared it and is reclaimed when that frame
@@ -387,7 +387,7 @@ divmod :: proc(a: int, b: int)(q: int, r: int) {
 main :: proc() {
   divmod(17, 5)(q:, r:);          // call mirrors the signature: foo(in)(out)
   fmt.printf("%d %d\n", q, r);    // q and r are declared by the out-args, scoped here
-  fmt.assert(q == 3 && r == 2, "17 / 5 = 3 rem 2\n");
+  fmt.assert(q == 3 && r == 2, "17 / 5 = 3 rem 2\n")();
 }
 ```
 
@@ -678,10 +678,10 @@ Particle :: arche { mass, charge };
 ```arche
 insert(Particle{ mass: 1.0, charge: 0.1 })(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
 if (!ok) { fmt.printf("pool full\n"); } // handle the full-pool case at the call site
-fmt.assert(ok == 1, "insert succeeded\n");
-fmt.assert(Particle.mass[0] == 1.0, "inserted mass\n");
+fmt.assert(ok == 1, "insert succeeded\n")();
+fmt.assert(Particle.mass[0] == 1.0, "inserted mass\n")();
 delete(h)(ok:);                         // ok: 0 on generation exhaustion
-fmt.assert(ok == 1, "delete succeeded\n");
+fmt.assert(ok == 1, "delete succeeded\n")();
 ```
 
 Use `_` to discard either out (`insert(P{ x: … })(_:, _:)`). The legacy value form (`h := insert(…)`,
@@ -870,7 +870,7 @@ sum_diff :: proc(a: int, b: int)(s: int, d: int) {
 }
 
 sum_diff(10, 3)(s:, d:);   // s = 13, d = 7 - declared + scoped by the out-args
-fmt.assert(s == 13 && d == 7, "sum and diff\n");
+fmt.assert(s == 13 && d == 7, "sum and diff\n")();
 ```
 
 **Filling a caller buffer (zero-copy in-out).** A name in *both* the in-list and the out-list

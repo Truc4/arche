@@ -15,8 +15,8 @@ entry :: system {
   bp  := Body.pos[0];
   ppi := pp * 10.0;
   bpi := bp * 10.0;
-  fmt.assert(ppi == 10, "Particle.pos != 1.0\n");
-  fmt.assert(bpi == 50, "Body.pos != 5.0\n");
+  fmt.assert(ppi == 10, "Particle.pos != 1.0\n")();
+  fmt.assert(bpi == 50, "Body.pos != 5.0\n")();
 }
 
 #run entry

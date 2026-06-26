@@ -6,8 +6,8 @@ clampish :: func(x: int) -> int {
   return select(x > 10, 10, x);
 }
 entry :: system {
-  fmt.assert(clampish(20) == 10, "clamp high\n");
-  fmt.assert(clampish(3) == 3, "clamp low\n");
+  fmt.assert(clampish(20) == 10, "clamp high\n")();
+  fmt.assert(clampish(3) == 3, "clamp low\n")();
   fmt.printf("ok\n");
 }
 

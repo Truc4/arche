@@ -2,7 +2,7 @@
 #import { fmt }
 entry :: system {
   fmt.printf("before\n");
-  fmt.assert(0, "assertion failed\n");
+  fmt.assert(0, "assertion failed\n")();
   fmt.printf("after\n");
 }
 

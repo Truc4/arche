@@ -8,7 +8,7 @@ entry :: system {
   buf[3] = 0;
   f := parse.atof(buf);
   fmt.printf("atof: %g\n", f);
-  fmt.assert(f == 1.5, "atof failed\n");
+  fmt.assert(f == 1.5, "atof failed\n")();
 }
 
 #run entry

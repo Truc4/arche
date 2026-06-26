@@ -5,7 +5,7 @@
 
 entry :: system {
   r := plugin_dev.pub(20); // pub calls private secret(20)=40, returns 41
-  fmt.assert(r == 41, "pub via #module-private helper failed\n");
+  fmt.assert(r == 41, "pub via #module-private helper failed\n")();
   fmt.printf("plugin_ok\n");
 }
 

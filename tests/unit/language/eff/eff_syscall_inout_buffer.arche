@@ -17,7 +17,7 @@ entry :: system {
   ts: [2]i64;
   clock_mono()(ts, _:); // no `:` — bind the kernel-written OUT to the EXISTING `ts`
   ms := ts[0] * 1000 + ts[1] / 1000000;
-  fmt.assert(ms > 0, "monotonic clock should be positive\n");
+  fmt.assert(ms > 0, "monotonic clock should be positive\n")();
   fmt.printf("ok ms>0\n");
 }
 

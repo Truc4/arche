@@ -8,7 +8,7 @@
 
 /// Doubles its argument.
 /// ```arche
-/// fmt.assert(secret_double(21) == 42, "doubling broken\n");
+/// fmt.assert(secret_double(21) == 42, "doubling broken\n")();
 /// ```
 secret_double :: func(x: int) -> int {
   return x * 2;

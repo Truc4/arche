@@ -8,7 +8,7 @@ entry :: system {
   insert(Particle { pos: 1.0 })(_:, _:);
   v  := Particle.pos[0];
   vi := v * 10.0;
-  fmt.assert(vi == 10, "value not 1.0\n");
+  fmt.assert(vi == 10, "value not 1.0\n")();
 }
 
 #run entry

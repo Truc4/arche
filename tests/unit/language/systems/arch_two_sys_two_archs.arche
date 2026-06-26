@@ -26,8 +26,8 @@ verify :: system {
   bp  := Body.vel[0];
   ppi := pp * 10.0;
   bpi := bp * 100.0;
-  fmt.assert(ppi == 110.0, "Particle.pos != 11.0\n");
-  fmt.assert(bpi == 198.0, "Body.vel != 1.98\n");
+  fmt.assert(ppi == 110.0, "Particle.pos != 11.0\n")();
+  fmt.assert(bpi == 198.0, "Body.vel != 1.98\n")();
 }
 
 #run seq({ seed, step, dampen, verify })

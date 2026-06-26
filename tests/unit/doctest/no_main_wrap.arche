@@ -7,7 +7,7 @@
 /// # Example
 /// ```arche
 /// x := sq(4);
-/// fmt.assert(x == 16, "sq broken\n");
+/// fmt.assert(x == 16, "sq broken\n")();
 /// ```
 sq :: func(a: int) -> int {
   return a * a;

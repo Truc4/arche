@@ -13,7 +13,7 @@ seed :: system {
 }
 
 verify :: system {
-  fmt.assert(Cell.v[0] == 1, "system did not run over the driver's pool\n");
+  fmt.assert(Cell.v[0] == 1, "system did not run over the driver's pool\n")();
   fmt.printf("sys_ok\n");
 }
 

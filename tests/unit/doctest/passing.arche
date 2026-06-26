@@ -5,8 +5,8 @@
 ///
 /// # Example
 /// ```arche
-/// fmt.assert(add(2, 3) == 5, "add broken\n");
-/// fmt.assert(add(10, 1) == 11, "add broken\n");
+/// fmt.assert(add(2, 3) == 5, "add broken\n")();
+/// fmt.assert(add(10, 1) == 11, "add broken\n")();
 /// ```
 add :: func(a: int, b: int) -> int {
   return a + b;

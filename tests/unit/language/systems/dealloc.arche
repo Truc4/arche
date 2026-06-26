@@ -25,8 +25,8 @@ verify :: system {
   fmt.print(" p1i=")(_:);
   fmt.print_float(p1i)();
   fmt.print("\n")(_:);
-  fmt.assert(p0i == 11, "pos[0] != 1.1\n");
-  fmt.assert(p1i == 22, "pos[1] != 2.2\n");
+  fmt.assert(p0i == 11, "pos[0] != 1.1\n")();
+  fmt.assert(p1i == 22, "pos[1] != 2.2\n")();
   dealloc(Particle);
 }
 

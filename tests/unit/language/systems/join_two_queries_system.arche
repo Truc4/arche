@@ -19,9 +19,9 @@ addwin :: system (query { n }, query { id }) {
 }
 
 check :: system {
-  fmt.assert(Mover.n[0] == 109, "row 0\n");
-  fmt.assert(Mover.n[1] == 119, "row 1\n");
-  fmt.assert(Mover.n[2] == 129, "row 2\n");
+  fmt.assert(Mover.n[0] == 109, "row 0\n")();
+  fmt.assert(Mover.n[1] == 119, "row 1\n")();
+  fmt.assert(Mover.n[2] == 129, "row 2\n")();
 }
 
 #run seq({ seed, addwin, check })

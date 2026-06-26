@@ -23,10 +23,10 @@ verify :: system {
   k63  := N.k[63];
   em64 := 0 - 64;
   em1  := 0 - 1;
-  fmt.assert(k0 == em64, "k0\n");
-  fmt.assert(N.tag[0] == 64, "t0\n");
-  fmt.assert(k63 == em1, "k63\n");
-  fmt.assert(N.tag[63] == 1, "t63\n");
+  fmt.assert(k0 == em64, "k0\n")();
+  fmt.assert(N.tag[0] == 64, "t0\n")();
+  fmt.assert(k63 == em1, "k63\n")();
+  fmt.assert(N.tag[63] == 1, "t63\n")();
   fmt.printf("PASS\n");
 }
 

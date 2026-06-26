@@ -24,8 +24,8 @@ seed :: system {
 verify :: system {
   ppi := Particle.pos[0] * 10.0;
   bpi := Body.pos[0] * 10.0;
-  fmt.assert(ppi == 10, "Particle.pos should stay 1.0 (no mass component)\n");
-  fmt.assert(bpi == 120, "Body.pos should be 12.0 (2.0 + mass 10.0)\n");
+  fmt.assert(ppi == 10, "Particle.pos should stay 1.0 (no mass component)\n")();
+  fmt.assert(bpi == 120, "Body.pos should be 12.0 (2.0 + mass 10.0)\n")();
   fmt.printf("ok\n");
 }
 

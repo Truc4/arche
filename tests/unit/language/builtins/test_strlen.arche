@@ -2,7 +2,7 @@
 #import { str fmt }
 entry :: system {
   len := str.strlen("hello");
-  fmt.assert(len == 5, "str.strlen(hello) should be 5\n");
+  fmt.assert(len == 5, "str.strlen(hello) should be 5\n")();
   fmt.printf("strlen ok\n");
 }
 

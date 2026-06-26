@@ -33,8 +33,8 @@ verify :: system {
   fmt.print(" p11i=")(_:);
   fmt.print_float(p11i)();
   fmt.print("\n")(_:);
-  fmt.assert(p0i == 110.0, "position[0] != 11.0\n");
-  fmt.assert(p11i == 1320.0, "position[11] != 132.0\n");
+  fmt.assert(p0i == 110.0, "position[0] != 11.0\n")();
+  fmt.assert(p11i == 1320.0, "position[11] != 132.0\n")();
 }
 
 #run seq({ seed, step, verify })

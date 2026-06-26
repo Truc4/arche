@@ -20,8 +20,8 @@ entry :: system {
   p7  := Particle.pos[7];
   p0i := p0 * 10.0;
   p7i := p7 * 10.0;
-  fmt.assert(p0i == 110.0, "pos[0] != 11.0\n");
-  fmt.assert(p7i == 880.0, "pos[7] != 88.0\n");
+  fmt.assert(p0i == 110.0, "pos[0] != 11.0\n")();
+  fmt.assert(p7i == 880.0, "pos[7] != 88.0\n")();
 }
 
 #run entry

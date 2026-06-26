@@ -34,8 +34,8 @@ entry :: system {
   price := parse.atof(price_str);
   qty   := parse.atoi(qty_str);
   fmt.printf("price=%f qty=%d\n", price, qty);
-  fmt.assert(price == 10.0, "price should be 10.0\n");
-  fmt.assert(qty == 10, "qty should be 10\n");
+  fmt.assert(price == 10.0, "price should be 10.0\n")();
+  fmt.assert(qty == 10, "qty should be 10\n")();
 }
 
 #run entry

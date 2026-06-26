@@ -18,7 +18,7 @@ entry :: system {
     total = total + v;
     i     = i + 1;
   }
-  fmt.assert(total == 10.0, "float loop archetype failed\n");
+  fmt.assert(total == 10.0, "float loop archetype failed\n")();
 }
 
 #run entry

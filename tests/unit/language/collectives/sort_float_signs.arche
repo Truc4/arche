@@ -26,11 +26,11 @@ seed :: system {
 
 verify :: system {
   sort(N.v);
-  fmt.assert(N.v[0] < 0.0, "neg first\n");
-  fmt.assert(N.v[39] > 0.0, "pos last\n");
-  fmt.assert(N.v[0] < N.v[39], "ascending\n");
-  fmt.assert(N.tag[0] == 40, "t0\n");
-  fmt.assert(N.tag[39] == 1, "t39\n");
+  fmt.assert(N.v[0] < 0.0, "neg first\n")();
+  fmt.assert(N.v[39] > 0.0, "pos last\n")();
+  fmt.assert(N.v[0] < N.v[39], "ascending\n")();
+  fmt.assert(N.tag[0] == 40, "t0\n")();
+  fmt.assert(N.tag[39] == 1, "t39\n")();
   fmt.printf("PASS\n");
 }
 

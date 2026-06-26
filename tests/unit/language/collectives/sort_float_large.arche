@@ -19,9 +19,9 @@ seed :: system {
 
 verify :: system {
   sort(N.v);
-  fmt.assert(N.tag[0] == 40, "t0\n");
-  fmt.assert(N.tag[39] == 1, "t39\n");
-  fmt.assert(N.v[0] < N.v[39], "asc\n");
+  fmt.assert(N.tag[0] == 40, "t0\n")();
+  fmt.assert(N.tag[39] == 1, "t39\n")();
+  fmt.assert(N.v[0] < N.v[39], "asc\n")();
   fmt.printf("PASS\n");
 }
 

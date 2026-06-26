@@ -13,8 +13,8 @@ entry :: system {
   y  := Particle.pos_y[0];
   xi := x * 10.0;
   yi := y * 10.0;
-  fmt.assert(xi == 10, "x != 1.0\n");
-  fmt.assert(yi == 20, "y != 2.0\n");
+  fmt.assert(xi == 10, "x != 1.0\n")();
+  fmt.assert(yi == 20, "y != 2.0\n")();
 }
 
 #run entry

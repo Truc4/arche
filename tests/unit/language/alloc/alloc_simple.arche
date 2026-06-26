@@ -7,7 +7,7 @@ Counter :: arche { val :: int }
 }
 
 entry :: system {
-  fmt.assert(Counter.val[0] == 7, "val[0] not 7\n");
+  fmt.assert(Counter.val[0] == 7, "val[0] not 7\n")();
   fmt.printf("ok\n");
 }
 

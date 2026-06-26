@@ -25,8 +25,8 @@ seed :: system {
 verify :: system {
   ap := A.pos[0] * 10.0;
   bp := B.pos[0] * 10.0;
-  fmt.assert(ap == 110.0, "A.pos should be 11\n");
-  fmt.assert(bp == 220.0, "B.pos should be 22\n");
+  fmt.assert(ap == 110.0, "A.pos should be 11\n")();
+  fmt.assert(bp == 220.0, "B.pos should be 22\n")();
   fmt.printf("ok\n");
 }
 

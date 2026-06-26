@@ -7,7 +7,7 @@ entry :: system {
   buf[2] = 0;
   n := parse.atoi(buf);
   fmt.printf("atoi: %d\n", n);
-  fmt.assert(n == 42, "atoi failed\n");
+  fmt.assert(n == 42, "atoi failed\n")();
 }
 
 #run entry

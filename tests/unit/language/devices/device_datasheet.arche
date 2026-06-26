@@ -15,7 +15,7 @@ seed :: system {
 
 verify :: system {
   // pos = pos + vel = 11 over the driver's Thing pool
-  fmt.assert(Thing.pos[0] * 10 == 110, "device system did not run over the driver's shape\n");
+  fmt.assert(Thing.pos[0] * 10 == 110, "device system did not run over the driver's shape\n")();
   fmt.printf("datasheet_ok\n");
 }
 

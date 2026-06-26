@@ -9,7 +9,7 @@ Grid :: arche { cell :: int }
   cell: two(),
 }
 entry :: system {
-  fmt.assert(Grid.cell[0] == 2, "field init should fold to 2\n");
+  fmt.assert(Grid.cell[0] == 2, "field init should fold to 2\n")();
   fmt.printf("ok\n");
 }
 

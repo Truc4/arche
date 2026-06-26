@@ -16,7 +16,7 @@ seed :: system {
 
 verify :: system {
   pi := Particle.pos[0] * 10.0;
-  fmt.assert(pi == 11, "compound add in sys failed\n");
+  fmt.assert(pi == 11, "compound add in sys failed\n")();
   fmt.printf("ok\n");
 }
 

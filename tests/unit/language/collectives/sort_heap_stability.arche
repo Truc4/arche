@@ -11,9 +11,9 @@ N   :: arche { v, tag }
 entry :: system {
   scan(+, N.tag); // tag = 1..40, v all equal (5.0)
   sort(N.v); // equal keys → stable → tag order unchanged
-  fmt.assert(N.tag[0] == 1, "t0\n");
-  fmt.assert(N.tag[19] == 20, "t19\n");
-  fmt.assert(N.tag[39] == 40, "t39\n");
+  fmt.assert(N.tag[0] == 1, "t0\n")();
+  fmt.assert(N.tag[19] == 20, "t19\n")();
+  fmt.assert(N.tag[39] == 40, "t39\n")();
   fmt.printf("PASS\n");
 }
 

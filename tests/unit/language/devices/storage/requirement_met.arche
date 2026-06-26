@@ -12,7 +12,7 @@ seed :: system {
 }
 
 verify :: system {
-  fmt.assert(Node.val[0] == 4.0, "store.bump did not run over the driver's pool\n");
+  fmt.assert(Node.val[0] == 4.0, "store.bump did not run over the driver's pool\n")();
   fmt.printf("req_ok\n");
 }
 

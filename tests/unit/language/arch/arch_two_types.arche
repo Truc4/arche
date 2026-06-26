@@ -15,8 +15,8 @@ entry :: system {
   bm  := Body.mass[0];
   ppi := pp * 10.0;
   bmi := bm * 1.0;
-  fmt.assert(ppi == 10, "Particle.pos != 1.0\n");
-  fmt.assert(bmi == 10, "Body.mass != 10.0\n");
+  fmt.assert(ppi == 10, "Particle.pos != 1.0\n")();
+  fmt.assert(bmi == 10, "Body.mass != 10.0\n")();
 }
 
 #run entry

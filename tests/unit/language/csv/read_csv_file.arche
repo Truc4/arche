@@ -10,7 +10,7 @@ entry :: system {
     data := CharBuf.cb[0: rd_data];
   io.fclose(move fd)(_:);
   fmt.printf("Read %d bytes from CSV file\n", data.length);
-  fmt.assert(data.length > 0, "should read CSV file\n");
+  fmt.assert(data.length > 0, "should read CSV file\n")();
 }
 
 #run entry
