@@ -1,18 +1,22 @@
 # The Flat Effect Model
 
-### effects as values, procedures as leaves — side effects in arche without monads or algebraic-effect machinery
+### effects as values, system leaves — side effects in arche without monads or algebraic-effect machinery
 
-> **Status:** design exploration, not settled law. The schedule (§9) is now mostly decided — systems
-> stay flat, the schedule is a derived minimal construct — with the genuinely-open parts (hierarchy/rates,
-> reusable system-sequences, true concurrency) marked as such.
+> **Status:** the core is landed law. The non-foreign world is `func` (pure value / effect-builder) +
+> `system`/`each` (effect leaves & composer) + `map` (kernel); **`proc` is the foreign/primitive boundary
+> only** — a non-foreign `proc` is **W0030 `proc_not_primitive`** (error-by-default). There is no `main`
+> (**E0225**); the entry is a `#run` schedule. The genuinely-open parts (a schedule loop-end hook, true
+> concurrency, result-dependent stdlib convenience) are marked as such.
 
 ## Abstract
 
 Most languages model side effects with heavy machinery: monad transformers, or algebraic effects
 with a runtime handler stack and first-class continuations. arche needs neither. It models effects
-with **three kinds** (`func`, `proc`, `system`) and **one primitive**: an effect is a *bounded value*
-that a pure function builds and an impure leaf runs. Flatness isn't even a rule you enforce — a proc
-simply has no way to call a proc, so the effect call graph is depth-1 by construction.
+with a small set of kinds — `func` (the pure value world), `system`/`each` (the effect leaves and the
+composer), and `map` (the data-parallel kernel) — and **one primitive**: an effect is a *bounded value*
+that a pure function builds and an impure **system** runs. (`proc` survives only as the foreign/primitive
+boundary — `#foreign`/`@syscall`/`@intrinsic`/`@drop`.) Flatness isn't even a rule you enforce — a system
+simply has no way to call a system, so the effect call graph is depth-1 by construction.
 
 The surprise is that this isn't a sacrifice. The model is **flat**, **explicit** (no late-bound jump to
 chase), **heap-free** (effects are fixed-size descriptors), **data-oriented** (effects compose into
@@ -39,18 +43,19 @@ real frame doing real I/O at runtime.
 
 So the load-bearing move is a single structural fact:
 
-> **A `proc` cannot call a `proc`** — not because a rule forbids it, but because the language gives it
-> no way to. Effects are inert values; only a `system` invokes a proc.
+> **A `system` cannot call a `system`** — not because a rule forbids it, but because the language gives it
+> no way to. Effects are inert values; a system *runs* them and is *scheduled*, never called. Composition
+> lives in the schedule, not in inter-system calls.
 
 This sounds draconian. It is the whole game. It makes "procedural code is a flat list of steps" a
 *structural fact* instead of a style guide you can `@allow` away — there's no syntax to violate, so
 nothing to check. The runtime effect spine is depth-1 by construction — which makes the whole-program
-stack bound *trivial to state* (it's just `max(system) + max(proc) + max(extern)`). To be clear, depth-1
+stack bound *trivial to state* (it's just `max(system) + max(extern)`). To be clear, depth-1
 isn't what makes the bound *provable* — static dispatch and monomorphization are (§6); a non-recursive
 deeper spine would still be computable. Flatness buys legibility and a one-line bound, not the bound's
 existence.
 
-The obvious objection — *"then how do two procs share an effectful sub-step?"* — is the rest of this
+The obvious objection — *"then how do two systems share an effectful sub-step?"* — is the rest of this
 document.
 
 ## 2. Why not algebraic effects (Koka, Eff, OCaml 5)
@@ -69,19 +74,25 @@ sibling that scheduled the work. That's closer to a **compile-time vtable / depe
 than to Koka or Eff. We'll come back to this — it's what makes effects testable (§6) without making
 them mysterious.
 
-## 3. The model: three kinds, one keystone
+## 3. The model: the kinds, one keystone
 
 | kind | what it is | may call | may **not** | reached by |
 |---|---|---|---|---|
-| `func` | pure value-world | funcs; **wraps an extern into a value** | run an effect; wrap a proc | called freely (nests, recurses) |
-| `proc` | an effect — a flat leaf | funcs; terminal externs (one hop) | **call a proc** | only a `system` runs it |
-| `system` | the composer | procs, funcs, maps, full control flow | **call a system** | dispatched by the runtime (via the `Schedule`) — never called |
+| `func` | pure value-world; produces results via `-> T` **or** an out-param list `func(in)(out,…)` | funcs; **wraps an extern into a value** | run an effect; read pool/global state | called freely (nests, recurses) |
+| `map` | a pure, branch-free data-parallel kernel | funcs | run an effect; control flow (E0046) | scheduled by name |
+| `system` / `each` | the effect **leaf** *and* composer: runs `Eff`s, calls terminal externs/`#foreign` procs, `insert`/`delete`; full control flow | funcs, maps, terminal externs/`#foreign` procs | **call a `system`** | dispatched by the runtime (via the `Schedule`) — never called |
+| `proc` | the foreign/primitive boundary **only** | — | exist outside `#foreign`/`@syscall`/`@intrinsic`/`@drop` (**W0030**) | run by a `system`/`each` |
+
+The `func`/`proc` split of old is gone in the non-foreign world: a pure callable that fills a buffer or
+returns several values is now a **`func`** with an out-param list (`sum_diff :: func(a,b)(s,d){ s=a+b; d=a-b }`,
+called `sum_diff(10,3)(s:,d:)`) — the form `proc` used to own, but pure. An effectful unit is a **`system`**
+(or `each`). `proc` is reserved for the irreducible primitives.
 
 And the keystone — the thing that makes the whole shape work:
 
 > **A pure `func` can build an effect as a *value* and hand it out.** Building it runs nothing.
 
-```arche
+```
 // pure: builds a description of "write this", returns it; performs no write
 write_b :: func(fd: int, buf: []char) -> Eff(int, int) { return fwrite(fd, buf); }   // extern under-applied by its out-slots
 ```
@@ -92,7 +103,7 @@ adapted to arche's multi-out-slot convention. There is **no special keyword in e
 `Eff` is just an extern *under-applied* by its out-slots (saturation), and you **run** it by *supplying*
 those out-slots:
 
-```arche
+```
 eff := write_b(fd, line);   // PURE: build the effect value, bind it like any other value
 eff(n:, err:);              // IMPURE: run it — the out-slots come from running, not from the func
 ```
@@ -101,55 +112,52 @@ That two-line split is the entire model in miniature:
 
 - **the `func` world** is the *value* world. Effects-as-data live here. They nest, compose, get passed
   around, get chosen conditionally, get stored — all pure.
-- **`eff(out:)`** is the single impure act: calling an `Eff` with out-slots turns the inert value into
-  a real call and binds its results. Out-params belong to *running* an effect, never to a func — which
-  is also why a pure func can never have effect out-params, only an `Eff` return.
+- **`eff(out:)`** is the single impure act, and it happens in a **`system`/`each`**: calling an `Eff` with
+  out-slots turns the inert value into a real call and binds its results. *Running* an effect is the system's
+  privilege, never a func's — which is also why a pure func, even one with an out-param list, can never
+  *run* an effect; out-params on a func are pure results, an `Eff` return is a built-not-run effect.
 
-Because reuse lives entirely in the `func` world, **a proc never needs to call a proc — and the
-language gives it no way to.** You can't factor a shared effectful step into a sub-proc; you factor it
+Because reuse lives entirely in the `func` world, **a system never needs to call a system — and the
+language gives it no way to.** You can't factor a shared effectful step into a sub-system; you factor it
 into a func that builds the `Eff`. So flatness isn't a checked rule with an error message — it's
-**unspellable**: an effect is inert data (it can't run anything), and a proc has no syntax to invoke
-another proc. The one back door — under-apply a proc to "build an `Eff`" from it, then run that from
-another proc — is closed by construction: **only an `extern` is inert when under-applied.** An extern
-minus its out-slots is just an opcode plus inputs — a value; a *proc* minus its out-slots is a
-*suspended computation*, exactly the runnable thunk the value world refuses to contain. So
-under-applying a proc is an **error**, not an `Eff` — there is no expression anywhere that turns a proc
-into one. (An optional `wrap` keyword may mark a build site for emphasis — `return wrap fwrite(…)` ≡
-`return fwrite(…)` — but it is never required and never changes what's wrappable.) The proc shrinks to a
-thin imperative shell: *run these effects, react, report via out-params.*
+**unspellable**: an effect is inert data (it can't run anything), and a `system` is not a value (it has no
+params, takes no caller, is reached only by the schedule). The one back door — turn a runnable unit into a
+value to "build an `Eff`" from it, then run that from another system — is closed by construction: **only an
+`extern`/`#foreign` proc is inert when under-applied.** An extern minus its out-slots is just an opcode plus
+inputs — a value; a *system* is a *suspended computation*, exactly the runnable thunk the value world
+refuses to contain, and it cannot be under-applied at all. So there is no expression anywhere that turns a
+runnable unit into an `Eff`. (An optional `wrap` keyword may mark a build site for emphasis —
+`return wrap fwrite(…)` ≡ `return fwrite(…)` — but it is never required and never changes what's wrappable.)
 
-```arche
-// procs = flat effect LEAVES: run what funcs built (call it with out-slots), react, expose out-params.
-log_header :: proc(fd: int)(ok: bool) {
-  line(fd, "id,price,qty")(n:, err:);   // line() is a func building one Eff; the trailing (out:) runs it
-  ok = (err == 0);
-}
+The **`system`/`each`** is both the effect leaf *and* the composer: it runs what funcs built (calls each
+`Eff` with out-slots), threads their out-slots between steps, branches on results, and `insert`/`delete`s —
+all reading ambient pool state. The terminal extern/`#foreign` proc the `Eff` wraps is the floor.
+
 ```
-
-And the `system` is the **composer**: it runs leaves and threads their out-slots between them. It
-performs no effect itself — the doing is in procs.
-
-```arche
+// the effect leaf + composer is a `system` (reads ambient state) or an `each` (per-row fan).
+// it runs what funcs built, threads out-slots, branches.
 serve :: system {
   open_conn(8080)(fd:, ok:);          // run a leaf, capture its out-slots
-  if ok { handle_msg(fd)(done:); }    // thread fd into the next leaf
+  if ok {
+    line(fd, "id,price,qty")(n:, err:);   // line() is a func building one Eff; the trailing (out:) runs it
+    handle_msg(fd)(done:);                // thread fd into the next step
+  }
 }
 ```
 
-Three kinds, and they don't overlap once you stop putting effects in the system: **func builds, proc
-does, system composes.** A proc is a leaf because nothing inside it can invoke a proc; the one thing
-that *can* invoke procs — and thread data between them — is the `system`. That asymmetry (leaf vs.
-composer) is the whole shape, and it falls out of the syntax, not a rule.
+The kinds don't overlap: **func builds, system/each runs-and-composes, map computes in parallel.** A
+system is a flat leaf because nothing inside it can invoke a system; what *orders* systems — without
+threading the stack — is the **schedule** (§9). That asymmetry (leaf vs. schedule) is the whole shape, and
+it falls out of the syntax, not a rule.
 
-(Whether `proc` even needs to be a written keyword is a smaller, open question: a body that runs an
-`eff` is impure and could be *inferred* as a proc. The trade is arche's explicit-coloring ethos — an
-inferred color is a hidden color — so this doc keeps the marker. Either way, the no-nesting property
-is structural, not a checked ban.)
+(The effect color is **written, not inferred**: a body that runs an `eff` is a `system`/`each`, declared as
+such — matching arche's explicit-coloring ethos (an inferred color is a hidden color). Either way, the
+no-nesting property is structural, not a checked ban.)
 
 ## 4. The primitive boundary: where effects come from
 
-A careful reader asks: if a `func` only ever *builds* effects and a `proc` only *runs* them, **who makes
-the atom?** Where does the very first `Eff` come from? The answer is a hard rule with a soft surface:
+A careful reader asks: if a `func` only ever *builds* effects and a `system`/`each` only *runs* them, **who
+makes the atom?** Where does the very first `Eff` come from? The answer is a hard rule with a soft surface:
 
 > **No arche code can create an atomic effect. Pure code can transform, compose, and choose effects —
 > never manufacture one. Every atom is a *primitive*: an irreducible interaction the language cannot
@@ -196,7 +204,7 @@ audited effect list gets *smaller and more honest* — the genuine syscall/MMIO 
 world-boundary leaf." A freestanding/self-hosted arche wants sibling surfaces for the same concept,
 which the effect model wraps identically:
 
-```arche
+```
 #foreign {
   write   :: extern proc(fd: int, buf: []char, n: int)(ret: int, err: int)   // C-ABI call (today)
 }
@@ -208,7 +216,7 @@ which the effect model wraps identically:
 ```
 
 Each is the same thing the model already handles: an inert, world-touching leaf you compose into `Eff`
-and run in a proc. The *model is unchanged*; only the primitive vocabulary grows. And the invariant
+and run in a system. The *model is unchanged*; only the primitive vocabulary grows. And the invariant
 holds at every stage of self-hosting: pure code can never mint an atom, so the closed primitive set
 always *is* the program's complete, auditable effect surface.
 
@@ -229,7 +237,7 @@ that shape: a thin builder around one primitive.
 
 This needs no `Result` type and no generic sum: **the result/status is just an out-slot.** A read returns
 its byte count (or negative errno) as the `Eff`'s out-slot; the caller branches on it. Fallibility is *data
-in an out-slot*, reacted to in the proc/system — the model's failure-as-data (§7).
+in an out-slot*, reacted to in the system/each — the model's failure-as-data (§7).
 
 ### The buffer model — a kernel-written buffer is the caller-allocated OUT param
 
@@ -243,7 +251,7 @@ caller-allocated **OUT** param.
   **`_`** at the call site — a C-ABI shadow that supplies no value. The same name in both lists marks the
   param **in-out** (kernel reads+writes in place); the shadow surfaces as the W0012 lint.
 
-```arche
+```
 read :: func(fd: int, len: int) -> Eff([]char, i64) {
   return sys_read(fd, _, len);            // `_` is the C-ABI in-slot; the buffer is the OUT
 }
@@ -262,7 +270,7 @@ through a read-only borrow.
 kernel-written **OUT buffer**. When the finalizer folds a buffer, the buffer is **run-internal scratch** the
 caller never sees; the finalizer's result is what's bound.
 
-```arche
+```
 clock_mono :: func() -> Eff([2]i64) { return sys_clock(1, _); }      // single out-slot: the timespec
 ms_of      :: func(ts: []i64) -> i64 { return ts[0]*1000 + ts[1]/1000000; }
 now_ms     :: func() -> Eff(i64) { return clock_mono() |> ms_of; }   // the cook rides INSIDE the Eff
@@ -281,14 +289,18 @@ always the genuine primitive, so the spine stays depth-1 and no ban is touched.
    to a value with `|> fin` (`os.now_ms`), or bind the buffer and cook at the call site.
 3. **Caller-built input buffer** → build it element-by-element in the func, pass it (`os.sleep_ms` builds a
    timespec, then `nanosleep(req)`). Input builds are free funcs — the buffer is live *before* the run.
-4. **Result-dependent (monadic) sequencing** → STAYS a proc (the one exception, below).
+4. **Result-dependent (monadic) sequencing** → not a func/`Eff` and not a non-foreign `proc`; the monadic
+   loop lives in the consuming **`system`/`each`**, or decomposes across systems (below).
 
 **The one genuine exception is result-dependent convenience.** A wrapper whose *internal* sequencing is
 monadic — `io.fread_line` (read char-by-char until `\n`), a retry loop, a framed "read a length then read
 that many bytes" — cannot be a func/`Eff` (that needs a free monad: continuations, allocation, unbounded).
-It is the **only** stdlib wrapper that stays a `proc`: the lib exposes the *leaf* as a func→`Eff`
-(`read1 -> Eff(char,int)`) and the monadic loop lives in the consuming proc/system — the cost is the loop
-isn't shared. The principled long-term home is a fourth construct (the `routine`, see §9).
+The lib exposes the *leaf* as a func→`Eff` (`read1 -> Eff(char,int)`) and the monadic loop lives in the
+consuming **`system`/`each`** — the cost is the loop isn't shared. Sharing it is **ECS decomposition**, not a
+new kind: a producer system writes a column (the assembled line), a consumer system reads it. (The single
+sanctioned program-wide holdout is `stdlib/csv/csv.arche`'s archetype-generic `#each_field` reflective
+`load`, which carries `@allow(proc_not_primitive)` pending a first-class "archetype-targeted load system"
+feature — the one place a non-foreign `proc` is still written.)
 
 ## 5. The applicative/imperative line (the one subtlety worth memorizing)
 
@@ -305,7 +317,7 @@ applicative product — combine N INDEPENDENT effects)**. `zip(e1, …, eN)` run
 `zip(…) |> fin` folds **all** the slots through one finalizer (the single-out `|>` is the N=1 case).
 Independence is the whole point — no out-slot feeds another effect's *shape*, so order is free:
 
-```arche
+```
 // gfx: a window's framebuffer + dims as one Eff — three independent backend reads, no combiner
 frame :: func(h: window) -> Eff([]int, int, int) { return zip(gfx_be_frame(h), gfx_be_w(h), gfx_be_h(h)); }
 gfx.frame(handle)(px:, w:, h:);                                  // bind all three out-slots at once
@@ -316,19 +328,20 @@ argv :: func(i: int) -> Eff([]char) { return zip(os_argv(i), os_argv_len(i)) |> 
 
 (`zip(…) |> fin` is supported for scalar slots/returns today; a *slice* slot/return — a bare-pointer +
 length recombine like `os.argv`'s `raw[0:n]` — fights checked-slice safety and is not yet supported, so
-`os.argv` itself stays a proc for now. See "Deferred" below.)
+`os.argv`'s recombine stays imperative (in a system) for now. See "Deferred" below.)
 
-**Result-dependent sequencing → the proc.** When the *next* effect's shape depends on the *previous*
+**Result-dependent sequencing → the system/each.** When the *next* effect's shape depends on the *previous*
 one's runtime result — "read a length header, then read *that many* bytes" — you cannot pre-build it.
 You must run the first, look at what came back, then run the second. That's the **monadic** rung, and
-it lives in the proc, where running an effect (supplying its out-slots) executes inline and binds the
-result:
+it lives in a `system`/`each`, where running an effect (supplying its out-slots) executes inline and binds
+the result:
 
-```arche
-handle_msg :: proc(fd: int)(ok: bool) {
+```
+// per-connection result-dependent read: an `each` fan over the Conn pool, writing the `ok` column
+handle_msg :: each (query { fd, ok }) {
   hdr: [1]char;
   read(fd, hdr, 1)(got:, err:);             // run (call with out-slots); non-deterministic — peer decides
-  if err != 0 || got == 0 { ok = false; return; }   // react
+  if err != 0 || got == 0 { ok = 0; return; }   // react
   len := int(hdr[0]);                         // the peer chose this at runtime
   body: [256]char;
   read(fd, body, len)(got:, err:);            // dependent: shape decided by the first read
@@ -336,10 +349,10 @@ handle_msg :: proc(fd: int)(ok: bool) {
 }
 ```
 
-The slogan: **funcs compose the known part of the effect graph as a value; the proc is the imperative
-shell that runs it, branches on what actually came back, and reports out.** That's the func/proc split
-done honestly — value vs. computation, à la call-by-push-value, with the monadic tail confined to one
-flat leaf instead of smeared across a call stack.
+The slogan: **funcs compose the known part of the effect graph as a value; the system/each is the imperative
+shell that runs it, branches on what actually came back, and writes results to pool columns.** That's the
+func/system split done honestly — value vs. computation, à la call-by-push-value, with the monadic tail
+confined to one flat leaf instead of smeared across a call stack.
 
 ### What collapses into an `Eff` — and what doesn't
 
@@ -349,31 +362,35 @@ applicative/imperative line restated as a rule, and it has three cases:
 | a series of… | composed by | the result is | which ordering |
 |---|---|---|---|
 | effects (externs) | a **func** | one `Eff` value | **static only** (applicative) |
-| effects, result-dependent | a **proc** body | nothing — imperative steps | dynamic, but not a value, not reusable |
-| **procs** | a **system** | a schedule step | dynamic, branch on out-slots |
+| effects, result-dependent | a **`system`/`each`** body | nothing — imperative steps | dynamic, but not a value, not reusable |
+| **systems** | the **schedule** (`#run`) | a schedule step | dynamic order, data-coupled |
 
-- **Yes — a static series of effects collapses into one `Eff`.** This is the intended way two procs
+- **Yes — a static series of effects collapses into one `Eff`.** This is the intended way two systems
   *share* an effectful step: factor the sequence into a func that composes the wrapped externs into one
   value. The composition primitives are **`zip`** (the applicative product — combine N *independent*
   effects, yielding the union of their out-slots), **`seq`** (run-then-discard ordering), and **`|>`**
   (fmap a pure cook over the result). When run, the value performs its effects and yields its out-slots.
-  Crucially this adds **breadth, not depth** — the run unfolds to `system → proc → {extern, extern, …}`,
+  Crucially this adds **breadth, not depth** — the run unfolds to `system → {extern, extern, …}`,
   still depth-1, because the composition happened in the value world (where nesting is free) and flattens
-  to terminal externs with no proc in between.
+  to terminal externs with no system in between.
 
 - **No — a result-dependent series cannot be an `Eff`.** The moment a later effect's *input* is an
   earlier effect's *output* (`read` a length, then `read` that many bytes), you'd need a free *monad*
   carrying runtime continuations — allocation, unbounded depth, exactly what arche refuses. So it stays
-  imperative, inside one proc (the `handle_msg` example above).
+  imperative, inside one system/each (the `handle_msg` example above).
 
-- **No — a series of *procs* never collapses into a value at all.** A proc isn't a value (a proc minus
-  its out-slots is a suspended computation, not inert data), so nothing ingests several procs and emits
-  one `Eff`. What *sequences* procs — threading out-slots, branching on results — is a **`system`**, and
-  it produces a schedule step, not a value. There is deliberately no path from "several procs" to "one
-  value": that path is precisely what would make procs first-class and collapse the flatness.
+- **No — a series of *systems* never collapses into a value at all.** A system isn't a value (it has no
+  params and can't be under-applied), so nothing ingests several systems and emits one `Eff`. What
+  *sequences* systems — ordering them, coupling them through pool data — is the **schedule** (`#run`), and
+  it produces a schedule step, not a value. There is deliberately no path from "several systems" to "one
+  value": that path is precisely what would make systems first-class and collapse the flatness.
 
 ### Diagnostics the model enforces
 
+- **W0030 `proc_not_primitive`** — a `proc` outside `#foreign`/`@syscall`/`@intrinsic`/`@drop` (error-by-default).
+  Pure logic → a `func`; effects or pool access → a `system`/`each`/`map`; a result-dependent sequence →
+  decompose across systems. The single sanctioned opt-out is `@allow(proc_not_primitive)` on `csv.load`.
+- **E0225** — a decl named `main` (the entry is a `#run` schedule, never a `main`).
 - **E0223 `extern_multi_out`** — a `#foreign` proc may declare at most ONE out-*only* out-param (it maps to
   the C return value); additional kernel-written outputs must be **in-out buffer** params (a name in both
   the in- and out-list). More than one out-only out-param used to silently miscompile; it is now rejected.
@@ -387,9 +404,11 @@ applicative/imperative line restated as a rule, and it has three cases:
 
 - **`zip(…) |> fin` with a slice slot or slice return** is unsupported: a bare-pointer + length recombine
   (`os.argv`: `raw[0:n]`) has no sound length to hand the cook's slice param, and fights checked-slice
-  safety (`!undefined` is forbidden). Scalar slots/returns work; `os.argv` therefore stays a **proc**.
-- **Result-dependent (monadic) sequencing** stays in a proc — the applicative/imperative line above; the
-  principled long-term home is the `routine` construct (§9).
+  safety (`!undefined` is forbidden). Scalar slots/returns work; `os.argv`'s recombine therefore stays
+  imperative (in a system) for now.
+- **Result-dependent (monadic) sequencing** stays in a `system`/`each` — the applicative/imperative line
+  above; sharing it is **ECS decomposition** (a producer system writes a column, a consumer reads it), not a
+  new kind.
 - **Higher-order systems** (a system parameterized by a body) are deliberately absent: that would hoist
   iteration into a value and reintroduce the depth the model exists to forbid. Repeated `each (query {…})`
   fan headers across draw systems are structural skeleton, not duplication to abstract away.
@@ -418,18 +437,18 @@ not a law.)
   runs; a selective gates *which* effects execute but never hides *what* effects *could* (the scheduler
   over-approximates: "this might run `fail`"). So the compiler can still batch a column into one kernel,
   reorder `zip`'s independent legs, and fuse `|>` cooks. Inspectability survives the conditional.
-- **A provably bounded stack** (§6): the spine is `system → proc → extern`, depth-1, computable.
+- **A provably bounded stack** (§6): the spine is `system → extern`, depth-1, computable.
 
 **What it costs:**
 - **No value-level `bind`** — the one real limit. Result-dependent sequencing (a later effect's *shape*
-  from an earlier's *result*) can't be a value; it runs imperatively in a proc (§5). The selective rung
+  from an earlier's *result*) can't be a value; it runs imperatively in a system/each (§5). The selective rung
   buys conditional *execution* of a static set; `bind` would make the set itself depend on runtime
   values — unbounded, heap-needing — the line arche won't cross. (A self-recursive selective builder is
   rejected for exactly this reason: it would be a free monad.)
 
 The through-line: **the `Eff` stays a fully static, compile-time-foldable value with a statically-known
 effect set.** Conditional *execution* (selective) is in; making the effect *set* depend on a runtime
-value (`bind`) is out — pushed to the proc/system, or left unbuilt until a concrete case forces a
+value (`bind`) is out — pushed to the system/each, or left unbuilt until a concrete case forces a
 stronger algebra. That discipline is what makes "effects as values" cost zero runtime machinery.
 
 (`assert` rides on this: `assert(c, m) = whenS(c == 0, fail(m))` — a pure `func -> Eff()`, run with `()`.
@@ -448,7 +467,7 @@ something arche already has:
 2. **Columns, so effects compose into a command buffer.** This is the payoff. Because an `Eff` is a
    value, a pure `func`/`map` can build a *column* of them, and one fanned `each` can drain it:
 
-   ```arche
+   ```
    ops: [N]Eff(int, int);
    ops[i] = write_b(fd, fmt_row(...));   // pure: build effect values into a column (no I/O yet)
 
@@ -460,50 +479,53 @@ something arche already has:
    structural ops to all effects**. You didn't invent a mechanism; you noticed you already had one.
 
 3. **Static dispatch, so the stack bound is a theorem.** No dynamic handler search, no captured
-   continuations. The effect spine is `system → proc → terminal extern`, depth 1. The whole-program
+   continuations. The effect spine is `system → terminal extern`, depth 1. The whole-program
    worst-case stack is computable (every callback is monomorphized; there are no runtime fn-pointers),
    so "this program will never blow its stack" is a thing the compiler can *say*.
 
-4. **Static dispatch, so effects are testable without mocks.** The `system` chooses *which* leaf runs
-   — statically. So the same reactive logic runs against live input in production and against a
-   recorded tape in a test, by swapping one `run` at the composer. No mock framework, no DI container,
-   no runtime indirection: a compile-time substitution, which is the only kind arche has anyway.
+4. **Static dispatch, so effects are testable without mocks.** The schedule chooses *which* leaf runs
+   — statically. So the same reactive logic (a `func`/`map`) runs against live input in production and
+   against a recorded tape in a test, by scheduling a different input system at the seam. No mock
+   framework, no DI container, no runtime indirection: a compile-time substitution, which is the only
+   kind arche has anyway.
 
-   ```arche
-   play   :: system { run game_step(keys);  }   // live
-   verify :: system { run game_step(tape);  }   // recorded — deterministic, headless, real logic
+   ```
+   play   :: system { /* drain the live InputEvent pool, step the sim */ }   // live
+   verify :: system { /* drain a recorded tape pool, step the sim */ }       // recorded — deterministic, headless, real logic
+   // the same sim `map` runs either way; the schedule names `play` or `verify`
    ```
 
 5. **Data-oriented by construction.** The pure compute (`map`), the effect-builders (`func`), and the
-   thin effect leaves (`each`/`proc`) all speak the same column language. Effects don't sit *outside*
+   thin effect leaves (`each`/`system`) all speak the same column language. Effects don't sit *outside*
    the DOD model in some monadic side-channel; they *are* rows and kernels.
 
 ## 7. Worked example: an ETL pipeline, top to bottom
 
-```arche
+```
 bucket  :: map query { price, price_bucket } { price_bucket = price / 10.0; }   // pure column op
 fmt_row :: func(p: float, q: int, b: float) -> []char {                          // pure row builder
   return f32(p) <> "," <> int(q) <> "," <> f32(b) <> "\n";
 }
 write_b :: func(fd: int, buf: []char) -> Eff(int, int) { return fwrite(fd, buf); }  // under-applied extern = Eff
 
-write_row :: each query { price, quantity, price_bucket, ok } (fd: int) {   // effect leaf, fanned
-  eff := write_b(fd, fmt_row(price, quantity, price_bucket));
-  eff(n:, err:);
-  ok = (err == 0);                                                          // per-row failure as data
-}
-
-write_out :: system {                       // composer: open, fan, close; threads fd
+write_out :: system {                       // leaf + composer: open, fan, close; fd is a captured local
   open_csv("…/out.csv")(fd:, ok:);
-  if ok { run write_row(fd); close_csv(fd); }
+  if ok {
+    each (query { price, quantity, price_bucket, ok }) {   // inline fan, captures fd from this scope
+      eff := write_b(fd, fmt_row(price, quantity, price_bucket));
+      eff(n:, err:);
+      ok = (err == 0);                                     // per-row failure as data
+    };
+    close_csv(fd)();
+  }
 }
 
-#run once(seq({ run(load), run(bucket), run(write_out) }))   // a one-shot ETL: run once, then halt
+#run once(seq({ load, bucket, write_out }))   // a one-shot ETL: run once, then halt (leaves are bare names)
 ```
 
 The shape to notice: *all* the logic is pure (`bucket`, `fmt_row`), the effect intent is a value
-(`write_b` → `Eff`), the leaf is a thin proc that runs the effect and records failure as a column
-(`ok`), and the system just sequences. There is no `main`, no nesting, no proc calling a proc. Failure
+(`write_b` → `Eff`), the inline `each` runs the effect and records failure as a column (`ok`), and the
+schedule just sequences. There is no `main`, no nesting, no system calling a system. Failure
 is **data**, not a thrown exception clawing up a stack that doesn't exist.
 
 ## 8. Honest costs
@@ -511,15 +533,15 @@ is **data**, not a thrown exception clawing up a stack that doesn't exist.
 No free lunches; here are the bills.
 
 - **The reuse hole is narrow — but real.** A *statically-ordered* effectful sub-step shared by two
-  procs **does** factor: collapse the wrapped externs into one func-built `Eff` and run that in each
-  proc (§5). What can't be shared is a **result-dependent** sequence — where a later effect's input is
+  systems **does** factor: collapse the wrapped externs into one func-built `Eff` and run that in each
+  system (§5). What can't be shared is a **result-dependent** sequence — where a later effect's input is
   an earlier one's output. It can't be a func (impure), can't be an `Eff` (that's a free monad —
-  unbounded, allocating), and can't be a sub-proc (procs aren't values). So that specific shape is
-  either duplicated across procs or lifted to a `system`. Not "DRY shrinks for all effects" — only for
-  the monadic tail.
+  unbounded, allocating), and can't be a sub-system (systems aren't values). So that specific shape is
+  either duplicated across systems or **decomposed across systems** (a producer writes a column, a
+  consumer reads it). Not "DRY shrinks for all effects" — only for the monadic tail.
 - **Result-dependent sequencing can't be a value.** You can't pre-build `eff2` from `eff1`'s runtime
-  result; that case runs the effects inline in a proc and branches (§5). The model is honest that this
-  is the applicative→monadic boundary, not a bug.
+  result; that case runs the effects inline in a system/each and branches (§5). The model is honest that
+  this is the applicative→monadic boundary, not a bug.
 - **Varargs/formatting is the hard descriptor.** A `printf`-style effect with heterogeneous args
   strains "bounded value." The fix is a bounded *builder* (associative bounded-append, identity =
   empty) rather than a format-string descriptor — a pure algebra, still no heap.

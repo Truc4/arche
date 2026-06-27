@@ -9,7 +9,8 @@ of map / system(query) is a per-entity fan" description, which was wrong on two 
 Everything below that touches pool data is **handed columns** by its query — not per-entity scalars, not a
 hidden row cursor. What differs is what each one is *allowed to do* with those columns:
 
-- **`func`** — a pure value. Reads no pool/global state. **Computes** (returns values) and **builds `Eff`
+- **`func`** — a pure value. Reads no pool/global state. **Computes** (produces results — either a single
+  `-> T` return or an **out-param list** `func(in)(out, …)`, the form `proc` used to own) and **builds `Eff`
   values**. Never runs an effect. Its **return must be consumed** — calling a func and discarding the result
   is a no-op the compiler deletes (there were no side effects to keep). To thread state you rebind the
   return: `px := paint(move px, …)`.
@@ -29,8 +30,11 @@ hidden row cursor. What differs is what each one is *allowed to do* with those c
 
 Removed: **`run`** — both the `run <map>` **statement** and the `run(...)` Schedule **constructor** are gone.
 A map/each/system is dispatched only by **naming it in `#run`**; a system body never dispatches. (`run` is no
-longer a keyword.) Retiring: **`proc`** as a declared kind — a "procedure" is composed (a `func` that builds
-an `Eff` + a `system` that runs it); `proc` survives for now as the **FFI/`#foreign`** C-boundary form.
+longer a keyword.) Removed: **`proc`** as a declared kind — a "procedure" is composed (a `func` that builds
+an `Eff`, or fills out-params, + a `system`/`each` that runs it). A non-foreign `proc` is **W0030
+`proc_not_primitive`** (error-by-default); `proc` survives **only** as the foreign/primitive boundary form —
+`#foreign` externs, `@syscall`, `@intrinsic`, and `@drop` destructor hooks. There is no `main` either (a decl
+named `main` is **E0225**); the entry is a `#run` schedule.
 
 > `system(Q)` is now genuinely **columnar** (whole-column ops + boundary effects, no per-element row loop).
 > The per-element fan that used to be smuggled into `system(query)` is now its own kind, **`each`**.
@@ -110,9 +114,11 @@ arche — see slices).
 
 ## A procedure is composed, not a kind
 
-There is no `proc` — and more deeply, **a "procedure" (a multi-step effectful action) is not a declared kind
-at all.** It is *composed*: pure `func`s build `Eff` values, `|>` threads a pure transform through an effect,
-and a `system` runs the result with `()`. The effectfulness lives in the **composition**, never in a keyword.
+There is no non-foreign `proc` — and more deeply, **a "procedure" (a multi-step effectful action) is not a
+declared kind at all.** It is *composed*: pure `func`s build `Eff` values (or fill out-params), `|>` threads a
+pure transform through an effect, and a `system`/`each` runs the result with `()`. The effectfulness lives in
+the **composition**, never in a keyword. (`proc` itself now only spells the foreign/primitive boundary —
+`#foreign`/`@syscall`/`@intrinsic`/`@drop`; see the kind table above.)
 
 So "draw one circle as a procedure" means *compose* it from a pure func + a boundary effect —
 

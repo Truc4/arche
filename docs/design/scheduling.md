@@ -67,7 +67,7 @@ the sim `step` is its own scheduled kernel. Fixed-timestep **catch-up falls out 
 behind, `pace` doesn't sleep, so the loop spins and re-runs `step` next pass until caught up. No schedule
 condition gates any of it.
 
-```arche
+```
 DT :: 16;
 [1]Clock(1);
 Clock :: arche { last :: i64  bank :: i64 }        // clock state in a [1] pool, not a mutable global

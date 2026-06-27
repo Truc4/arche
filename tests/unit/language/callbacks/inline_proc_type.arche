@@ -1,0 +1,17 @@
+// A callback param can be an inline proc/func signature, not just a named alias.
+// RUN: %arche build -o %t %s && %t | grep -c "hi" | grep "2"
+#import { fmt }
+twice :: proc()() {
+  fmt.printf("hi\n");
+}
+
+go :: proc(f: proc()())() {
+  f()();
+  f()();
+}
+
+entry :: system {
+  go(twice)();
+}
+
+#run entry

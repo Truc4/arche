@@ -1,0 +1,23 @@
+// A callback threaded through nested higher-order procs (`outer` → `inner` → `cb`),
+// each monomorphized per call site; the callback arg is erased from the ABI.
+// RUN: %arche build -o %t %s && %t | grep "hello"
+#import { fmt }
+h :: proc()();
+
+hello :: proc()() {
+  fmt.printf("hello\n");
+}
+
+inner :: proc(cb: h)() {
+  cb()();
+}
+
+outer :: proc(cb: h)() {
+  inner(cb)();
+}
+
+entry :: system {
+  outer(hello)();
+}
+
+#run entry

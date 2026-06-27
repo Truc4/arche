@@ -1,0 +1,18 @@
+// A callback with an argument forwarded through a higher-order proc.
+// RUN: %arche build -o %t %s && %t | grep "n=7"
+#import { fmt }
+logger :: proc(n: int)();
+
+log_it :: proc(n: int)() {
+  fmt.printf("n=%d\n", n);
+}
+
+apply :: proc(cb: logger)() {
+  cb(7)();
+}
+
+entry :: system {
+  apply(log_it)();
+}
+
+#run entry

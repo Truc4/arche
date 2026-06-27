@@ -88,7 +88,8 @@ static void fixture_free(LowerFixture *fx) {
 
 static void test_lower_c_style_for(void) {
 	test_start("c-style for: init/cond/incr set");
-	LowerFixture *cst = parse_and_analyze("Count :: proc() {\n"
+	LowerFixture *cst = parse_and_analyze("@allow(proc_not_primitive)\n"
+	                                      "Count :: proc() {\n"
 	                                      "  for (i: int = 0; i < 10; i += 1) {\n"
 	                                      "  }\n"
 	                                      "}\n");
@@ -120,7 +121,8 @@ static void test_lower_c_style_for(void) {
 
 static void test_lower_while_for(void) {
 	test_start("while-style for: cond set, no init/incr/var");
-	LowerFixture *cst = parse_and_analyze("Loop :: proc() {\n"
+	LowerFixture *cst = parse_and_analyze("@allow(proc_not_primitive)\n"
+	                                      "Loop :: proc() {\n"
 	                                      "  done: int = 0;\n"
 	                                      "  for (;done < 5;) {\n"
 	                                      "    done += 1;\n"
@@ -155,7 +157,8 @@ static void test_lower_while_for(void) {
 
 static void test_lower_infinite_for(void) {
 	test_start("infinite for: all fields NULL");
-	LowerFixture *cst = parse_and_analyze("Loop :: proc() {\n"
+	LowerFixture *cst = parse_and_analyze("@allow(proc_not_primitive)\n"
+	                                      "Loop :: proc() {\n"
 	                                      "  for {\n"
 	                                      "    break;\n"
 	                                      "  }\n"
@@ -190,7 +193,8 @@ static void test_lower_infinite_for(void) {
 
 static void test_lower_single_let_normalized(void) {
 	test_start("single → names[0]");
-	LowerFixture *cst = parse_and_analyze("Foo :: proc() {\n"
+	LowerFixture *cst = parse_and_analyze("@allow(proc_not_primitive)\n"
+	                                      "Foo :: proc() {\n"
 	                                      "  x: int = 42;\n"
 	                                      "}\n");
 	ASSERT(cst, "parse/semantic failed");
@@ -223,7 +227,8 @@ static void test_lower_single_let_normalized(void) {
 
 static void test_lower_type_int(void) {
 	test_start("resolved_type int → HIR_TYPE_INT");
-	LowerFixture *cst = parse_and_analyze("Foo :: proc() {\n"
+	LowerFixture *cst = parse_and_analyze("@allow(proc_not_primitive)\n"
+	                                      "Foo :: proc() {\n"
 	                                      "  x: int = 1;\n"
 	                                      "  y := x;\n"
 	                                      "}\n");
@@ -259,6 +264,7 @@ static void test_lower_decl_use_skipped(void) {
 	/* A `use` of a module that was never registered (no lower_add_module) inlines nothing,
 	 * so the syntax tree's SN_USE_DECL must produce no AST decl — only the proc remains. */
 	LowerFixture *cst = parse_and_analyze("#import { fake_mod }\n"
+	                                      "@allow(proc_not_primitive)\n"
 	                                      "Foo :: proc() {\n"
 	                                      "}\n");
 	ASSERT(cst, "parse/semantic failed");
