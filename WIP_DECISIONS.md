@@ -61,19 +61,39 @@ branching is **pool membership** (a consumer `each` over an empty pool is a no-o
    build_path to span APIs + updates router's test); or (b) a **copy-into-buffer Eff** (`str.copy(slice)
    -> Eff([]char,int)` filling a buffer via out-slot) so router/build_path keep their `path` buffer API.
 2. **`csv.load`** — a compile-time-reflective archetype-generic loader (`proc(arch: archetype)` +
-   `#each_field`). Fits neither func (pure) nor system (no args). Either a new "archetype-targeted load
-   system" feature, or decompose into per-app load systems + pure helpers (`find_byte`/`name_eq`/
-   `field_at`/`cell` already funcs). Many benchmark callers. **User said: "could be a system, maybe needs
-   new features."**
+   `#each_field`). Fits neither func (pure) nor system (no args). **DEFERRED — sanctioned as the single
+   `proc` exception via `@allow(proc_not_primitive)` + a doc comment on the decl (`stdlib/csv/csv.arche`).**
+   The real fix is a future first-class "archetype-targeted load system" feature; until that lands `load`
+   stays a `proc` under the explicit allow. It is the ONE tracked debt — no other new procs. Pure helpers
+   (`find_byte`/`name_eq`/`field_at`/`cell`) are already funcs.
 3. **`insert` requires every column** (no partial insert). Intended, or should unset columns default?
    Surfaced writing the web-server `boot` (a wide archetype).
 4. **Full web-server rewrite** to the rpg shape (a `Conn` pipeline of systems). Blocked on (1); also needs
    a body/response representation (variable-length body in a pool column) decided.
-5. **When to promote the proc lints** (`W0030 proc_not_primitive` + `func_impure` W0003 +
-   `pool_index_outside_query` W0029) to error-by-default — only after ALL stdlib is proc-clean
-   (csv.load/respond resolved).
+5. **When to promote the proc lints** — DONE. `W0030 proc_not_primitive` is error-by-default and the whole
+   suite is proc-clean (the only non-foreign/non-`@drop` proc anywhere is the `@allow`-sanctioned
+   `csv.load`).
+
+## LANDED — `func` absorbs out-params; `proc` foreign-only; `main` removed
+
+- **`func` now carries the out-parameter form.** A `func` produces results EITHER as `-> T` OR as an
+  out-param list `func(in)(out, …)` (the form `proc` used to own) — a pure multi-output / buffer-fill
+  callable. Parser (`parse_func_return` falls through to `parse_proc_out_list`), semantic (collect +
+  scope out-params on a DECL_FUNC; out-param resolution keyed on `current_proc` which is set to the func),
+  and lower (`SN_FUNC_EXPR` with out-params routes to `lower_proc_from` → the proc out-param ABI in
+  codegen). So a pure proc → `func`; an effectful proc → `system`/`each`; foreign/`@syscall`/`@intrinsic`/
+  `@drop` stay `proc`.
+- **Callbacks removed** — proc/func-typed callback PARAMS are gone (docs/design/callbacks-as-data.md);
+  continuation callbacks → producer/consumer + schedule, pure strategy → a `func` / `reduce`/`|>`.
+- **`main` is reserved (E0225).** A user decl named `main` is a hard error — the entry is `#run`. The
+  dead-code binary signal is now a `#run` presence (`ctx->entry_has_run`), not a `main` decl.
+- **rpg fixed.** A distinct subtype is usable as ANY type in its backing chain (tycheck `subtype_check`
+  walks the chain via `semantic_alias_backing_step`, not just the ultimate backing) — fixes reading a
+  `handle :: window` column as `window`. Component column types are declared INLINE on the archetype
+  (`{ handle :: window }`) so the column IS its backing (writable from backing); a SEPARATE `name :: T`
+  datasheet decl mints a distinct subtype that reads-as-backing but can't be written-from-backing (an
+  inline-vs-separate collapse asymmetry — a known compiler follow-up).
 
 ## Next up
 
 - Web-server / `bound` work (this file's topic) is on hold — see the open decisions above.
-- Separately, removing `main` as an entry point is tracked in `WIP_MAIN_REMOVAL.md`.

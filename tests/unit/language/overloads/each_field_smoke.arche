@@ -6,13 +6,14 @@ Pair :: arche { a :: int, b :: int }
   a: 10, b: 20,
 }
 
-@allow_pure_proc
+@allow(proc_not_primitive) // archetype-generic #each_field reflection — same class as csv.load (a proc)
 bump :: proc(arch: archetype) {
   #each_field f: int in arch {
     f[0] = f[0] + 1;
   }
 }
 
+@allow(proc_not_primitive) // archetype-generic #each_field reflection — same class as csv.load (a proc)
 dump :: proc(arch: archetype) {
   #each_field f: int in arch {
     if (f.index == 0) {

@@ -1,7 +1,8 @@
-// Several computed results come from a proc's out-list, not a func (a func returns one value).
+// Several computed results are an out-param list on a `func` — a func that produces multiple results
+// (the proc form, now spelled `func`). The `(s:, d:)` bind destructures them at the call site.
 // RUN: %arche build -o %t %s && %t | grep "s=13 d=7"
 #import { fmt }
-sum_diff :: proc(a: int, b: int)(s: int, d: int) {
+sum_diff :: func(a: int, b: int)(s: int, d: int) {
   s = a + b;
   d = a - b;
 }

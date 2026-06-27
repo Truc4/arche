@@ -8,6 +8,7 @@ res :: opaque;
   res_close :: proc(own r: res);
 }
 @allow(unused_function)
+@allow(proc_not_primitive) // consumes an owned opaque + runs its @drop on every path (effect leaf)
 both :: proc(own f: res) {
   e := 0;
   if (e == 1) {

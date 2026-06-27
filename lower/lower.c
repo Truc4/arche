@@ -2846,6 +2846,16 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					 * called at runtime; emit no decl (sums have no runtime representation yet). */
 					if (g_lower_sem && nm && semantic_func_is_ctfe_only(g_lower_sem, nm))
 						return NULL;
+					/* A func with an out-param list produces results via the same ABI `proc` used; lower it
+					 * to a proc decl (HIR/codegen are structurally identical — the func/proc distinction is
+					 * purity, enforced in semantic, not a codegen shape). */
+					if (sv_count(rhs, SN_OUT_PARAM) > 0) {
+						HirDecl *pd = lower_proc_from(rhs, nm);
+						if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc &&
+						    syntax_decl_has_intrinsic_decorator(d))
+							pd->data.proc->is_intrinsic = 1;
+						return pd;
+					}
 					HirDecl *fd = lower_func_from(rhs, nm);
 					/* `@intrinsic`: a bodyless PURE primitive (e.g. `bound(p: rawptr, n) -> []char`);
 					 * codegen emits a built-in instruction at call sites, not a real function. */

@@ -1,62 +1,50 @@
-// W0013: warn on a top-level func/proc never reachable from a root (Rust `dead_code`).
-// Roots: main, externs/#foreign, module decls, `_`-prefixed, @allow'd. Reachability is transitive
-// and handles mutual recursion (an unreachable cycle still warns for every member).
+// W0013: warn on a top-level func never reachable from a root (Rust `dead_code`).
+// Roots: the `#run` entry (and what it transitively reaches), externs/#foreign, module decls,
+// `_`-prefixed, @allow'd. Reachability handles mutual recursion (an unreachable cycle still warns
+// for every member).
 //
-// Exactly these warn: `dead_proc`, `c_only` (c↔d unreachable cycle), `d_only`. That's 3.
+// Exactly these warn: `dead_func`, `c_only` (c↔d unreachable cycle), `d_only`. That's 3.
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0013 unused_function") -eq 3
-// RUN: %build/arche-analyzer --dump %s | grep -qF "W0013 unused_function 0 function 'dead_proc'"
+// RUN: %build/arche-analyzer --dump %s | grep -qF "W0013 unused_function 0 function 'dead_func'"
 // RUN: %build/arche-analyzer --dump %s | grep -qF "W0013 unused_function 0 function 'c_only'"
 // RUN: %build/arche-analyzer --dump %s | grep -qF "W0013 unused_function 0 function 'd_only'"
-// These must NOT warn (reached from main, _-prefix, @allow, callback-by-name, entry point):
+// These must NOT warn (reached from the entry, _-prefix, @allow):
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'reached_func'") -eq 0
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'reached_proc'") -eq 0
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'used_cb'") -eq 0
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function '_scratch'") -eq 0
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'quiet'") -eq 0
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "unused_function 0 function 'hush'") -eq 0
 #import { fmt }
 
-cb       :: proc()();
-run_task :: proc(on_done: cb)() {
-  on_done()();
-}
-
 reached_func :: func(a: int) -> int {
   return a + 1;
 }
-reached_proc :: proc() {
-  fmt.print("reached")(_:);
-}
-used_cb :: proc() {
-  fmt.print("cb")(_:);
-}
 
-dead_proc :: proc() {
-  fmt.print("dead")(_:);
+dead_func :: func(a: int) -> int {
+  return a + 2;
 }
-_scratch :: proc() {
-  fmt.print("scratch")(_:);
+_scratch :: func(a: int) -> int {
+  return a + 3;
 }
 @allow(unused_function)
-quiet :: proc() {
-  fmt.print("quiet")(_:);
+quiet :: func(a: int) -> int {
+  return a + 4;
 }
 @allow(dead_code)
-hush :: proc() {
-  fmt.print("hush")(_:);
+hush :: func(a: int) -> int {
+  return a + 5;
 }
 
-// mutually-recursive but unreachable from main — both must warn.
-c_only :: proc() {
-  d_only()();
+// mutually-recursive but unreachable from the entry — both must warn.
+c_only :: func(a: int) -> int {
+  return d_only(a);
 }
-d_only :: proc() {
-  c_only()();
+d_only :: func(a: int) -> int {
+  return c_only(a);
 }
 
-main :: proc() {
+entry :: system {
   r := reached_func(2);
-  reached_proc()();
-  run_task(used_cb)();
   fmt.printf("%d\n", r);
 }
+
+#run entry

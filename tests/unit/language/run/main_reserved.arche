@@ -1,0 +1,14 @@
+// `main` is RESERVED (E0225): a program's entry point is a `#run` schedule, never a decl named `main`.
+// A user decl called `main` — of any callable kind — is rejected, so it can't masquerade as the entry.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "is reserved" %t.out
+#import { fmt }
+
+main :: system {
+  fmt.printf("never\n");
+}
+
+go :: system {
+  fmt.printf("scheduled\n");
+}
+
+#run go

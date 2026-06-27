@@ -2,7 +2,7 @@
 // Buffers moved in (own, consumed) and handed back through fresh out-bindings across several
 // calls — the `f(move x)(x:)` kill-and-rebind form (a killed binding can't be reused bare).
 #import { str fmt }
-fill_two :: proc(own buf1: [32]char, own buf2: [32]char)(
+fill_two :: func(own buf1: [32]char, own buf2: [32]char)(
   buf1 : [32]char,
   buf2 : [32]char,
   n    : int,

@@ -2,14 +2,13 @@
 // `make` is exported (public API); `helper` is #module-private but reachable from `make`; `dead_priv`
 // is #module-private and unreachable → the only dead code.
 // RUN: true
-#import { fmt }
-make :: proc() {
-  helper()();
+make :: func() -> int {
+  return helper();
 }
 #module
-helper :: proc() {
-  fmt.print("reachable private\n")(_:);
+helper :: func() -> int {
+  return 1;
 }
-dead_priv :: proc() {
-  fmt.print("dead private\n")(_:);
+dead_priv :: func() -> int {
+  return 2;
 }

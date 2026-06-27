@@ -5,6 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "d=13"
 #import { fmt }
 @default(proc, bounds, clamp)
+@allow(proc_not_primitive) // exercises the proc-cell @default override; proc policy-cell taxonomy TBD
 hot :: proc() {
   a: [4]int;
   a[3] = 13;

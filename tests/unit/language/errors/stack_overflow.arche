@@ -1,11 +1,12 @@
 // RUN: %arche build --exported-mutable=allow -o %t %s && %t
-// `recurse` writes the global `sink`, so it's a `proc` (an action) — a func may not touch a static.
-// The base case lets LLVM see a path on which the call returns, so the post-call store to `sink`
-// is reachable code with an observable side effect (a global the signal handler can see), which
-// prevents the optimizer from turning recursion into a loop. The runtime SIGSEGVs long before the
-// base case; the stack_check.c handler prints "stack overflow\n" and exits 0.
+// A deliberately UNBOUNDED self-recursive effect leaf: `recurse` calls itself and writes the global
+// `sink` so the post-call store is reachable code with an observable side effect, preventing the
+// optimizer from turning the recursion into a loop. The runtime SIGSEGVs long before the base case;
+// the stack_check.c handler prints "stack overflow\n" and exits 0. This is exactly the shape the flat
+// model forbids (a self-recursive effect), which is the point — hence the explicit @allow.
 sink: [1]char;
 
+@allow(proc_not_primitive) // deliberate unbounded self-recursive effect — the stack-overflow test
 recurse :: proc(depth: int)(r: int) {
   if (depth > 100000000) {
     r = depth;
@@ -17,6 +18,8 @@ recurse :: proc(depth: int)(r: int) {
   }
 }
 
-main :: proc() {
+entry :: system {
   recurse(0)(top:);
 }
+
+#run entry

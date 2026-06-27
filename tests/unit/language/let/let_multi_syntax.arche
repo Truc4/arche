@@ -4,7 +4,7 @@
 // fresh one (you can't reuse a killed binding, so the out-arg must be `x:`, not bare `x`).
 #import { str fmt }
 
-fill_two :: proc()(buf1: [32]char, buf2: [32]char, n: int) {
+fill_two :: func()(buf1: [32]char, buf2: [32]char, n: int) {
   buf1 := str.strcopy(move buf1, "test1");
   buf2 := str.strcopy(move buf2, "test2");
   n = 77;

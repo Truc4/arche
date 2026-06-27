@@ -629,19 +629,22 @@ static int parse_proc_out_list(Parser *parser) {
 	return 1;
 }
 
-/* A func's single return type: `-> T`. Optional only for a bare extern (absent ⇒ void);
- * mandatory for an ordinary func. */
+/* A func's results: either a single `-> T` return, or an out-parameter list `(out, …)` for multiple
+ * results / an in-place fill (the form `proc` used to carry; `proc` is now foreign-only, so a func is
+ * the one non-foreign callable and owns both shapes). A bare extern may have neither (⇒ void). */
 static int parse_func_return(Parser *parser, int is_extern) {
 	if (match(parser, TOK_ARROW)) {
 		if (check(parser, TOK_LPAREN)) {
-			error(parser, "a func has exactly one return type — use a `proc` with an out-parameter list "
-			              "`(out)` for multiple results or an in-place fill");
+			error(parser, "a `->` return is a single type; for multiple results drop the `->` and write an "
+			              "out-parameter list `(out, …)` instead");
 			return 0;
 		}
 		if (!parse_type(parser))
 			return 0;
+	} else if (check(parser, TOK_LPAREN)) {
+		return parse_proc_out_list(parser); /* a func may produce results via an out-param list */
 	} else if (!is_extern) {
-		error(parser, "Expected '->'");
+		error(parser, "Expected '->' or an out-parameter list '(...)'");
 		return 0;
 	}
 	return 1;

@@ -3,7 +3,7 @@
 // out-list. No `own`, no `move`: the out occurrences shadow the in-list borrows, so the buffers
 // stay live and come back through the out-args.
 #import { fmt }
-fill_two :: proc(buf1: [32]char, buf2: [32]char)(buf1: [32]char, buf2: [32]char, n: int) {
+fill_two :: func(buf1: [32]char, buf2: [32]char)(buf1: [32]char, buf2: [32]char, n: int) {
   buf1[0] = 'a';
   buf1[1] = 'b';
   buf1[2] = 0;

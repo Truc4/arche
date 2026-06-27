@@ -1,7 +1,7 @@
-// Regression: a `match` arm that (a) makes a QUALIFIED call (`fmt.printf`) and (b) passes an OPAQUE
-// value to a proc. `match` desugars to a HIR_STMT_BLOCK; several lowering passes (qualify, intra-
-// module rename) skipped BLOCK, so the qualified call kept an unresolved callee, and codegen mis-
-// typed the opaque arg as i32. Uses a foreign `resource` opaque (no io), read via `resource_get`.
+// Regression: a `match` arm that (a) makes a QUALIFIED call (`fmt.printf`) and (b) runs an effect over
+// an OPAQUE value (`resource_get`). `match` desugars to a HIR_STMT_BLOCK; several lowering passes
+// (qualify, intra-module rename) skipped BLOCK, so the qualified call kept an unresolved callee, and
+// codegen mis-typed the opaque arg as i32. Uses a foreign `resource` opaque (no io).
 // RUN: %arche build -o %t --link %S/../extern_type/runtime/test_resource.c %s && %t | grep -q "^health r=42$"
 #import { fmt }
 resource :: opaque;
@@ -12,20 +12,16 @@ resource :: opaque;
   resource_close :: proc(own r: resource);
 }
 Route :: enum { files, health }
-rval  :: proc(r: resource)(v: int) {
-  resource_get(r)(x:);
-  v = x;
-}
 entry :: system {
   resource_open(42)(h:);
   id := Route.health;
   match id {
   Route.files: {
-    rval(h)(v:);
+    resource_get(h)(v:);
     fmt.printf("files r=%d\n", v);
   }
   Route.health: {
-    rval(h)(v:);
+    resource_get(h)(v:);
     fmt.printf("health r=%d\n", v);
   }
   }

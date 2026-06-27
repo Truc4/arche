@@ -139,6 +139,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
 	[SEM_DIAG_extern_multi_out]              = { "E0223", "extern_multi_out",              CLASS_ERROR, 1 },
 	[SEM_DIAG_slice_repoint]                 = { "E0224", "slice_repoint",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_main_reserved]                 = { "E0225", "main_reserved",                 CLASS_ERROR, 1 },
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
@@ -1038,6 +1039,11 @@ SemDiag *sem_emit_slice_repoint(SemanticContext *ctx, SourceLoc loc, const char 
 	                 "cannot repoint slice '%s' — a slice's pointer is fixed at creation; you may write THROUGH "
 	                 "it (`%s[i] = x`, when you own it) but never reassign it to a different slice",
 	                 name, name);
+}
+SemDiag *sem_emit_main_reserved(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_main_reserved, loc,
+	                 "`main` is reserved — a program's entry point is a `#run` schedule, not a decl named "
+	                 "`main`. Rename this decl (e.g. `entry`) and schedule it with `#run`");
 }
 SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only) {
 	return sem_emit_(ctx, SEM_DIAG_extern_multi_out, loc,

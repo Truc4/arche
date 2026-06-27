@@ -357,6 +357,18 @@ static int subtype_check(TyCtx *cx, TypeId got, TypeId expected) {
 	tyid_display(cx->arena, expected, ename, sizeof(ename));
 	int e_sub = semantic_is_type_alias(cx->ctx, ename) && !semantic_alias_is_transparent(cx->ctx, ename);
 	int g_sub = semantic_is_type_alias(cx->ctx, gname) && !semantic_alias_is_transparent(cx->ctx, gname);
+	/* A distinct subtype is usable AS any type in its backing CHAIN, not only the ultimate backing:
+	 * `handle :: win` and `win :: opaque` make `handle` usable as `win` (its immediate backing) and as
+	 * `opaque`. Check this first — it applies even when `expected` is itself an opaque-backed subtype
+	 * (e.g. a `window` handle passed to a foreign proc), which the opaque-identity branches below reject. */
+	if (g_sub) {
+		const char *step = semantic_alias_backing_step(cx->ctx, gname);
+		for (int guard = 0; step && guard <= 64; guard++) {
+			if (strcmp(step, ename) == 0)
+				return 1;
+			step = semantic_alias_backing_step(cx->ctx, step);
+		}
+	}
 	if (e_sub) {
 		const char *eb = semantic_resolve_type_alias(cx->ctx, ename);
 		if (eb && strcmp(eb, "opaque") == 0) {

@@ -160,6 +160,10 @@ struct SemanticContext {
 	/* Track if inside proc/map body (for alloc enforcement) */
 	int in_body;
 
+	/* The entry unit declares a `#run` — the program's one entry point (replaces `main`). Signals a
+	 * binary (closed world) for dead-code analysis, exactly as a `main` decl used to. */
+	int entry_has_run;
+
 	/* 1 while analyzing a `map` body. A `map` supports no `return` at all (naked or valued). */
 	int in_map;
 
@@ -1158,6 +1162,18 @@ static const char *resolve_type_alias(SemanticContext *ctx, const char *name) {
 			break;
 	}
 	return name;
+}
+
+/* The IMMEDIATE backing of a one-step alias (`handle :: win` → "win"), or NULL if `name` is not a
+ * registered alias. Unlike resolve_type_alias (which follows to the ULTIMATE backing), this exposes one
+ * link so a caller can walk the chain and recognise an intermediate ancestor. */
+const char *semantic_alias_backing_step(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return NULL;
+	for (int i = 0; i < ctx->type_alias_count; i++)
+		if (alias_name_matches(ctx->type_alias_names[i], name))
+			return ctx->type_alias_backings[i];
+	return NULL;
 }
 
 /* 1 if `name` is a registered nominal type alias (qualified or bare). */
@@ -6769,11 +6785,30 @@ static void analyze_func_decl(SemanticContext *ctx, DeclSummary *func) {
 		mark_last_param(ctx, func->params[i].is_own);
 	}
 
+	/* Out-params: a func may produce several results via an out-param list (the form `proc` used to
+	 * carry; `proc` is now foreign-only). Register each as a writable place the body fills, exactly as
+	 * a proc does — out-only is a fresh owned slot, an in-out shadows its in-list borrow. */
+	for (int i = 0; i < func->out_param_count; i++) {
+		const char *on = func->out_params[i].name;
+		int in_idx = -1;
+		for (int j = 0; j < func->param_count; j++)
+			if (func->params[j].name && on && strcmp(func->params[j].name, on) == 0) {
+				in_idx = j;
+				break;
+			}
+		add_variable(ctx, on, func->out_params[i].type_id);
+		mark_last_param(ctx, in_idx >= 0 ? func->params[in_idx].is_own : 1);
+		mark_last_out_place(ctx);
+	}
+
 	DeclSummary *prev_func = ctx->current_func;
+	DeclSummary *prev_proc = ctx->current_proc;
 	ctx->current_func = func;
+	ctx->current_proc = func; /* so out-param name resolution (keyed on current_proc) sees the slots */
 	for (int i = 0, n = sem_stmt_count(func->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(func->body_node, i));
 	ctx->current_func = prev_func;
+	ctx->current_proc = prev_proc;
 
 	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
 	lint_func_could_be_const(ctx, func);
@@ -8432,7 +8467,8 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 			continue;
 		}
 		if (k == SN_RUN_DECL) {
-			continue; /* #run is folded + dispatched in lowering/codegen */
+			ctx->entry_has_run = 1; /* a `#run` is the program entry — marks this unit a binary */
+			continue;               /* #run is folded + dispatched in lowering/codegen */
 		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
@@ -8704,6 +8740,25 @@ static void sem_check_exported_mutable(SemanticContext *ctx) {
 	}
 }
 
+/* E0225 main_reserved — a user decl named `main`. The program entry is a `#run` schedule, never a decl
+ * called `main`; `main` carries no special meaning and is reserved so it cannot masquerade as an entry.
+ * Fires for any user-authored (non-stdlib/core) non-foreign callable named `main`. */
+static void sem_check_main_reserved(SemanticContext *ctx) {
+	if (!ctx || ctx->decl_count <= 0)
+		return;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d->name || strcmp(d->name, "main") != 0 || d->is_extern)
+			continue;
+		if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
+			continue;
+		if (d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYSTEM && d->kind != DECL_EACH &&
+		    d->kind != DECL_MAP && d->kind != DECL_FUNC_GROUP)
+			continue;
+		sem_emit_main_reserved(ctx, d->loc);
+	}
+}
+
 static void sem_check_dead_code(SemanticContext *ctx) {
 	if (!ctx->model || ctx->decl_count <= 0)
 		return;
@@ -8722,13 +8777,11 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 	 * iff it defines `main` — then it is a closed world and any unreachable entry decl is dead. With no
 	 * `main` (e.g. the LSP opened a library module on its own), flag NOTHING in the entry unit, so a
 	 * library's public API is never reported dead while you type. */
-	int entry_is_binary = 0;
-	for (int i = 0; i < ctx->decl_count; i++) {
+	int entry_is_binary = ctx->entry_has_run; /* a `#run` is the program entry (the new binary signal) */
+	for (int i = 0; i < ctx->decl_count && !entry_is_binary; i++) {
 		DeclSummary *d = ctx->decls[i];
-		if (d->origin == DECL_ORIGIN_ENTRY && d->name && strcmp(d->name, "main") == 0) {
-			entry_is_binary = 1;
-			break;
-		}
+		if (d->origin == DECL_ORIGIN_ENTRY && d->name && strcmp(d->name, "main") == 0)
+			entry_is_binary = 1; /* legacy: a `main` decl still signals a binary */
 	}
 	int work_n = 0;
 	/* seed roots. map/system/each are entry points — scheduled by name (which records no call edge) — so
@@ -9299,6 +9352,7 @@ static void analyze_program_core(SemanticContext *ctx) {
 	tycheck_run(ctx);
 
 	/* pass 5: dead-code lint (W0013) — reachability sweep over the resolved DeclTable. */
+	sem_check_main_reserved(ctx); /* E0225: `main` is reserved — entry is `#run` */
 	sem_check_dead_code(ctx);
 
 	/* pass 6: exported-mutable lint (W0022) — ban global mutable state on the exported surface. */
@@ -10094,11 +10148,21 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		for (int i = 0; i < no; i++)
 			ds->out_params[i] = sem_param_summary_node(sv_child_at(form, SN_OUT_PARAM, i));
 	} else if (kind == DECL_FUNC) {
-		int nt = sv_type_count_sem(form);
-		ds->return_type_count = nt;
-		ds->return_type_nodes = calloc(nt ? (size_t)nt : 1, sizeof(SyntaxView));
-		for (int i = 0; i < nt; i++)
-			ds->return_type_nodes[i] = sem_type_at(form, i);
+		/* A func produces results EITHER via an out-param list (the form `proc` used to carry) OR a
+		 * single `-> T` return. Collect whichever is present. */
+		int no = sv_count(form, SN_OUT_PARAM);
+		if (no > 0) {
+			ds->out_param_count = no;
+			ds->out_params = calloc((size_t)no, sizeof(ParamSummary));
+			for (int i = 0; i < no; i++)
+				ds->out_params[i] = sem_param_summary_node(sv_child_at(form, SN_OUT_PARAM, i));
+		} else {
+			int nt = sv_type_count_sem(form);
+			ds->return_type_count = nt;
+			ds->return_type_nodes = calloc(nt ? (size_t)nt : 1, sizeof(SyntaxView));
+			for (int i = 0; i < nt; i++)
+				ds->return_type_nodes[i] = sem_type_at(form, i);
+		}
 	}
 	return ds;
 }

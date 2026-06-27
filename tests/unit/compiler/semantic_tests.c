@@ -135,7 +135,7 @@ void test_archetype_field_type(void) {
 
 void test_field_access_on_undefined_archetype(void) {
 	test_start("field access on undefined archetype caught");
-	AnalysisResult result = analyze_string("test :: proc() { v := undefined.field; }");
+	AnalysisResult result = analyze_string("test :: system { v := undefined.field; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined archetype");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -145,7 +145,7 @@ void test_field_access_on_undefined_archetype(void) {
 
 void test_let_binding_creates_local(void) {
 	test_start("binding creates local variable");
-	AnalysisResult result = analyze_string("test :: proc() { x := 42; }");
+	AnalysisResult result = analyze_string("test :: system { x := 42; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -153,7 +153,7 @@ void test_let_binding_creates_local(void) {
 
 void test_undefined_variable_access(void) {
 	test_start("undefined variable access caught");
-	AnalysisResult result = analyze_string("test :: proc() { x := undefined_var; }");
+	AnalysisResult result = analyze_string("test :: system { x := undefined_var; }");
 	ASSERT_TRUE(semantic_has_errors(result.ctx), "should have error for undefined variable");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -161,7 +161,7 @@ void test_undefined_variable_access(void) {
 
 void test_variable_shadowing(void) {
 	test_start("variable shadowing allowed");
-	AnalysisResult result = analyze_string("test :: proc() {\n"
+	AnalysisResult result = analyze_string("test :: system {\n"
 	                                       "  x := 1;\n"
 	                                       "  x := 2;\n"
 	                                       "}");
@@ -174,7 +174,7 @@ void test_variable_shadowing(void) {
 
 void test_assignment_valid_type(void) {
 	test_start("valid type assignment");
-	AnalysisResult result = analyze_string("test :: proc() { x := 42; x = 100; }");
+	AnalysisResult result = analyze_string("test :: system { x := 42; x = 100; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -182,7 +182,7 @@ void test_assignment_valid_type(void) {
 
 void test_binary_op_same_types(void) {
 	test_start("binary op with same types");
-	AnalysisResult result = analyze_string("test :: proc() { x := 1 + 2; }");
+	AnalysisResult result = analyze_string("test :: system { x := 1 + 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -190,7 +190,7 @@ void test_binary_op_same_types(void) {
 
 void test_comparison_produces_number(void) {
 	test_start("comparison expressions are valid");
-	AnalysisResult result = analyze_string("test :: proc() { x := 1 < 2; }");
+	AnalysisResult result = analyze_string("test :: system { x := 1 < 2; }");
 	ASSERT_FALSE(semantic_has_errors(result.ctx), "should have no errors");
 	analysis_result_free(&result);
 	test_pass_msg();
@@ -233,7 +233,7 @@ void test_group_with_distinct_members_ok(void) {
 	const char *src = "a :: func(x: int) -> int { return x; }\n"
 	                  "b :: func(x: float) -> float { return x; }\n"
 	                  "g :: func{ a, b }\n"
-	                  "main :: proc() { i := g(1); f := g(2.0); }\n";
+	                  "entry :: system { i := g(1); f := g(2.0); }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -321,7 +321,7 @@ void test_call_no_matching_member_errors(void) {
 	const char *src = "a :: func(x: int) -> int { return x; }\n"
 	                  "b :: func(x: float) -> float { return x; }\n"
 	                  "g :: func{ a, b }\n"
-	                  "main :: proc() { c := 'X'; r := g(c); }\n";
+	                  "entry :: system { c := 'X'; r := g(c); }\n";
 	ParseResult pr = parse_source(src);
 	if (pr.error_count != 0) {
 		test_fail_msg("Parse errors");
@@ -345,6 +345,7 @@ void test_opaque_passthrough_in_proc_ok(void) {
 	test_start("opaque value may pass through a non-extern proc param");
 	AnalysisResult r = analyze_string("window :: opaque;\n"
 	                                  "#foreign { window_close :: proc(own w: window) }\n"
+	                                  "@allow(proc_not_primitive)\n"
 	                                  "wrap_close :: proc(w: window) { window_close(move w); }\n");
 	ASSERT_EQ(semantic_error_count(r.ctx), 0, "should be no errors");
 	semantic_context_free(r.ctx);
@@ -367,7 +368,7 @@ void test_opaque_aliases_distinct(void) {
 	                                  "  window_close :: proc(own w: window);\n"
 	                                  "  sound_open :: proc()(ret: sound);\n"
 	                                  "}\n"
-	                                  "main :: proc() {\n"
+	                                  "entry :: system {\n"
 	                                  "  sound_open()(s:);\n"
 	                                  "  window_close(move s);\n"
 	                                  "}\n");
@@ -386,7 +387,7 @@ void test_use_after_consume_local_error(void) {
 	                                  "  close_ :: proc(own w: window);\n"
 	                                  "  poll_ :: proc(w: window);\n"
 	                                  "}\n"
-	                                  "main :: proc() {\n"
+	                                  "entry :: system {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  close_(move w);\n"
 	                                  "  poll_(w);\n"
@@ -404,7 +405,7 @@ void test_no_false_positive_when_unconsumed(void) {
 	                                  "  close_ :: proc(own w: window);\n"
 	                                  "  poll_ :: proc(w: window);\n"
 	                                  "}\n"
-	                                  "main :: proc() {\n"
+	                                  "entry :: system {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  poll_(w);\n"
 	                                  "  close_(move w);\n"
@@ -451,7 +452,8 @@ void test_scalar_param_mutation_ok(void) {
 
 void test_move_out_of_borrow_error(void) {
 	test_start("moving a borrowed array param out is a compile error");
-	AnalysisResult r = analyze_string("sink :: proc(own b: [8]char) { b[0] = 'X'; }\n"
+	AnalysisResult r = analyze_string("@allow(proc_not_primitive)\n"
+	                                  "sink :: proc(own b: [8]char) { b[0] = 'X'; }\n"
 	                                  "relay :: func(b: [8]char) -> int {\n"
 	                                  "  sink(move b);\n"
 	                                  "  return 0;\n"
@@ -467,7 +469,7 @@ void test_copy_does_not_consume(void) {
 	                                  "  b[0] = 'X';\n"
 	                                  "  return b;\n"
 	                                  "}\n"
-	                                  "main :: proc() {\n"
+	                                  "entry :: system {\n"
 	                                  "  src: [8]char;\n"
 	                                  "  out := fill(copy src);\n"
 	                                  "  src[0] = 'Y';\n"
@@ -485,7 +487,7 @@ void test_own_param_bare_arg_error(void) {
 	                                   "  b[0] = 'X';\n"
 	                                   "  return b;\n"
 	                                   "}\n"
-	                                   "main :: proc() {\n"
+	                                   "entry :: system {\n"
 	                                   "  buf: [8]char;\n"
 	                                   "  out := fill(buf);\n"
 	                                   "}\n");
@@ -494,7 +496,7 @@ void test_own_param_bare_arg_error(void) {
 	AnalysisResult reuse = analyze_string("fill :: func(own b: [8]char) -> [8]char {\n"
 	                                      "  return b;\n"
 	                                      "}\n"
-	                                      "main :: proc() {\n"
+	                                      "entry :: system {\n"
 	                                      "  buf: [8]char;\n"
 	                                      "  a := fill(buf);\n"
 	                                      "  c := fill(buf);\n"
@@ -511,7 +513,7 @@ void test_copy_opaque_error(void) {
 	                                  "  wopen :: proc()(ret: window);\n"
 	                                  "  wuse :: proc(own w: window);\n"
 	                                  "}\n"
-	                                  "main :: proc() {\n"
+	                                  "entry :: system {\n"
 	                                  "  wopen()(w:);\n"
 	                                  "  wuse(copy w);\n"
 	                                  "}\n");

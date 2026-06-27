@@ -56,6 +56,11 @@ SemHints *sem_context_hints(SemanticContext *ctx);
  * backing; returns `name` unchanged if not an alias. */
 const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
 
+/* One-step backing of an alias (`handle :: win` → "win"), NULL if not an alias. Walk this to recognise
+ * intermediate ancestors — a distinct subtype is usable AS any type in its backing chain, not only the
+ * ultimate backing. */
+const char *semantic_alias_backing_step(SemanticContext *ctx, const char *name);
+
 /* 1 if `name` is a registered type alias (tier-1 transparent OR tier-2 subtype). */
 int semantic_is_type_alias(SemanticContext *ctx, const char *name);
 

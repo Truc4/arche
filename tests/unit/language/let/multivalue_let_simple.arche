@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-pair :: proc()(x: int, y: int) {
+pair :: func()(x: int, y: int) {
   x = 42;
   y = 7;
 }

@@ -189,6 +189,8 @@ typedef enum {
 	                                   computation, not a value. E0221. */
 	SEM_DIAG_eff_extern_not_static, /* an Eff at a run site whose extern is not statically one extern (a
 	                                   runtime `?:`/`match` selecting different externs) — no fn-pointer. E0222. */
+	SEM_DIAG_main_reserved,         /* a user decl named `main` — the program entry is `#run`, not `main`;
+	                                   `main` carries no special meaning and is reserved. E0225. */
 
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
@@ -416,6 +418,7 @@ SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const ch
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
 SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only);
 SemDiag *sem_emit_slice_repoint(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_main_reserved(SemanticContext *ctx, SourceLoc loc);
 
 /* Tycheck (P3 type-check pass). E0200 is the general type_mismatch — every
  * typing-rule failure routes here. The `where` string describes the constraint
