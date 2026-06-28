@@ -7,7 +7,7 @@
 // RUN: rm -rf %t.hot %t.cache && mkdir -p %t.hot
 // RUN: env ARCHE_HOT_DIR=%t.hot ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "sys_ok"
 #import { hotsys fmt }
-[1]Cell;
+[1]Cell ?abort;
 seed :: system {
   insert(Cell { v: 0 })(_:, _:);
 }

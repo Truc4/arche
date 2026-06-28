@@ -7,7 +7,7 @@
 pos(x, y) :: float;
 vel(x, y) :: float;
 Mover     :: arche { pos, vel }
-[1]Mover;
+[1]Mover ?abort;
 step :: map (query { pos, vel }) {
   vel *= 2; // int literal 2 → 2.0 : (3,5) -> (6,10)
   pos = pos + vel; // (80,80) + (6,10) -> (86,90)

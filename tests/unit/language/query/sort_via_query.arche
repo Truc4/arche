@@ -3,7 +3,7 @@
 #import { fmt }
 v :: int;
 N :: arche { v }
-[8]N;
+[8]N ?abort;
 
 Vals :: query { v }
 

@@ -11,8 +11,8 @@ center(x, y) :: float;
 k            :: float;
 Mover        :: arche { pos, vel }
 Config       :: arche { k, center }
-[1]Mover;
-[1]Config;
+[1]Mover ?abort;
+[1]Config ?abort;
 step :: map (query { pos, vel }) {
   vel -= (pos - Config.center[0]) / Config.k[0]; // float whole-vector spring toward the singleton center
   vel *= 2.0; // float whole-group compound

@@ -4,7 +4,7 @@
 #import { fmt }
 v :: int;
 N :: arche { v }
-[4]N;
+[4]N ?abort;
 
 Vals :: query { v }
 

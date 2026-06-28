@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep "R 1 2 9 9"
 #import { fmt }
 Body :: arche { pos(x, y) :: int, vel(x, y) :: int }
-[2]Body;
+[2]Body ?abort;
 step :: map (query { pos, vel }) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;

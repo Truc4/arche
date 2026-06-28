@@ -3,7 +3,7 @@
 pos      :: float;
 Particle :: arche { pos }
 
-[10]Particle;
+[10]Particle ?abort;
 
 dummy :: map (query { pos }) {
   pos = pos;

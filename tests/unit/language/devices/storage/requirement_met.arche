@@ -3,6 +3,7 @@
 // storage requirement (no definition); the driver owns the real allocation and the device's system
 // drives it.
 // RUN: %arche build -o %t %s && %t | grep "req_ok"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { store fmt }
 
 [8]Node; // driver owns the pool (the shape comes from store), sized above the minimum of 4

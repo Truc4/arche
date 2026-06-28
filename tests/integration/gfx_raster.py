@@ -33,15 +33,14 @@ PROG = (
     "Window :: arche { handle :: window  bg :: int }\n"
     "Disc :: arche { pos(x, y) :: int  color :: int  r :: int }\n"
     "Rect :: arche { rx :: int  ry :: int  rw :: int  rh :: int  rcolor :: int }\n"
-    "[1]Window;\n"
-    "[1]Disc;\n"
-    "[1]Rect;\n"
-    "@allow(discarded_ok)\n"
+    "[1]Window ?abort;\n"
+    "[1]Disc ?abort;\n"
+    "[1]Rect ?abort;\n"
     "boot :: system {\n"
     "  gfx.open(%d, %d, \"t\")(win:);\n"
-    "  insert(Window { handle: win, bg: %d })(_:, _:);\n"
-    "  insert(Disc { pos: (32, 32), color: %d, r: 10 })(_:, _:);\n"          # disc center (32,32) r=10
-    "  insert(Rect { rx: 2, ry: 2, rw: 8, rh: 8, rcolor: %d })(_:, _:);\n"   # covers x,y in [2,10)
+    "  insert(Window { handle: win, bg: %d });\n"
+    "  insert(Disc { pos: (32, 32), color: %d, r: 10 });\n"          # disc center (32,32) r=10
+    "  insert(Rect { rx: 2, ry: 2, rw: 8, rh: 8, rcolor: %d });\n"   # covers x,y in [2,10)
     "}\n"
     "#run seq({ boot, gfx.clear, gfx.rect, gfx.circle, gfx.present })\n"
 ) % (W, H, CLEAR, CIRC, RECT)

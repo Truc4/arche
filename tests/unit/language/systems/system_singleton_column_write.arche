@@ -3,7 +3,7 @@
 // (`v = v + 5`) was silently lost. A singleton the system OWNS must be a writable cell, not a broadcast.
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-[1]S;
+[1]S ?abort;
 S :: arche { v :: int }
 
 seed :: system {

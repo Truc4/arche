@@ -229,6 +229,10 @@ static void ensure_init(void) {
 	 * a hard ERROR by default at every entry point (build/run/check/LSP). Its message names the fix
 	 * (`func`/`system`/`each`/`map`, or decompose across systems). */
 	g_werror[SEM_LINT_proc_not_primitive] = 1;
+	/* W0016 discarded_ok: now fires ONLY for an insert into a FALLIBLE (`reject`) pool — a genuinely
+	 * ignored drop — so it is an ERROR by default. `--discarded-ok=warn|allow` demotes it; declaring an
+	 * infallible pool policy (`?abort`/`?evict_*`) avoids it entirely. */
+	g_werror[SEM_LINT_discarded_ok] = 1;
 	g_init_done = 1;
 }
 
@@ -463,6 +467,9 @@ void semantic_set_lint_proc_calls_proc(int enabled, int werror) {
 }
 void semantic_set_lint_proc_not_primitive(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_proc_not_primitive, enabled, werror);
+}
+void semantic_set_lint_discarded_ok(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_discarded_ok, enabled, werror);
 }
 void semantic_set_lint_pool_index_outside_query(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_pool_index_outside_query, enabled, werror);
@@ -1173,8 +1180,9 @@ SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const ch
 }
 SemDiag *sem_emit_lint_discarded_ok(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_discarded_ok, loc,
-	                 "`%s`'s `ok` result is discarded with `_` — a capacity/handle failure is silently "
-	                 "ignored; capture and check `ok`, or @allow(discarded_ok) if it genuinely cannot fail",
+	                 "`%s` into a `reject` pool can fail (a full pool drops the row) — capture and check `ok`, "
+	                 "or give the pool an infallible overflow policy (`[N]P ?abort` to crash, `?evict_*` to "
+	                 "make room). `@allow(discarded_ok)` or `--discarded-ok=warn` overrides.",
 	                 name);
 }
 SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const char *arch) {

@@ -2,6 +2,7 @@
 // components (`a`/`b`) and shape (`Cell`), with minimums 4 and 16. They dedup to one shared shape and
 // one driver pool sized to the max (16). The build notes the shared shape; both devices' systems run.
 // RUN: %arche build -o %t %s 2> %t.err && %t | grep "predef_shared_ok" && grep -qiE "shared pool|datasheets require" %t.err
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { vstore vcache fmt }
 
 [16]Cell; // one pool (the shape comes from the devices), sized to max(4, 16)

@@ -7,10 +7,10 @@
 #import { fmt str }
 
 Person :: arche { name :: [8]char }
-[4]Person;
+[4]Person ?abort;
 
 Src :: arche { buf :: [8]char }
-[1]Src(1);
+[1]Src(1) ?abort;
 
 build :: each (query { buf }) {
   fmt.sprintf(_, "hi")(buf, _:);

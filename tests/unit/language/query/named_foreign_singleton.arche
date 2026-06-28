@@ -8,8 +8,8 @@ center(x, y) :: float;
 k            :: float;
 Mover        :: arche { pos, vel }
 Config       :: arche { k, center }
-[1]Mover;
-[1]Config;
+[1]Mover ?abort;
+[1]Config ?abort;
 
 Movers :: query { pos, vel }
 

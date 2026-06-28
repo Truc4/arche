@@ -6,8 +6,8 @@ v   :: int;
 tag :: int;
 A   :: arche { v }
 B   :: arche { v, tag } // distinct shape, but both have column `v`
-[4]A;
-[4]B;
+[4]A ?abort;
+[4]B ?abort;
 
 Vals :: query { v }
 

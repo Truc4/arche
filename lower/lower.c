@@ -1161,6 +1161,23 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 			as->data.each_stmt = lower_each_payload(raw, NULL);
 			break;
 		}
+		/* A bare `insert(E{…})` / `delete(h)` (no out-list) — legal only into an infallible pool (semantic
+		 * gate). Lower it like a 0-target proc-call statement so codegen emits the insert/delete; a plain
+		 * HIR_STMT_EXPR would DISCARD the call (a silent no-op — the row would never be inserted). */
+		if (sv_present(raw) && sv_kind(raw) == SN_CALL_EXPR) {
+			SyntaxView cnm = sv_child(raw, SN_CALLEE_NAME);
+			char *cn = sv_present(cnm) ? sv_dup(cnm) : NULL;
+			if (cn && (strcmp(cn, "insert") == 0 || strcmp(cn, "delete") == 0)) {
+				as->kind = HIR_STMT_MULTI_BIND;
+				as->data.multi_bind.from_shorthand = 0;
+				as->data.multi_bind.targets = calloc(1, sizeof(HirBindingTarget));
+				as->data.multi_bind.target_count = 0;
+				as->data.multi_bind.value = lower_expr_cst(raw);
+				free(cn);
+				break;
+			}
+			free(cn);
+		}
 		as->kind = HIR_STMT_EXPR;
 		as->data.expr_stmt.expr = lower_expr_cst(sv_node_at_expr(s, 0));
 		break;

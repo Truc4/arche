@@ -5,7 +5,7 @@
 pos(x, y) :: float;
 vel(x, y) :: float;
 Mover     :: arche { pos, vel }
-[2]Mover;
+[2]Mover ?abort;
 
 entry :: system {
   insert(Mover { pos: (1.0, 2.0), vel: (3.0, 4.0) })(_:, _:);

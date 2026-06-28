@@ -8,8 +8,8 @@ vel  :: float;
 mass :: float;
 A    :: arche { pos, vel }
 B    :: arche { pos, vel, mass }
-[4]A;
-[4]B;
+[4]A ?abort;
+[4]B ?abort;
 
 Movers :: query { pos, vel }
 

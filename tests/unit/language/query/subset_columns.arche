@@ -6,7 +6,7 @@ hp    :: int;
 armor :: int;
 speed :: int;
 Rich  :: arche { hp, armor, speed }
-[4]Rich;
+[4]Rich ?abort;
 
 Wounded :: query { hp }
 

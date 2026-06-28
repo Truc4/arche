@@ -1,0 +1,14 @@
+// A pool with no overflow policy is FALLIBLE (the `reject` default) — a full pool drops the row and
+// reports `ok=0`. So an insert that discards `ok` (`_`) is silently ignoring a real failure: the
+// `discarded_ok` lint, ERROR by default. The fix is to handle `ok` or declare an infallible policy
+// (`?abort`/`?evict_*`).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "discarded_ok" %t.out
+#import { fmt }
+Foo :: arche { v :: int }
+[4]Foo;
+
+seed :: system {
+  insert(Foo { v: 1 })(_:, _:); // discards ok on a fallible pool → discarded_ok error
+}
+
+#run seed

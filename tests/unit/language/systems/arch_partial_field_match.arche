@@ -8,9 +8,9 @@ Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
 
-[5]Particle;
+[5]Particle ?abort;
 
-[5]Body;
+[5]Body ?abort;
 
 gravity :: map (query { pos, mass }) {
   pos = pos + mass;

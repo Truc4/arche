@@ -3,9 +3,9 @@ Player :: arche { pos :: float }
 
 AliveList :: arche { player_ref :: handle<Player> }
 
-[10]Player;
+[10]Player ?abort;
 
-[10]AliveList;
+[10]AliveList ?abort;
 
 entry :: system {
   insert(Player { pos: 1.0 })(p_handle:, _:);

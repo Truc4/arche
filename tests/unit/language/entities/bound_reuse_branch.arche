@@ -1,10 +1,11 @@
 // A bound entity inlines its literal at each `insert(e)` site, so reuse and conditional insertion both
 // work and respect control flow (the entity is only inserted where `insert(e)` actually runs).
 // RUN: %arche build -o %t %s && %t | grep -qF "v0=7 v1=7"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { fmt }
 v :: int;
 B :: arche { v }
-[8]B;
+[8]B ?abort;
 
 entry :: system {
   e := B { v: 7 };

@@ -5,5 +5,6 @@
 // the per-unit run is what broke when scheduled SYSTEMS/EACH lacked a cross-unit declare (only maps had one).
 // RUN: %arche build -o %t %s && %t | grep -qF "n=1"
 // RUN: %arche build --incremental -o %t.inc %s && %t.inc | grep -qF "n=1"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { "./run_helper_lib" }
 #run seq({ mob_seed, bump, mob_report })

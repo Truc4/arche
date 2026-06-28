@@ -11,7 +11,7 @@ b :: int;
 c :: int;
 d :: int;
 N :: arche { a, b, c, d }
-[1]N;
+[1]N ?abort;
 bump :: map (query { a, b, c, d }) {
   a += 5; // 10 + 5 = 15
   b -= 4; // 10 - 4 = 6

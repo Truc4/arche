@@ -78,6 +78,17 @@ reject :: policy(count: int, cap: int, ok: int) {
   }
 }
 
+// Crash on overflow — the infallible pool policy. A full pool is a programmer error here, not a runtime
+// condition to branch on, so the insert site need not handle `ok`. (The codegen binds `count`/`cap`; a
+// non-full insert leaves `ok`/`slot` at their accept defaults.)
+@policy(pool)
+abort :: policy(count: int, cap: int) {
+  if (count >= cap) {
+    dprintf(2, "arche: pool full\n")(_:);
+    _exit(134);
+  }
+}
+
 // ── Scheduling (the flat effect model §9 / docs/design/scheduling.md): the Schedule is a first-class
 // value the runtime executes. It is a compile-time-folded tree (Approach A): combinators are pure funcs
 // the `#run` site evaluates to a constant, erased from codegen — no runtime representation, no fn pointers.

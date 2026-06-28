@@ -364,10 +364,10 @@ void test_codegen_gen_exhaustion_abort(void) {
 	test_start("delete emits generation-exhaustion abort");
 	char *ir = compile_to_ir_string("hp :: int;\n"
 	                                "Unit :: arche { hp }\n"
-	                                "[4]Unit;\n"
+	                                "[4]Unit ?abort;\n"
 	                                "entry :: system {\n"
-	                                "  insert(Unit{ hp: 1 })(h:, _:);\n"
-	                                "  delete(h)(_:);\n"
+	                                "  insert(Unit{ hp: 1 })(h:);\n"
+	                                "  delete(h);\n"
 	                                "}\n");
 	ASSERT_NOT_NULL(ir, "no IR produced");
 	ASSERT_TRUE(strstr(ir, "gen_exhausted") != NULL, "no generation-exhaustion branch in delete");

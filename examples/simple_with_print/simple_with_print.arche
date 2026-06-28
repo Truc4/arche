@@ -1,6 +1,6 @@
 #import { fmt }
 Counter :: arche { value :: int }
-[1]Counter;
+[1]Counter ?abort;
 entry :: system {
   insert(Counter { value: 0 })(_:, _:);
   x := 10;

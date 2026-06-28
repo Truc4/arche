@@ -4,7 +4,7 @@
 pos :: float;
 vel :: float;
 P   :: arche { pos, vel }
-[4]P;
+[4]P ?abort;
 
 Movers :: query { pos, vel }
 

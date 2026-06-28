@@ -14,8 +14,8 @@ gravity :: int;
 v       :: int;
 Config  :: arche { gravity }
 Thing   :: arche { v }
-[1]Config;
-[2]Thing;
+[1]Config ?abort;
+[2]Thing ?abort;
 bump :: map (query { v }) {
   Config.gravity[0] = 7; // foreign write from a system → W0024 (a single-shot write; runs once, not per row)
 }

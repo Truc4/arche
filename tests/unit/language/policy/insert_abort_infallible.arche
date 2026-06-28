@@ -1,0 +1,25 @@
+// An infallible pool policy (`?abort`) handles overflow itself, so an insert need not handle `ok` —
+// `insert(E{…})` with NO out-list is legal and clean (so is `delete(h)`). Within capacity it just runs;
+// this checks the no-`ok` forms compile and insert/delete actually take effect.
+// RUN: %arche build -o %t %s && %t | grep -qF "v=7 then empty"
+#import { fmt }
+Foo :: arche { v :: int }
+[4]Foo ?abort;
+
+seed :: system {
+  insert(Foo { v: 7 }); // no out-list — `?abort` means there is no `ok` to handle
+}
+show :: each (query { v }) {
+  fmt.printf("v=%d ", v);
+}
+clear :: each (query { v } as w) {
+  delete(w); // bare delete — infallible (aborts on a stale handle)
+}
+done :: each (query { v }) {
+  fmt.printf("STILL v=%d", v); // no live rows after clear → never prints
+}
+tail :: system {
+  fmt.printf("then empty\n");
+}
+
+#run seq({ seed, show, clear, done, tail })

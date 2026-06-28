@@ -4,7 +4,7 @@
 
 Particle :: arche { pos :: float, vel :: float }
 
-[10]Particle;
+[10]Particle ?abort;
 
 bump :: map (query { pos, vel }) {
   pos += vel;

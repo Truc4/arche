@@ -38,13 +38,14 @@ present :: system (query { handle }) {
 // reacts (e.g. an `each (Closed)` that halts). `at` is the close stamp.
 Closed :: arche { at :: i64 }
 
-// Pump events; on a close request, record it by inserting a `Closed` row.
-@allow(discarded_ok)
+// Pump events; on a close request, record it by inserting a `Closed` row. Best-effort: as a library `poll`
+// cannot know the driver's `Closed` policy, so it HANDLES `ok` by intentionally ignoring it (`_ok`) — a
+// failed insert means a close is already pending (the row exists), which is exactly the state we wanted.
 poll :: system {
   each (query { handle }) {
     gfx_be_poll(handle)(r:);
     if (!r) {
-      insert(Closed { at: 0 })(_:, _:);
+      insert(Closed { at: 0 })(_:, _ok:);
     }
   };
 }

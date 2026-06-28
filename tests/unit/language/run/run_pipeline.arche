@@ -6,7 +6,7 @@
 #import { fmt }
 x       :: int;
 Counter :: arche { x }
-[1]Counter;
+[1]Counter ?abort;
 
 step :: map (query { x }) {
   x = x + 1;

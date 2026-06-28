@@ -4,9 +4,9 @@
 // (today the tuple selector doesn't parse / a cross-pool query matches 0 rows).
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-[8]Mover(3);
+[8]Mover(3) ?abort;
 Mover :: arche { n :: int }
-[1]Win;
+[1]Win ?abort;
 Win :: arche { id :: int }
 
 seed :: system {

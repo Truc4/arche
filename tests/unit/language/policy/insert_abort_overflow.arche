@@ -1,0 +1,13 @@
+// `?abort` crashes LOUDLY on overflow rather than silently dropping the row: a `[2]Foo ?abort` pool
+// aborts on the third insert with a stderr diagnostic and exit 134 (like the bounds `abort` policy).
+// RUN: %arche build -o %t %s && { %t 2>%t.err ; test $? -eq 134 ; } && grep -qF "arche: pool full" %t.err
+Foo :: arche { v :: int }
+[2]Foo ?abort;
+
+seed :: system {
+  insert(Foo { v: 1 });
+  insert(Foo { v: 2 });
+  insert(Foo { v: 3 }); // pool full → abort (exit 134, "arche: pool full")
+}
+
+#run seed

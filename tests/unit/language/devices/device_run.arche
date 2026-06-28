@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "ran_ok"
 #import { "./phys" fmt }
 
-[4]Particle;
+[4]Particle ?abort;
 
 seed :: system {
   insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);

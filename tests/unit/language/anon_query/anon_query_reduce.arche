@@ -1,6 +1,7 @@
 // RED until anonymous storage + query-as-accessor ship: a collective folds a column of anonymous storage
 // THROUGH its query — `reduce(+, Vals.v)` where `Vals` is the only name for the `[N]arche {v}` pool.
 // RUN: %arche build -o %t %s && %t | grep -qF "sum=60"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { fmt }
 v :: int;
 [4]arche { v }

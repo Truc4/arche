@@ -166,6 +166,9 @@ void semantic_set_lint_proc_calls_proc(int enabled, int werror);
 /* W0030 proc_not_primitive: the proc-elimination ban (a proc must be `#foreign`/primitive). DISABLED by
  * default during the migration; enable (then werror) to enforce once stdlib is converted. */
 void semantic_set_lint_proc_not_primitive(int enabled, int werror);
+/* W0016 discarded_ok: ERROR by default — an `insert` into a fallible (`reject`) pool that ignores `ok`.
+ * `--discarded-ok=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_discarded_ok(int enabled, int werror);
 /* W0029 pool_index_outside_query: WARN by default (pool values must come from a query, not `Pool.col[i]`).
  * `--pool-index=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */
 void semantic_set_lint_pool_index_outside_query(int enabled, int werror);

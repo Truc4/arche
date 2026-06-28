@@ -8,14 +8,11 @@ cell_int :: func(c: int, s: []char) -> int {
 }
 cell :: func { cell_float, cell_int }
 
-/// The ONE sanctioned `proc` exception to the proc-elimination ban (W0030). `load` is a compile-time
-/// reflective, archetype-GENERIC loader: it takes an `archetype` and uses `#each_field` to map CSV
-/// columns onto that archetype's fields. It fits neither a pure `func` (it does I/O + pool writes) nor an
-/// argless `system` (it is parameterised by the archetype it fills). The proper fix is a future
-/// first-class "load system" feature (an archetype-targeted load kind); until that exists, this stays a
-/// `proc` under an explicit `@allow`. Do NOT copy this pattern — it is the single tracked debt, not a
-/// licence for new procs. See WIP_DECISIONS.md (open decision #2).
-@allow(proc_not_primitive)
+/// `load` is a compile-time REFLECTIVE GENERIC: it takes an `archetype` and walks its fields with
+/// `#each_field`, mapping CSV columns onto them. It is monomorphized per archetype at the call site — the
+/// same compile-time-generic shape as a callback proc, which proc-elimination leaves alone (it is not a
+/// result-dependent effectful sequence to decompose across systems). So an archetype-param proc is a
+/// recognized form, not the effectful-proc the ban targets — no `@allow` needed.
 load :: proc(arch: archetype, own path: []char) {
   load_cols: [64]int; // field-index → CSV-column-index scratch; a local (used only within this proc)
   io.file_map(move path)(data:);

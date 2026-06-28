@@ -6,7 +6,7 @@
 pos(x, y) :: float;
 vel(x, y) :: float;
 Mover     :: arche { pos, vel }
-[1]Mover;
+[1]Mover ?abort;
 
 Movers :: query { pos, vel }
 

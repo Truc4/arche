@@ -16,6 +16,7 @@ enum {
 	C_PROC_LEAF,
 	C_SYS_FOREIGN_WRITE,
 	C_PROC_NOT_PRIMITIVE,
+	C_DISCARDED_OK,
 	C_WNO_LSA,
 	C_WERR_LSA
 };
@@ -37,6 +38,8 @@ static const ArgSpec k_check_specs[] = {
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
     {C_PROC_NOT_PRIMITIVE, "--proc-not-primitive", ARG_VALUE, 0, 0, "<level>",
      "proc-not-primitive lint (W0030): error (default) | warn | allow"},
+    {C_DISCARDED_OK, "--discarded-ok", ARG_VALUE, 0, 0, "<level>",
+     "discarded-ok lint (W0016): error (default) | warn | allow"},
     {C_WNO_LSA, "-Wno-large-stack-array", ARG_FLAG, 0, 0, NULL, "disable the large-stack-array lint (W0026)"},
     {C_WERR_LSA, "-Werror=large-stack-array", ARG_FLAG, 0, 0, NULL,
      "promote the large-stack-array lint (W0026) to an error"},
@@ -90,6 +93,11 @@ int check_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 	if (cli_apply_proc_not_primitive(args_value(&p, C_PROC_NOT_PRIMITIVE)) != 0) {
 		fprintf(stderr, "%s: --proc-not-primitive expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "check", "[flags] <input.arche>", k_check_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_discarded_ok(args_value(&p, C_DISCARDED_OK)) != 0) {
+		fprintf(stderr, "%s: --discarded-ok expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "check", "[flags] <input.arche>", k_check_specs);
 		return ARCHE_USAGE;
 	}

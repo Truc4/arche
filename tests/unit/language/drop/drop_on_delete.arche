@@ -11,7 +11,7 @@ res :: enum { none } // a distinct resource type (backed by a small int)
 // Any archetype with a `res` column gets close-on-delete — the resource is the column type, not a
 // named container.
 Thing :: arche { r :: res }
-[4]Thing;
+[4]Thing ?abort;
 
 @drop(res)
 close_res :: proc(own r: res) {

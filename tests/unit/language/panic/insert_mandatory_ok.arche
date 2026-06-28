@@ -1,16 +1,17 @@
-// Mandatory-ok: insert reports success as a value. A successful insert sets ok=1; an insert into a
-// full fixed-capacity pool sets ok=0 instead of aborting. delete is panic-capable (a stale handle
-// aborts), so main is `proc`.
-// RUN: %arche build -o %t %s && %t | grep "ok1=1 ok3=0"
+// Mandatory-ok under a FALLIBLE policy: a `?reject` pool drops the row on overflow (`ok=0`), so every
+// insert MUST handle `ok` — discarding it (`_`) is the `discarded_ok` error. A successful insert sets
+// ok=1; an insert into a full pool sets ok=0 (reject, no abort). delete is panic-capable (a stale handle
+// aborts), so this runs in a `system`.
+// RUN: %arche build -o %t %s && %t | grep "ok1=1 ok2=1 ok3=0"
 #import { fmt }
 Particle :: arche { pos :: float }
-[2]Particle;
+[2]Particle ?reject;
 
 entry :: system {
   insert(Particle { pos: 1.0 })(h:, ok1:);
-  insert(Particle { pos: 2.0 })(_:, _:);
+  insert(Particle { pos: 2.0 })(_:, ok2:);
   insert(Particle { pos: 3.0 })(_:, ok3:); // pool full -> ok3 == 0
-  fmt.printf("ok1=%d ok3=%d\n", ok1, ok3);
+  fmt.printf("ok1=%d ok2=%d ok3=%d\n", ok1, ok2, ok3);
   delete(h)(_:);
 }
 

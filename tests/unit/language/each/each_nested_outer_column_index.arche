@@ -7,8 +7,8 @@
 
 T   :: arche { name :: [4]char }
 Acc :: arche { got :: int }
-[2]T;
-[1]Acc;
+[2]T ?abort;
+[1]Acc ?abort;
 
 seed :: system {
   insert(T { name: "ab" })(_:, _:);

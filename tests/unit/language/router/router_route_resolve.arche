@@ -15,8 +15,8 @@ Req   :: arche {
   best       :: int,
 }
 
-[8]Route;
-[8]Req;
+[8]Route ?abort;
+[8]Req ?abort;
 
 // Copy path[start..start+len) into buf as a NUL-terminated string (caller-side materialization).
 slice :: func(own buf: []char, path: []char, start: int, len: int) -> []char {

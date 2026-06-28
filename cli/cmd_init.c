@@ -46,7 +46,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		                 "// `Particle` pool; `[4]Particle` is the minimum it must size.\n"
 		                 "pos :: float;\n"
 		                 "vel :: float;\n"
-		                 "[4]Particle;\n";
+		                 "[4]Particle ?abort;\n";
 		if (write_new_file(ds_path, ds) != ARCHE_OK)
 			return ARCHE_ERR;
 
@@ -65,7 +65,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "\n"
 		    "/// ```arche\n"
 		    "/// seed :: system {\n"
-		    "///   insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
+		    "///   insert(Particle{ pos: 10.0, vel: 1.0 }); // `?abort` pool: overflow crashes, no `ok` to handle\n"
 		    "/// }\n"
 		    "/// check :: system {\n"
 		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\")();\n"
@@ -108,10 +108,10 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		         "// vocabulary — bare, never `physics.Particle`; only a device's systems are qualified.\n"
 		         "#import { physics fmt }\n"
 		         "\n"
-		         "[1000]Particle;    // the driver picks the storage size for the global shape\n"
+		         "[1000]Particle ?abort;    // driver picks the size + overflow policy for the global shape\n"
 		         "\n"
 		         "seed :: system {\n"
-		         "  insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);\n"
+		         "  insert(Particle{ pos: 10.0, vel: 1.0 }); // `?abort` pool: overflow crashes, no `ok` to handle\n"
 		         "}\n"
 		         "check :: system {\n"
 		         "  fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\")();\n"

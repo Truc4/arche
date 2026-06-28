@@ -7,7 +7,7 @@ pos(x, y)   :: float;
 vel(vx, vy) :: float;
 Particle    :: arche { pos, vel }
 
-[5]Particle;
+[5]Particle ?abort;
 
 entry :: system {
   insert(Particle { pos_x: 1.0, pos_y: 2.0, vel_vx: 0.5, vel_vy: 0.1 })(_:, _:);

@@ -6,7 +6,7 @@
 // for that miscompile, which only surfaced across the device/datasheet boundary (single-file flattened OK).
 // RUN: %arche build -o %t %s && %t | grep -qF "p=11 22 v=1 2"
 #import { tgdev fmt }
-[1]Mover;
+[1]Mover ?abort;
 seed :: system {
   insert(Mover { pos_x: 10, pos_y: 20, vel_x: 1, vel_y: 2 })(_:, _:);
 }

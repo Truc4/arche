@@ -7,7 +7,7 @@
 #import { fmt }
 
 Job :: arche { n :: int }
-[8]Job;
+[8]Job ?abort;
 
 seed :: system {
   insert(Job { n: 10 })(h0:, _:);

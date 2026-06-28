@@ -6,7 +6,7 @@ pos :: float;
 
 Particle :: arche { pos }
 
-[10]Particle;
+[10]Particle ?abort;
 
 bump :: map (query { pos }) {
   pos = pos + 2.0;

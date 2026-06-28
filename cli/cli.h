@@ -61,6 +61,10 @@ int cli_apply_pool_index(const char *value);
  * keep the error-by-default. Shared by build/check/run. */
 int cli_apply_proc_not_primitive(const char *value);
 
+/* Apply `--discarded-ok=error|warn|allow` (W0016 discarded_ok — an insert into a `reject` pool that ignores
+ * `ok`). NULL → keep the error-by-default. Shared by build/check/run. */
+int cli_apply_discarded_ok(const char *value);
+
 /* Read a whole file into a freshly malloc'd, NUL-terminated buffer (caller frees). On error prints
  * a perror message and returns NULL. Shared by the build/check/run subcommands. */
 char *cli_read_file(const char *path);

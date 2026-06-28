@@ -4,9 +4,9 @@ Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
 
-[100]Particle;
+[100]Particle ?abort;
 
-[50]Body;
+[50]Body ?abort;
 
 step :: map (query { pos, vel }) {
   pos = pos + vel;

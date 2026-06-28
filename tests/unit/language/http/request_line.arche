@@ -14,7 +14,7 @@ Req :: arche {
   target_len   :: int,
   ok           :: int,
 }
-[4]Req;
+[4]Req ?abort;
 
 // Compare the span raw[start : start+len] to a NUL-terminated literal.
 span_eq :: func(raw: []char, start: int, len: int, lit: []char) -> int {

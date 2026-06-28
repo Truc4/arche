@@ -3,9 +3,9 @@
 // row's n gains the broadcast id (99).
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-[8]Mover(3);
+[8]Mover(3) ?abort;
 Mover :: arche { n :: int }
-[1]Win;
+[1]Win ?abort;
 Win :: arche { id :: int }
 
 Nums :: query { n }

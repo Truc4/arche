@@ -3,6 +3,7 @@
 // The build emits a note that the shape is shared. This driver sizes the one pool at 16 and runs both
 // devices' systems over it.
 // RUN: %arche build -o %t %s 2> %t.err && %t | grep "shared_ok" && grep -qiE "shared pool|both require|datasheets require" %t.err
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { store cache fmt }
 
 [16]Node; // one pool (the shape comes from the devices), sized to the max of store's 4 and cache's 16

@@ -96,6 +96,7 @@ typedef struct {
 	int static_pool_count;          /* POOL: field 0 as an int if a literal, else -1 */
 	int static_init_length_present; /* POOL: 1 if an init_size argument was given */
 	int static_init_count;          /* POOL: the init_size (M in `Arch[N](M)`) as an int if a literal, else 0 */
+	char *overflow_policy;          /* POOL: the `[N]P ?handler` overflow policy name, or NULL (defaults to reject) */
 	/* device / datasheet provenance + suppressions (cross-decl sweeps read these) */
 	int from_device_impl;
 	int is_datasheet;

@@ -4,7 +4,7 @@
 #import { fmt }
 Foo :: arche { x :: float, y :: float }
 
-[4]Foo;
+[4]Foo ?abort;
 
 entry :: system {
   insert(Foo { x: 1.0, y: 2.0 })(_:, _:);

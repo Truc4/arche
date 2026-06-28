@@ -100,6 +100,7 @@ enum {
 	R_SYS_FOREIGN_WRITE,
 	R_POOL_INDEX,
 	R_PROC_NOT_PRIMITIVE,
+	R_DISCARDED_OK,
 	R_WNO_LSA,
 	R_WERR_LSA
 };
@@ -128,6 +129,8 @@ static const ArgSpec k_run_specs[] = {
      "pool-index-outside-query lint (W0029): warn (default) | error | allow"},
     {R_PROC_NOT_PRIMITIVE, "--proc-not-primitive", ARG_VALUE, 0, 0, "<level>",
      "proc-not-primitive lint (W0030): error (default) | warn | allow"},
+    {R_DISCARDED_OK, "--discarded-ok", ARG_VALUE, 0, 0, "<level>",
+     "discarded-ok lint (W0016): error (default) | warn | allow"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -187,6 +190,11 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 	if (cli_apply_proc_not_primitive(args_value(&p, R_PROC_NOT_PRIMITIVE)) != 0) {
 		fprintf(stderr, "%s: --proc-not-primitive expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_discarded_ok(args_value(&p, R_DISCARDED_OK)) != 0) {
+		fprintf(stderr, "%s: --discarded-ok expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
 		return ARCHE_USAGE;
 	}

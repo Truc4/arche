@@ -643,6 +643,31 @@ A bounds policy binds `(len, i)` and **mutates `i`** (a divide policy binds and 
 @policy(divide) zero :: policy(a: int, b: int) { if (b == 0) { a = 0; b = 1; } }  // n/d → 0 when d==0
 ```
 
+### Pool overflow & `ok`
+
+A pool is the third policy category. `insert` resolves an overflow handler — per-call `?name` › the
+pool's declared `[N]P ?name` › `@default(proc, pool, X)` › the **`reject`** baseline — and the choice
+gates whether the call must handle `ok`:
+
+- **`reject`** (the default) is *fallible*: a full pool drops the row and reports `ok = 0`. Because the
+  insert can fail observably, the call **must handle `ok`** — bind it to a real name (not `_`). Discarding
+  it (`insert(P{…})(_:, _:)`) ignores a real failure: the `discarded_ok` lint, **error by default**
+  (`--discarded-ok=warn|allow` demotes it; `@allow(discarded_ok)` suppresses one site).
+- **`?abort`** crashes loudly on overflow (a full pool is a programmer error, like an out-of-bounds index),
+  and **`?evict_*`** custom policies make room. These are *infallible* — the caller never sees `ok = 0` —
+  so there is no `ok` to handle: `insert(P{…})` with no out-list (or `(h:)` for just the handle) is the
+  clean form. `delete(h)` is likewise infallible (it aborts on a stale handle).
+
+So you never silently ignore overflow: either the pool declares a visible policy that handles it, or you
+handle `ok` at the call site. A pool policy binds `(count, cap, ok, slot)` — set `ok = 0` to reject, or
+redirect `slot` to a victim row to evict:
+
+```arche
+[8]Conn ?abort;              // a full connection pool crashes — overflow is a bug here
+[64]Job ?evict_oldest;       // … or evict the oldest job to make room
+[16]Pending;                 // no policy → reject: every `insert` must check `ok`
+```
+
 ### Narrowing crash sources
 
 `!abort` is the *deliberate* crash site, and these flags ban it — but no single flag proves a build

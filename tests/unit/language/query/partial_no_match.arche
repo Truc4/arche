@@ -6,8 +6,8 @@ pos     :: float;
 vel     :: float;
 Full    :: arche { pos, vel }
 PosOnly :: arche { pos }
-[4]Full;
-[4]PosOnly;
+[4]Full ?abort;
+[4]PosOnly ?abort;
 
 Movers :: query { pos, vel }
 

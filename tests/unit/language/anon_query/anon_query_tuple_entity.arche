@@ -2,6 +2,7 @@
 // — anonymous storage, a named query as the handle, an entity constructed through the query with grouped
 // tuple fields, and reads through the query.
 // RUN: %arche build -o %t %s && %t | grep -qF "p=4 6"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { fmt }
 pos(x, y) :: float;
 vel(x, y) :: float;

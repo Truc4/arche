@@ -2,6 +2,7 @@
 // query `Movers` is the sole handle — map over it, insert an entity through it, read columns through it.
 // The idiom: named queries + anonymous archetypes.
 // RUN: %arche build -o %t %s && %t | grep -qF "ok"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { fmt }
 pos :: float;
 vel :: float;

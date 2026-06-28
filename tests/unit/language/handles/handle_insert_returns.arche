@@ -2,7 +2,7 @@
 #import { fmt }
 Player :: arche { pos :: float }
 
-[10]Player;
+[10]Player ?abort;
 
 entry :: system {
   insert(Player { pos: 1.0 })(h:, _:);

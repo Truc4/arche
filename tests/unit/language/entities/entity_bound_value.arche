@@ -1,11 +1,12 @@
 // RED until entities ship: an entity is a first-class VALUE — bind it, then insert it. `insert(e)` infers
 // the pool from e's archetype. Field order in the literal is irrelevant (named, not positional).
 // RUN: %arche build -o %t %s && %t | grep -qF "v=2 tag=7"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { fmt }
 v   :: int;
 tag :: int;
 B   :: arche { v, tag }
-[4]B;
+[4]B ?abort;
 
 entry :: system {
   e := B { tag: 7, v: 2 }; // out of declaration order — names bind, not position

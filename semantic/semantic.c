@@ -80,6 +80,11 @@ struct SemanticContext {
 	ArchetypeInfo **archetypes; /* one per unique shape */
 	int archetype_count;
 
+	/* `@default(proc, pool, X)` policy name (the program-wide pool overflow default), or NULL → reject.
+	 * Cached during decl collection so the insert `ok`-gate can resolve fallibility. Not owned (points
+	 * into the syntax tree source via a sem_dupz copy freed in semantic_context_free). */
+	char *default_pool_policy;
+
 	AliasEntry **aliases; /* one per arche declaration */
 	int alias_count;
 
@@ -1059,6 +1064,7 @@ static void mark_last_const(SemanticContext *ctx) {
 static void analyze_expression(SemanticContext *ctx, SyntaxView v);
 static void analyze_statement(SemanticContext *ctx, SyntaxView v);
 static void analyze_inline_each(SemanticContext *ctx, SyntaxView f);
+static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name);
 static ParamSummary sem_param_summary_node(SyntaxView p);
 static int proc_param_is_inout(DeclSummary *proc, int param_idx);
 
@@ -2588,10 +2594,18 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		 * be the value of a proc-call statement carrying an out-list. A bare `insert(…)`, an `x := insert(…)`
 		 * bind, or a nested `i32(insert(…))` (any context with !call_stmt_ok) is rejected here. The valid
 		 * `insert(P,…)(h:, ok:)` / `delete(h)(ok:)` form analyzes its call with call_stmt_ok set. */
-		if (strcmp(func_name, "insert") == 0 && !outlist_call_ok)
-			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
-		if (strcmp(func_name, "delete") == 0 && !outlist_call_ok)
-			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
+		if (strcmp(func_name, "insert") == 0 && !outlist_call_ok) {
+			/* A bare `insert(E{…})` (no out-list) is allowed only into an INFALLIBLE pool — there is no `ok`
+			 * to handle. A fallible (`reject`) pool still requires the `(handle:, ok:)` statement form. */
+			SyntaxView ie0 = sem_node_at_expr(v, 0);
+			char *ianm =
+			    (sv_present(ie0) && sv_kind(ie0) == SN_ENTITY_EXPR) ? sem_txt_dup(sv_token(ie0, TOK_IDENT)) : NULL;
+			int ifall = sem_insert_is_fallible(ctx, v, ianm);
+			free(ianm);
+			if (ifall)
+				sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+		}
+		/* `delete` aborts on a stale handle (infallible) → no `ok` to handle, so a bare `delete(h)` is fine. */
 		if (strcmp(func_name, "insert") == 0)
 			sem_check_insert_handler(ctx, v, loc); /* validate the `?handler` (sigil + @policy(pool)) */
 
@@ -2925,6 +2939,48 @@ static int sem_read_mb_targets(SemanticContext *ctx, SyntaxView v, MbTarget **ou
 #undef SEM_MB_FLUSH
 	*out = ts;
 	return n;
+}
+
+/* Is an `insert` into `arch_name` FALLIBLE — i.e. can it leave `ok=0`, so the call must handle `ok`?
+ * Resolves the overflow policy exactly like codegen's `cg_insert_handler`: per-call `?h` › pool decl `?h`
+ * › `@default(proc,pool,X)` › baseline `reject`. Only `reject` is fallible; `abort`/`evict_*`/custom are
+ * infallible (the policy handles overflow — its non-`reject` name signals "I handle it"). */
+static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name) {
+	/* 1. per-call `?handler` on the insert (`insert(P{…}) ?abort`). */
+	SyntaxView pol = sv_child(call, SN_POLICY_REF);
+	if (sv_present(pol)) {
+		char *pn = sem_txt_dup(sv_token(pol, TOK_IDENT));
+		int fall = pn && strcmp(pn, "reject") == 0;
+		free(pn);
+		return fall;
+	}
+	/* 2. the pool's declared `[N]P ?handler` (a STATIC_KIND_ARCHETYPE decl). SKIP `is_requirement` decls —
+	 * a datasheet `[N]P` minimum carries no policy; the DRIVER's real pool does (mirrors codegen's
+	 * `pool_overflow_policy`). Scanning past requirements also means a per-file view that sees ONLY the
+	 * datasheet minimum finds no real pool → the leniency below applies. */
+	int pool_found = 0;
+	if (arch_name)
+		for (int i = 0; i < ctx->decl_count; i++) {
+			DeclSummary *d = ctx->decls[i];
+			if (d && d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARCHETYPE && !d->is_requirement &&
+			    d->name && strcmp(d->name, arch_name) == 0) {
+				pool_found = 1;
+				if (d->overflow_policy)
+					return strcmp(d->overflow_policy, "reject") == 0;
+				break; /* found, but no `?handler` → fall through to @default / baseline */
+			}
+		}
+	/* 3. The pool is NOT declared in this analysis unit — e.g. a module/device file analyzed on its own
+	 * (the LSP, or `arche check <module>`), where the DRIVER owns the pool and its policy. We cannot see
+	 * the policy, so be LENIENT (treat as infallible: don't demand `ok`, allow the bare form). A genuinely
+	 * pool-less insert surfaces as a separate `no storage` error, and a WHOLE-PROGRAM build always sees the
+	 * pool — so this only relaxes the per-file view, keeping the LSP in step with the compiler. */
+	if (!pool_found)
+		return 0;
+	/* 4. pool found but no `?handler` → program `@default(proc, pool, X)` › `reject` baseline. */
+	if (ctx->default_pool_policy)
+		return strcmp(ctx->default_pool_policy, "reject") == 0;
+	return 1;
 }
 
 static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
@@ -3529,18 +3585,30 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				mb_builtin = "delete";
 			free(cnf);
 		}
-		/* Validate the mandatory out-list arity: insert → (handle:, ok:), delete → (ok:). */
-		if (mb_builtin && strcmp(mb_builtin, "insert") == 0 && mbt_count != 2)
-			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
-		if (mb_builtin && strcmp(mb_builtin, "delete") == 0 && mbt_count != 1)
-			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
-		/* W0016 discarded_ok: the capacity/handle `ok` (insert's 2nd out, delete's only out) was
-		 * discarded with `_` — a silently-ignored failure. */
-		if (mb_builtin) {
-			int ok_idx = (strcmp(mb_builtin, "insert") == 0) ? 1 : 0;
-			if (ok_idx < mbt_count && mbt[ok_idx].name && strcmp(mbt[ok_idx].name, "_") == 0)
-				sem_emit_lint_discarded_ok(ctx, loc, mb_builtin);
+		/* Out-list arity + the `ok`-handling rule, gated on the pool's overflow policy:
+		 *  • insert into a FALLIBLE pool (`reject` — the default): the insert can drop the row, so `ok`
+		 *    MUST be handled — slot 1 present and non-`_`. Discarding it (or omitting it) is the
+		 *    `discarded_ok` error. The handle (slot 0) stays optional.
+		 *  • insert into an INFALLIBLE pool (`?abort`/`?evict_*`/custom): overflow is handled by the
+		 *    policy, so `ok` is meaningless — 0/1/2 outs all legal, no lint.
+		 *  • delete aborts on a stale handle (infallible) → 0 or 1 out, no lint.
+		 * More outs than the builtin produces is always an error. */
+		if (mb_builtin && strcmp(mb_builtin, "insert") == 0) {
+			SyntaxView e0 = sv_present(mb_value) ? sem_node_at_expr(mb_value, 0) : (SyntaxView){NULL, v.src};
+			char *arch_nm =
+			    (sv_present(e0) && sv_kind(e0) == SN_ENTITY_EXPR) ? sem_txt_dup(sv_token(e0, TOK_IDENT)) : NULL;
+			int fallible = sem_insert_is_fallible(ctx, mb_value, arch_nm);
+			free(arch_nm);
+			if (mbt_count > 2) {
+				sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+			} else if (fallible) {
+				int ok_handled = (mbt_count == 2 && mbt[1].name && strcmp(mbt[1].name, "_") != 0);
+				if (!ok_handled)
+					sem_emit_lint_discarded_ok(ctx, loc, "insert");
+			}
 		}
+		if (mb_builtin && strcmp(mb_builtin, "delete") == 0 && mbt_count > 1)
+			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
 
 		/* RUN SITE (Eff): when the call value is an Eff — an extern under-applied, directly or built and
 		 * returned by a func — the out-args RUN it, binding the Eff's out-slots. Type each target from the
@@ -4660,6 +4728,15 @@ static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	 * callback feature is orthogonal to proc-elimination — leave it for now. */
 	for (int i = 0; i < proc->param_count; i++)
 		if (name_is_proc_typed_param(ctx, proc, proc->params[i].name))
+			return;
+
+	/* A proc taking an `archetype` param is a compile-time REFLECTIVE GENERIC: it is monomorphized per
+	 * archetype and walks the fields with `#each_field`, exactly the way a callback proc monomorphizes per
+	 * callback. Like callbacks, archetype reflection is orthogonal to proc-elimination — it is not a
+	 * result-dependent effectful sequence to decompose across systems — so it stays a proc. (`csv.load` is
+	 * the canonical case: an archetype-targeted loader.) */
+	for (int i = 0; i < proc->param_count; i++)
+		if (tyid_kind(ctx->ty_arena, proc->params[i].type_id) == TYK_ARCHETYPE_CATEGORY)
 			return;
 
 	/* `proc` is being removed. Only `#foreign`/`@syscall`/`@intrinsic` primitives (returned above via
@@ -8334,6 +8411,8 @@ static void sem_check_default_directives(SemanticContext *ctx, const SyntaxNode 
 			sem_emit_duplicate_default(ctx, loc, kindname, catname);
 		} else {
 			seen[effect][cat] = 1;
+			if (effect == 0 && cat == 2 && policy) /* @default(proc, pool, X): cache for the insert ok-gate */
+				ctx->default_pool_policy = sem_dupz(policy);
 		}
 		free(policy);
 	}
@@ -9370,6 +9449,7 @@ static SemanticContext *make_context(void) {
 	SemanticContext *ctx = malloc(sizeof(SemanticContext));
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
+	ctx->default_pool_policy = NULL;
 	ctx->decls = NULL;
 	ctx->decl_count = 0;
 	ctx->interfaces = NULL;
@@ -9910,6 +9990,12 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 					sem_synth_shape_name(ash, an, sizeof(an));
 			}
 			ds->name = sem_dupz(an);
+			/* `[N]P ?handler` — the pool's overflow policy (gates whether an insert must handle `ok`). */
+			{
+				SyntaxView ovp = sv_child(dv, SN_POLICY_REF);
+				if (sv_present(ovp))
+					ds->overflow_policy = sem_txt_dup(sv_token(ovp, TOK_IDENT));
+			}
 		} else {
 			char *aname = sem_txt_dup(sv_token(dv, TOK_IDENT));
 			SyntaxView arr_ty = sem_type_at(dv, 0);
@@ -10379,6 +10465,7 @@ static void free_decl_summary(DeclSummary *ds) {
 		return;
 	free(ds->name);
 	free(ds->drop_type);
+	free(ds->overflow_policy);
 	for (int p = 0; p < ds->param_count; p++)
 		free(ds->params[p].name);
 	free(ds->params);
@@ -10531,6 +10618,7 @@ void semantic_context_free(SemanticContext *ctx) {
 
 	sem_model_free(ctx->model);
 	sem_hints_free(ctx->hints);
+	free(ctx->default_pool_policy);
 
 	for (int i = 0; i < ctx->diag_count; i++) {
 		SemDiag *d = ctx->diags[i];
