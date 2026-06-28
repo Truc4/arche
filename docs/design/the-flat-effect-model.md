@@ -222,13 +222,14 @@ always *is* the program's complete, auditable effect surface.
 
 ### The convenience layer: stdlib procs become funcs→`Eff`
 
-This has a sharp, practical consequence the moment you read the real stdlib. Today `net.recv`,
-`http.respond`, `io.read`, `os.now_ms` are **procs** — convenience wrappers over the true leaves
-(`net_recv` / `net_send` externs; `os.syscall`). Under the ban a func may **not** wrap a proc, so these
-can't be lifted to `Eff` as written: wrapping `http.respond` would be the proc→proc loophole wearing a
-func hat. The fix isn't to keep them procs — it's to rewrite the convenience layer itself as
-**funcs→`Eff`** that wrap the *real* primitive, never another proc. Almost every wrapper is exactly
-that shape: a thin builder around one primitive.
+This has a sharp, practical consequence the moment you read the real stdlib. Historically `net.recv`,
+`http.respond`, `io.read`, `os.now_ms` were **convenience procs** — wrappers over the true leaves
+(`net_recv` / `net_send` externs; `os.syscall`). Under W0030 a non-foreign `proc` is gone, and a func may
+**not** wrap a runnable unit, so these can't be lifted to `Eff` as written: wrapping `http.respond` would
+launder a runnable unit into a value (the loophole the model forbids). The fix is to rewrite the convenience
+layer itself as **funcs→`Eff`** that wrap the *real* primitive, never another runnable unit. Almost every
+wrapper is exactly that shape: a thin builder around one primitive. (This net/io/http rewrite is staged;
+until it lands, those wrappers carry the foreign-boundary forms they need.)
 
 > **The settled recipe — the lib builds the raw effect as a `func → Eff`; the cook rides inside it.** A
 > wrapper is `func(args…) -> Eff(<the primitive's out-slots>)` — a thin builder around one primitive, never
@@ -555,42 +556,44 @@ No free lunches; here are the bills.
 > `#run`-collection rule, the pacing recipe, and state-in-pools — lives in
 > [scheduling.md](scheduling.md). Where they overlap, scheduling.md is the current source of truth.
 
-There is no `main`. A program is its declarations plus one **`Schedule`** value, and the **runtime**
-executes that value. The runtime is the loop and the apex of the spine — and it is not a kind you write.
-A `main`-as-driver-proc cannot exist: a proc may not reach a proc, so a top-level proc could never run the
-program's effectful work without being the very thing the model forbids. The roles `main` used to play
-split cleanly and each becomes a value the runtime runs: the **entry** is the runtime, **setup** is a
-`Schedule`, the **loop** is a `Schedule`, **per-tick work** is a `Schedule`.
+There is no `main` (a decl named `main` is **E0225**). A program is its declarations plus one **`Schedule`**
+value, and the **runtime** executes that value. The runtime is the loop and the apex of the spine — and it
+is not a kind you write. A `main`-as-driver cannot exist: a top-level effectful unit is a `system`, and a
+system may not call a system, so it could never compose the program's work without being the very thing the
+model forbids. The roles `main` used to play split cleanly and each becomes a value the runtime runs: the
+**entry** is the runtime, **setup** is a `Schedule`, the **loop** is a `Schedule`, **per-tick work** is a
+`Schedule`.
 
 **The schedule is a value, built the same way effects are.** §3 reified an effect as a value (an extern
-under-applied by its out-slots) so a proc never has to call a proc. Scheduling reifies the *loop* the same
-way: the imperative driver-loop you can't write — it would be a proc reaching procs — becomes a `Schedule`
-value you compose, and the runtime runs it. Effects → `Eff`; pacing and dispatch → `Schedule`. One move,
-both halves.
+under-applied by its out-slots) so a system never has to call a system. Scheduling reifies the *loop* the
+same way: the imperative driver-loop you can't write — it would be a system reaching systems — becomes a
+`Schedule` value you compose, and the runtime runs it. Effects → `Eff`; pacing and dispatch → `Schedule`.
+One move, both halves.
 
-**Systems stay flat: a `system` may not call a `system`.** This is the `proc→proc` ban one rung up, and
-it holds for the same reason — *legibility*, not the stack bound (a non-recursive deeper spine is
-computable too, §6; depth-1 only makes the bound a one-liner). Read the schedule and you have the
-complete inventory of effect-bearing units; let systems call systems and the effect set hides inside a
-call graph nobody can see at a glance — the exact rot §1 opens by condemning. The survey is blunt: 4 of 5
-frameworks forbid system-calls-system outright; the one that allows it (Unity DOTS `ComponentSystemGroup`)
-had to invent a separate composer kind and pays with an unbounded depth-first spine — the precise
-anti-arche choice. **Composition lives in the schedule, never in inter-system calls.**
+**Systems stay flat: a `system` may not call a `system`.** This is the §1 ban restated at the level it now
+lives — effects are inert values a system runs, and systems are *scheduled*, not called. It holds for
+*legibility*, not the stack bound (a non-recursive deeper spine is computable too, §6; depth-1 only makes
+the bound a one-liner). Read the schedule and you have the complete inventory of effect-bearing units; let
+systems call systems and the effect set hides inside a call graph nobody can see at a glance — the exact rot
+§1 opens by condemning. The survey is blunt: 4 of 5 frameworks forbid system-calls-system outright; the one
+that allows it (Unity DOTS `ComponentSystemGroup`) had to invent a separate composer kind and pays with an
+unbounded depth-first spine — the precise anti-arche choice. **Composition lives in the schedule, never in
+inter-system calls.**
 
-**The composition spine has four levels, capped at both ends.** Each level composes only the level
+**The composition spine has three levels, capped at both ends.** Each level composes only the level
 directly beneath it, and nothing composes its own level:
 
 ```
-runtime  ── runs → the Schedule, which dispatches → systems   ← apex: the loop, NOT a kind
-  system ── composes → procs + maps                            ← the composer (dispatched, never called)
-    proc ── composes → externs                                 ← a flat effect leaf (never a proc)
-      extern ── the atom: one syscall                          ← floor: the primitive boundary (§4)
+schedule ── runs → systems, in order             ← apex: the Schedule the runtime walks (NOT a kind)
+  system ── composes → maps + funcs + externs     ← the effect leaf + composer (scheduled, never called)
+    extern ── the atom: one syscall               ← floor: the primitive boundary (§4)
 ```
 
-The "no same-level" rule *is* the ban, generalized: **proc ✗ proc** forces effect-composition up into
-systems; **system ✗ system** forces system-ordering up into the `Schedule`. It terminates instead of
-towering because the apex is the **runtime** — not a kind you can ask "what composes *it*" — and the floor
-is the **extern**. Four fixed levels; no `driver`, no super-system. (Orthogonal to the spine sits the value
+The "no same-level" rule *is* the ban: **system ✗ system** forces system-ordering up into the `Schedule`,
+and a system's own body composes the effects beneath it (funcs build the `Eff`, the system runs it down to a
+terminal extern — no system in between). It terminates instead of towering because the apex is the
+**schedule** the runtime walks — not a kind you can ask "what composes *it*" — and the floor is the
+**extern**. Three fixed levels; no `driver`, no super-system. (Orthogonal to the spine sits the value
 plane: `func` builds `Eff` and `Schedule` values, `map` is the data-parallel kernel.)
 
 **The core is small — the runtime's ABI.** The runtime natively interprets a fixed set of `Schedule`
@@ -604,7 +607,7 @@ the compile-time fold, and the `#run`-collection rule are in [scheduling.md](sch
 `forever` ship (in `core.arche`); any other *structural* combinator is yours to write as a func returning
 `Schedule`:
 
-```arche
+```
 once    :: func(s: Schedule) -> Schedule { return seq({ s, halt }); }
 forever :: func(s: Schedule) -> Schedule { return loop(s); }
 ```
@@ -648,7 +651,7 @@ seam (Bevy `ApplyDeferred`, Unity `EntityCommandBufferSystem`, Legion `.flush()`
 universal), event pools drained next tick, and singleton (`[1]`-pool) state. `input→sim→draw` is three
 flat systems the schedule sequences, data flowing through pools — not a call between them.
 
-```arche
+```
 [256]InputEvent;   [256]RenderCmd;            // event channels, drained next tick
 [1]Sim;   Sim :: arche { /* sim state */ }    // a [1] singleton — NOT a "World" (that's all the pools)
 
@@ -686,7 +689,7 @@ ticks / sub-schedules** (sub-stepped physics, a rollback re-sim, a nested mini-g
 a `Schedule` — no new keyword, because values nest. And a **reusable named sequence of systems** is just a
 `func` returning a `Schedule` — the "reuse residue" dissolves too.
 
-```arche
+```
 #run seq({ boot, forever(serve) })   // setup once, then loop — one value (leaves are bare names)
 ```
 
@@ -729,8 +732,8 @@ singleton case is genuine ambient state.
 
 **The handle is private; only properties surface.** Split the window's two roles. The **handle/connection**
 (the X11 display pointer, the fd, the plumbing) is a device-*internal* singleton — never named by user code,
-read only by gfx's own systems (`present`, `clear`). It sits behind the public systems exactly as the proc
-and foreign externs do. The window's **properties** (width, height) surface *only when user code reads them*:
+read only by gfx's own systems (`present`, `clear`). It sits behind the public systems exactly as the
+foreign externs do. The window's **properties** (width, height) surface *only when user code reads them*:
 gfx publishes a read-only `Screen { width, height }` singleton that a layout map reads like any other ambient
 state. So the user never sees, names, or passes the handle — the discomfort of "manually passing a singleton"
 is answered by *not exposing the handle at all*, not by passing it some other way.
@@ -757,16 +760,17 @@ the system ban. What remains:
   pacing that *derives*. A fundamentally new execution semantics (preemption, I/O-completion
   dispatch) would be a new runtime primitive, not a library `func` — and that needs runtime support.
 
-### A second, unrelated open problem (from §4): result-dependent reusable convenience
+### A second, unrelated point (from §4): result-dependent reusable convenience — resolved by ECS, no new kind
 
 The convenience-layer rewrite (§4) lifts almost every stdlib wrapper to a func→`Eff`. The holdouts are the
 wrappers whose own body is monadic — `io.fread_line`, a retry loop, a framed read: not a func (impure),
-not an `Eff` (a free monad — allocating, unbounded), not a sub-proc (procs aren't values). The proposed fix
-is a fourth construct — a **`routine`**: a proc-bodied unit the compiler splices into the caller
-(monomorphized, no independent frame). Reusable *and* result-dependent, yet flattened at compile time, so
-the depth-1 spine and trivial bound survive and no free monad returns (structure static, only the frame
-inlined). Note the symmetry: this is the proc-level twin of the system-level phase construct above — both
-are compile-time-flattened reuse, neither relaxes a runtime nesting ban. Not settled.
+not an `Eff` (a free monad — allocating, unbounded), not a value at all. An earlier draft proposed a fourth
+construct (a compiler-spliced `routine`) to make these reusable *and* result-dependent. **That construct was
+rejected.** Result-dependent reusable convenience is handled by **ECS decomposition**, not a new kind: a
+producer `system`/`each` writes the assembled result to a column, a consumer reads it — the monadic loop
+lives in one leaf, the *sharing* is a data edge in the schedule. (The single sanctioned program-wide
+exception is `csv.load`, under `@allow(proc_not_primitive)`, pending a first-class archetype-targeted load
+system.)
 
 ## 10. Isn't this just the IO monad? (yes, and:)
 
@@ -776,30 +780,31 @@ Worth saying plainly, because a careful reader sees it immediately: **`Eff(T…)
 sides: a `func … -> Eff(…)` is a *colored* function — its signature announces it traffics in effects,
 exactly like `Int -> IO a` in Haskell — even though running it is pure. So there are really three
 shades: a pure `func … -> T`, an effect-building `func … -> Eff`, and an effect-running
-`proc`/`system`, with `Eff` the color threading through all of them. The need to *run* an effect then
-infects outward to the nearest impure leaf, exactly as `IO` infects up to `main`. Same coloring, same
-infection, same effects-as-values. We are not escaping the IO monad; we are constraining it.
+`system`/`each`, with `Eff` the color threading through all of them. The need to *run* an effect then
+infects outward to the nearest impure leaf, exactly as `IO` infects up to `main` (here, up to a scheduled
+system). Same coloring, same infection, same effects-as-values. We are not escaping the IO monad; we are
+constraining it.
 
 What's different is *not* the absence of coloring — it's two constraints layered on top, each of which
 earns its keep only in a no-GC systems language:
 
 1. **The effectful color can't nest.** Haskell's `IO` composes to arbitrary depth — `IO` bound to
-   `IO` bound to `IO`, forever. arche has no such construct: a proc has no way to spell a call to
-   another proc, so the effect spine is depth-1 by construction — not forbidden by a rule, just
+   `IO` bound to `IO`, forever. arche has no such construct: a system has no way to spell a call to
+   another system, so the effect spine is depth-1 by construction — not forbidden by a rule, just
    unspellable. What makes the whole-program stack bound *provable* is static dispatch and
    monomorphization (a non-recursive deeper spine would be computable too); what depth-1 adds is that
-   the bound is *trivial* — `max(system) + max(proc) + max(extern)`, by inspection. `IO`, whose spine
+   the bound is *trivial* — `max(system) + max(extern)`, by inspection. `IO`, whose spine
    nests to arbitrary depth, gives you neither the triviality nor (without a totality checker) the
    bound.
 2. **The value layer is a free *selective*, not a monad.** In Haskell you can write
    `eff1 >>= \x -> eff2 x` as a value, anywhere. In arche you cannot: `Eff`'s effect *set* is fixed
    statically — `whenS`/`ifS` can conditionally *execute* a known effect (gate it on a pure value), but
    no runtime result can change *which* effects exist. Result-dependent sequencing exists only
-   imperatively, inside one flat proc. So arche's coloring is in fact *stricter* than `IO`'s — a pure
-   func can gate effects but can't *consume* an effect's result to choose the next; it builds the `Eff`
-   and hands it up.
+   imperatively, inside one flat system/each. So arche's coloring is in fact *stricter* than `IO`'s — a
+   pure func can gate effects but can't *consume* an effect's result to choose the next; it builds the
+   `Eff` and hands it up.
 
-Two mechanism differences sit on top (not coloring): dispatch is **static and swappable** (the system
+Two mechanism differences sit on top (not coloring): dispatch is **static and swappable** (the schedule
 picks the executor at compile time — the testability story; `IO` is one fixed RTS interpreter), and
 values are **bounded and heap-free** (`IO` actions and transformer stacks allocate).
 
@@ -817,16 +822,16 @@ what it buys.
 - **Free applicative / selective / monad (Mokhov, Lukyanov, Marlow, Dimino, ICFP 2019):** a column of
   `Eff` values built by pure code and drained by one interpreter *is* a free applicative; `whenS`/`ifS`
   lift it to the **selective** rung (conditional execution of a static effect set); the
-  run-it-inline-in-a-proc tail is the controlled climb to the monadic rung for result-dependent cases.
-- **Call-by-push-value:** `func` (value) vs `proc` (computation) is the CBPV distinction, drawn as
-  kinds.
+  run-it-inline-in-a-system tail is the controlled climb to the monadic rung for result-dependent cases.
+- **Call-by-push-value:** `func` (value) vs `system`/`each` (computation) is the CBPV distinction, drawn
+  as kinds.
 - **Bevy `Commands`:** the deferred structural command buffer flushed at a barrier — which arche ships
   — generalized here from structural ops to all effects.
 
 ## 12. The one-paragraph version
 
-Make effects *values* that pure functions build and one impure leaf runs; give a procedure no way to
-call a procedure so the effect graph is flat by construction; let a composer thread results between leaves;
-run it all on one deterministic timeline. You get flat, explicit, heap-free, testable, data-oriented
+Make effects *values* that pure functions build and one impure leaf — a `system`/`each` — runs; give a
+system no way to call a system so the effect graph is flat by construction; let the schedule thread systems
+through pool data; run it all on one deterministic timeline. You get flat, explicit, heap-free, testable, data-oriented
 effects with a stack bound you can prove — not by inventing machinery, but by noticing that arche's
 no-heap, static-pool, column-shaped world already wanted to work this way.
