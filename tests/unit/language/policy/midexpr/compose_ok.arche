@@ -3,7 +3,7 @@
 // index produced by a policy'd read, and policies in distinct call arguments, all clamp independently.
 // (Contrast the *_shortcircuit tests, where a policy in a `&&`/`||` operand is the open defect.)
 // RUN: %arche build -o %t %s && %t | grep -qF "r=5"
-#import { os  fmt }
+#import { os fmt }
 g :: func(x: int, y: int) -> int {
   return x + y;
 }

@@ -3,8 +3,8 @@
 // (Regression: this used to fail with "type alias 'tau' has unknown backing type 'pi'".)
 // RUN: %arche build -o %t %s && %t | grep "tau: 3"
 #import { fmt }
-pi   :: 3;
-tau  :: pi;
+pi    :: 3;
+tau   :: pi;
 entry :: system {
   fmt.printf("tau: %d\n", tau);
 }

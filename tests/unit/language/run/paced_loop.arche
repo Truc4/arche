@@ -23,7 +23,7 @@ frame :: system {
   Clock.last[0] = now;
   for (; Clock.bank[0] >= 16;) {
     Clock.bank[0] = Clock.bank[0] - 16;
-    Counter.n[0] = Counter.n[0] + 1; // drain one owed tick (the sim step is the system's own work now)
+    Counter.n[0]  = Counter.n[0] + 1; // drain one owed tick (the sim step is the system's own work now)
   }
   if (Counter.n[0] >= 3) {
     os.exit(Counter.n[0])(_:);

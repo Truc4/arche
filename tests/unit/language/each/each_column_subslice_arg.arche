@@ -1,0 +1,20 @@
+// RUN: %arche build -o %t %s && %t | grep -q "^bcd ef$"
+// Regression: a `[N]char` ARRAY column sub-slice `raw[lo:hi]` passed as a CALL ARGUMENT (here a `%.*s`
+// vararg) must materialize THIS row's element pointer + the sub-slice length. It used to fall through
+// `codegen_slice` (which handled only NAME slice-vars and local `[N]char` buffers) and emit a `null`
+// pointer plus a literal `length` token — invalid IR. A local array sub-slice already worked; only the
+// query-column case was broken.
+#import { fmt }
+
+S :: arche { raw :: [16]char }
+[1]S(1);
+
+seed :: each (query { raw }) {
+  fmt.sprintf(_, "abcdef")(raw, _:);
+}
+
+go :: each (query { raw }) {
+  fmt.printf("%.*s %.*s\n", 3, raw[1: 4], 2, raw[4: 6]); // "bcd" + "ef"
+}
+
+#run seq({ seed, go })

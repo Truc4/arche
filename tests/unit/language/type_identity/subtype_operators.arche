@@ -5,7 +5,7 @@
 #import { fmt }
 meters  :: float;
 seconds :: float;
-entry :: system {
+entry   :: system {
   m1 : meters  = 10.0;
   m2 : meters  = 20.0;
   s  : seconds = 3.0;

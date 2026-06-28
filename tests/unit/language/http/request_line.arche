@@ -7,6 +7,7 @@
 
 Req :: arche {
   raw          :: [64]char,
+  raw_len      :: int,
   method_start :: int,
   method_len   :: int,
   target_start :: int,
@@ -33,8 +34,34 @@ span_eq :: func(raw: []char, start: int, len: int, lit: []char) -> int {
 }
 
 seed :: system {
-  insert(Req { raw: "GET /a?b=1 HTTP/1.1\r\n", method_start: 0, method_len: 0, target_start: 0, target_len: 0, ok: 0 })(_:, _:);
-  insert(Req { raw: "garbage", method_start: 0, method_len: 0, target_start: 0, target_len: 0, ok: 0 })(_:, _:); // no spaces → ok=0
+  insert(
+    Req {
+      raw          : "GET /a?b=1 HTTP/1.1\r\n",
+      raw_len      : 0,
+      method_start : 0,
+      method_len   : 0,
+      target_start : 0,
+      target_len   : 0,
+      ok           : 0,
+    },
+  )(_:, _:);
+  insert(
+    Req {
+      raw          : "garbage",
+      raw_len      : 0,
+      method_start : 0,
+      method_len   : 0,
+      target_start : 0,
+      target_len   : 0,
+      ok           : 0,
+    },
+  )(_:, _:); // no spaces → ok=0
+}
+
+// The test's `raw` is a NUL-terminated literal, so its received length is `strlen` (a live server gets the
+// byte count from `net.recv`'s out-slot instead).
+measure :: each (query { raw, raw_len }) {
+  raw_len = str.strlen(raw);
 }
 
 check :: each (query { raw, method_start, method_len, target_start, target_len, ok }) {
@@ -42,11 +69,14 @@ check :: each (query { raw, method_start, method_len, target_start, target_len, 
     getm := span_eq(raw, method_start, method_len, "GET");
     tm   := span_eq(raw, target_start, target_len, "/a"); // query-trimmed
     fmt.printf("ok=%d getm=%d tm=%d ", ok, getm, tm);
-  } else {
+  }
+  else {
     fmt.printf("bad=%d", ok);
   }
 }
 
-done :: system { fmt.printf("\n"); }
+done :: system {
+  fmt.printf("\n");
+}
 
-#run seq({ seed, http.parse_request_line, check, done })
+#run seq({ seed, measure, http.parse_request_line, check, done })

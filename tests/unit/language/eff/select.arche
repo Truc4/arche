@@ -7,15 +7,21 @@
 // buffer/exit tests; here every selective falls through so the output is checkable.
 #import { os }
 
-note :: func(m: []char) -> Eff(i64) { return os.write(1, m, m.length); }
-gw   :: func(c: int, m: []char) -> Eff() { return whenS(c, note(m)); }            // run note iff c
-gi   :: func(c: int, m: []char) -> Eff() { return ifS(c, note(m), pure()); }      // ditto, explicit else
+note :: func(m: []char) -> Eff(i64) {
+  return os.write(1, m, m.length);
+}
+gw :: func(c: int, m: []char) -> Eff() {
+  return whenS(c, note(m));
+} // run note iff c
+gi :: func(c: int, m: []char) -> Eff() {
+  return ifS(c, note(m), pure());
+} // ditto, explicit else
 
 t :: system {
-  gw(1 == 1, "w1 ")();    // true  -> run  -> "w1 "
-  gw(1 == 2, "wX ")();    // false -> skip
-  gi(1 == 1, "i1 ")();    // true  -> run  -> "i1 "
-  gi(1 == 2, "iX ")();    // false -> skip
+  gw(1 == 1, "w1 ")(); // true  -> run  -> "w1 "
+  gw(1 == 2, "wX ")(); // false -> skip
+  gi(1 == 1, "i1 ")(); // true  -> run  -> "i1 "
+  gi(1 == 2, "iX ")(); // false -> skip
   os.write(1, "end\n", 4)(_:);
 }
 #run t

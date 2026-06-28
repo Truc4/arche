@@ -8,7 +8,7 @@
 poke :: system {
   buf: [8]int;
   s := move buf[0: 4]; // own the buffer (buf is consumed) — s is the sole accessor
-  s[0] = 42;           // write THROUGH the owned slice — allowed
+  s[0] = 42; // write THROUGH the owned slice — allowed
   fmt.printf("%d\n", s[0]);
 }
 

@@ -1,0 +1,28 @@
+// RUN: %arche build -o %t %s && %t | grep -q "^name=hi pad=0 len=2$"
+// Regression: inserting a RUNTIME char value (a column shorter than the destination) into a `[N]char`
+// column must copy only the source's NUL-bounded bytes and zero-pad the rest. The old insert helper
+// memcpy'd the WHOLE column width from the source pointer, which over-read a short runtime source — an
+// `argv`/heap slice near a page edge would SIGSEGV — and left stale tail bytes. This checks the content,
+// the byte length, and that the byte just past the content is a zeroed pad.
+#import { fmt str }
+
+Person :: arche { name :: [8]char }
+[4]Person;
+
+Src :: arche { buf :: [8]char }
+[1]Src(1);
+
+build :: each (query { buf }) {
+  fmt.sprintf(_, "hi")(buf, _:);
+}
+
+ins :: each (query { buf }) {
+  insert(Person { name: buf })(_:, _:);
+}
+
+show :: each (query { name }) {
+  pad := name[3]; // past "hi" — must be a zero pad, not stale bytes
+  fmt.printf("name=%s pad=%d len=%d\n", name, pad, str.strlen(name));
+}
+
+#run seq({ build, ins, show })

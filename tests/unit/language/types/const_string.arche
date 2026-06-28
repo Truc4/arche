@@ -3,7 +3,7 @@
 // decayed `[]char`. (RED until char[] consts + prefix syntax + [N]char→[]char decay land.)
 // RUN: %arche build -o %t %s && %t | grep -x "linux 5"
 #import { os fmt }
-name :: "linux";
+name  :: "linux";
 entry :: system {
   os.write(1, name, name.length)(_:);
   fmt.printf(" %d\n", name.length);

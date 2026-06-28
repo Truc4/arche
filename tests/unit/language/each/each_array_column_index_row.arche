@@ -23,6 +23,8 @@ show :: each (query { c }) {
   fmt.printf("%d ", c);
 }
 
-done :: system { fmt.printf("\n"); }
+done :: system {
+  fmt.printf("\n");
+}
 
 #run seq({ seed, pick, show, done })

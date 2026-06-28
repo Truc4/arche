@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "sum: 7"
 #import { fmt }
 pos(x, y) :: int;
-entry :: system {
+entry     :: system {
   a : pos_x = 3;
   b : pos_y = 4;
   fmt.printf("sum: %d\n", a + b);

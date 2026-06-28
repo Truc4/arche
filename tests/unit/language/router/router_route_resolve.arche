@@ -7,7 +7,7 @@ handler :: enum { not_found, home, user, static_files }
 
 // Application data shapes (owned here, not by the router device).
 Route :: arche { pattern :: [64]char, hid :: int }
-Req :: arche {
+Req   :: arche {
   path       :: [64]char,
   out_h      :: int,
   cap0_start :: int,
@@ -46,7 +46,9 @@ seed :: system {
 
   insert(Req { path: "/", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
   insert(Req { path: "/users/42", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
-  insert(Req { path: "/static/css/app.css", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
+  insert(
+    Req { path: "/static/css/app.css", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 },
+  )(_:, _:);
   insert(Req { path: "/nope", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
 }
 
@@ -73,6 +75,8 @@ dispatch :: each (query { path, out_h, cap0_start, cap0_len }) {
   }
 }
 
-done :: system { fmt.printf("\n"); }
+done :: system {
+  fmt.printf("\n");
+}
 
 #run seq({ seed, router.resolve, dispatch, done })

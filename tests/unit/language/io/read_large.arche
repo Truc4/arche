@@ -7,7 +7,7 @@ entry :: system {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
   io.fread(fd, 10000)(scratch, rd_data:);
-    data := CharBuf.cb[0: rd_data];
+  data := CharBuf.cb[0: rd_data];
   io.fclose(move fd)(_:);
   fmt.printf("requested 10000, got: %d\n", data.length);
 }

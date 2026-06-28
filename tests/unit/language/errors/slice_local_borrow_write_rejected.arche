@@ -9,7 +9,7 @@
 poke :: system {
   buf: [8]int;
   s := buf[0: 4]; // a read-only borrow of the live `buf`
-  s[0] = 42;      // writing THROUGH the borrow — rejected (mutate `buf` directly instead)
+  s[0] = 42; // writing THROUGH the borrow — rejected (mutate `buf` directly instead)
   fmt.printf("%d\n", s[0]);
 }
 

@@ -9,8 +9,8 @@
 
 #foreign {
   zbuf :: proc(h: int)(buf: []int); // returns a framebuffer pointer
-  zw   :: proc(h: int)(w: int);     // returns the width
-  zh   :: proc(h: int)(z: int);     // returns the height
+  zw   :: proc(h: int)(w: int); // returns the width
+  zh   :: proc(h: int)(z: int); // returns the height
 }
 
 frame :: func(h: int) -> Eff([]int, int, int) {
@@ -19,7 +19,7 @@ frame :: func(h: int) -> Eff([]int, int, int) {
 
 entry :: system {
   frame(0)(px:, w:, h:); // bind all three out-slots at once
-  px[1] = 77;            // the buffer slot is writable
+  px[1] = 77; // the buffer slot is writable
   fmt.printf("px0=%d px1=%d w=%d h=%d\n", px[0], px[1], w, h);
 }
 

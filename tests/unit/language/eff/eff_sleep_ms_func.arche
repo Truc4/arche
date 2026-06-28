@@ -29,9 +29,9 @@ sleep_ms :: func(ms: int) -> Eff(i64) {
 
 entry :: system {
   os.now_ms()(t0:);
-  sleep_ms(50)(_:);  // run the func→Eff; must actually sleep ~50ms
+  sleep_ms(50)(_:); // run the func→Eff; must actually sleep ~50ms
   os.now_ms()(t1:);
-  sleep_ms(-5)(_:);  // nonpositive clamps to 0 — a no-op, must not crash
+  sleep_ms(-5)(_:); // nonpositive clamps to 0 — a no-op, must not crash
   d := t1 - t0;
   // sleep is a LOWER bound (the kernel never undershoots); a no-op sleep gives d≈0. 40ms margin.
   fmt.assert(d >= 40, "sleep_ms(50) must elapse at least ~50ms (a no-op sleep elapses ~0)\n")();

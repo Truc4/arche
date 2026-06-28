@@ -5,7 +5,7 @@
 // ('a'=97), so the accumulator became 9797 instead of 9799.
 #import { fmt }
 
-T :: arche { name :: [4]char }
+T   :: arche { name :: [4]char }
 Acc :: arche { got :: int }
 [2]T;
 [1]Acc;
@@ -24,6 +24,8 @@ fold :: each (query { name }) {
   };
 }
 
-show :: each (query { got }) { fmt.printf("%d\n", got); }
+show :: each (query { got }) {
+  fmt.printf("%d\n", got);
+}
 
 #run seq({ seed, fold, show })

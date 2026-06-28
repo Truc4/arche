@@ -18,15 +18,15 @@
   // Typed direct syscalls. A buffer the kernel WRITES is in-out (same name in the out-list) and surfaces
   // as a named out-slot at the run-site; a buffer the kernel only READS is plain-in (a read-only borrow).
   @syscall(0)
-  sys_read  :: proc(fd: i64, buf: []char, n: i64)(buf: []char, r: i64);     // buf IN-OUT (kernel fills it)
+  sys_read :: proc(fd: i64, buf: []char, n: i64)(buf: []char, r: i64); // buf IN-OUT (kernel fills it)
   @syscall(1)
-  sys_write :: proc(fd: i64, buf: []char, n: i64)(r: i64);                  // buf IN  (kernel reads it)
+  sys_write :: proc(fd: i64, buf: []char, n: i64)(r: i64); // buf IN  (kernel reads it)
   @syscall(2)
-  sys_open  :: proc(path: []char, flags: i64, mode: i64)(r: i64);          // path IN
+  sys_open :: proc(path: []char, flags: i64, mode: i64)(r: i64); // path IN
   @syscall(35)
-  sys_nanosleep :: proc(req: []i64, rem: i64)(r: i64);                      // req IN (the requested duration)
+  sys_nanosleep :: proc(req: []i64, rem: i64)(r: i64); // req IN (the requested duration)
   @syscall(228)
-  sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64);                    // ts IN-OUT (the VALUE); status dropped
+  sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64); // ts IN-OUT (the VALUE); status dropped
 }
 
 // A pure `func → Eff`: `zip` the address effect with the length effect (the applicative product), then
@@ -78,7 +78,8 @@ sleep_ms :: func(ms: int) -> Eff(i64) {
 // to ms INSIDE the Eff (fmap-over-buffer), so the timespec is run-internal scratch the caller never sees.
 // Run it like any Eff: `now := 0; os.now_ms()(now:)`.
 now_ms :: func() -> Eff(i64) {
-  return clock_mono() |> ms_of;
+  return clock_mono()
+    |> ms_of;
 }
 
 // `|> fd_of` folds the raw i64 syscall result into the `int` fd. The cook is a pure finalizer applied to
@@ -87,7 +88,8 @@ fd_of :: func(r: i64) -> int {
   return i32(r);
 }
 open :: func(path: []char, flags: int) -> Eff(int) {
-  return sys_open(path, flags, 0) |> fd_of;
+  return sys_open(path, flags, 0)
+    |> fd_of;
 }
 // The buffer is the caller-allocated OUT (the kernel fills it); `r` is the byte count (negative errno on
 // failure — the caller cooks it). Variable-size, so the caller gives the size at the out-binding:

@@ -206,32 +206,32 @@ typedef enum {
 	SEM_LINT_unused_query, /* a `query {…}` decl that no map references — W0025 */
 	SEM_LINT_discarded_ok,
 	SEM_LINT_raw_pool_index,
-	SEM_LINT_policy_on_safe_op,       /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
-	SEM_LINT_handler_foreign_arch,    /* a pool `?handler` body references a DIFFERENT archetype's columns */
-	SEM_LINT_redundant_guard,         /* a leading guard-exit re-tests the enclosing loop's own condition */
-	SEM_LINT_func_could_be_const,     /* a zero-param func whose body is a single `return <literal/const>;` */
-	SEM_LINT_exported_mutable_global, /* a top-level mutable global on the exported surface — shared mutable
-	                                     state must be a pool or be narrowed to #module/#file. Lint-class so
-	                                     it's tunable, but default-promoted to error (see ensure_init). */
-	SEM_LINT_outarg_shadows_outparam, /* a call out-arg `(name:)` whose COLON declares a fresh local that
-	                                     shadows the enclosing proc's out-param of the same name — the
-	                                     call's result fills the shadow, the out-param is left unwritten
-	                                     (silent lost writeback). Use `(name)` (no colon) to write it. */
-	SEM_LINT_map_writes_foreign_pool, /* a system writes a pool it does not iterate — a foreign-pool write in
-	                                     a per-entity system runs once, not per row (the driver WRITES shared
-	                                     singletons, a system READS them). Lint-class so it's tunable, but
-	                                     default-promoted to error (see ensure_init). */
-	SEM_LINT_large_stack_array,       /* a local fixed-size array `[N]T` whose storage exceeds the frame
-	                                     threshold (1 KB) — a big stack value. Prefer a single-type archetype
-	                                     pool `[N]T` (static, columnar) or a #module-private global. W0026. */
-	SEM_LINT_pointless_move,          /* `move` of a value with no ownership to transfer — currently a pool
-	                                     column (slice): it is shared, fixed storage, so `move` does nothing.
-	                                     Pass it as a plain borrow. W0027. */
-	SEM_LINT_proc_calls_proc,         /* a proc body calls another (non-extern) proc — the flat-effect
-	                                     proc→proc ban. Reuse lives in funcs (building Eff values), so a proc
-	                                     never needs another proc; permitted callees are extern/func/map.
-	                                     Default WARN (the stdlib/apps still nest procs until the Eff
-	                                     convenience layer lands; flip to error later). W0028. */
+	SEM_LINT_policy_on_safe_op,        /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
+	SEM_LINT_handler_foreign_arch,     /* a pool `?handler` body references a DIFFERENT archetype's columns */
+	SEM_LINT_redundant_guard,          /* a leading guard-exit re-tests the enclosing loop's own condition */
+	SEM_LINT_func_could_be_const,      /* a zero-param func whose body is a single `return <literal/const>;` */
+	SEM_LINT_exported_mutable_global,  /* a top-level mutable global on the exported surface — shared mutable
+	                                      state must be a pool or be narrowed to #module/#file. Lint-class so
+	                                      it's tunable, but default-promoted to error (see ensure_init). */
+	SEM_LINT_outarg_shadows_outparam,  /* a call out-arg `(name:)` whose COLON declares a fresh local that
+	                                      shadows the enclosing proc's out-param of the same name — the
+	                                      call's result fills the shadow, the out-param is left unwritten
+	                                      (silent lost writeback). Use `(name)` (no colon) to write it. */
+	SEM_LINT_map_writes_foreign_pool,  /* a system writes a pool it does not iterate — a foreign-pool write in
+	                                      a per-entity system runs once, not per row (the driver WRITES shared
+	                                      singletons, a system READS them). Lint-class so it's tunable, but
+	                                      default-promoted to error (see ensure_init). */
+	SEM_LINT_large_stack_array,        /* a local fixed-size array `[N]T` whose storage exceeds the frame
+	                                      threshold (1 KB) — a big stack value. Prefer a single-type archetype
+	                                      pool `[N]T` (static, columnar) or a #module-private global. W0026. */
+	SEM_LINT_pointless_move,           /* `move` of a value with no ownership to transfer — currently a pool
+	                                      column (slice): it is shared, fixed storage, so `move` does nothing.
+	                                      Pass it as a plain borrow. W0027. */
+	SEM_LINT_proc_calls_proc,          /* a proc body calls another (non-extern) proc — the flat-effect
+	                                      proc→proc ban. Reuse lives in funcs (building Eff values), so a proc
+	                                      never needs another proc; permitted callees are extern/func/map.
+	                                      Default WARN (the stdlib/apps still nest procs until the Eff
+	                                      convenience layer lands; flip to error later). W0028. */
 	SEM_LINT_pool_index_outside_query, /* an explicit index on a pool column `Pool.col[i]` (incl. the
 	                                      singleton `[0]`) outside a query/map/system fan body — pool values
 	                                      must come from a query, not hand-indexing. Default WARN (tunable to

@@ -22,11 +22,11 @@ typedef struct {
 	const char *handle_archetype; /* if field_type=="handle", the target archetype name (borrowed, like field_type) */
 	int bit_width;                /* 32 (default) or 64 for SSA values */
 	int is_slice; /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
-	char *len_ssa;      /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise.
-	                     * A slice is a borrowed `{ptr,len}` window — no capacity (capacity is a pool concept). */
-	char *out_aggr_ptr; /* out-ONLY unbounded `char[]`/`T[]` out-param: the `{T*,i64}*` caller slot (%outN).
-	                     * When set, assigning a slice/array to this name stores the {ptr,len} back through
-	                     * it so the caller recovers the returned view. NULL for ordinary values. */
+	char *len_ssa;        /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise.
+	                       * A slice is a borrowed `{ptr,len}` window — no capacity (capacity is a pool concept). */
+	char *out_aggr_ptr;   /* out-ONLY unbounded `char[]`/`T[]` out-param: the `{T*,i64}*` caller slot (%outN).
+	                       * When set, assigning a slice/array to this name stores the {ptr,len} back through
+	                       * it so the caller recovers the returned view. NULL for ordinary values. */
 	const char *loop_idx; /* type==4 column bound by a fan: the row-index SSA of the fan that bound it,
 	                       * BORROWED from the bump-leaked SSA-name pool (outlives this ValueInfo — no free).
 	                       * An auto-indexed read uses THIS, not the ambient loop index, so an OUTER fan's
@@ -103,12 +103,12 @@ struct CodegenContext {
 	int interned_count;
 
 	/* SIMD vectorization context */
-	int vector_lanes; /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
-	int in_map;       /* 1 when generating inside a map function body */
+	int vector_lanes;       /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
+	int in_map;             /* 1 when generating inside a map function body */
 	int in_columnar_system; /* 1 inside a no-arg `system(Q)` body: whole-column ops read the pool from its
 	                         * GLOBAL (`@Arch`), not a `%arch_<name>` parameter (maps get the pool by param) */
-	int in_func;      /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
-	                   * default is the total `clamp` policy instead of `abort`, so a func never crashes */
+	int in_func;            /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
+	                         * default is the total `clamp` policy instead of `abort`, so a func never crashes */
 
 	/* Implicit loop context */
 	char implicit_loop_index[64]; /* SSA reg name for current implicit loop ("" = not in loop) */
@@ -204,6 +204,8 @@ struct CodegenContext {
 	 * `declare` is then emitted at module end only if used, so a program with no real copy contains
 	 * no `llvm.memcpy` at all. */
 	int uses_memcpy;
+	/* Set when a `@llvm.memset` is emitted (insert's zero-padded char-column fill) — gates its declare. */
+	int uses_memset;
 
 	/* Compile-time callback monomorphization. A proc with a proc/func-typed
 	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
@@ -1396,7 +1398,7 @@ static HirExpr *eff_subst_arg(HirFuncDecl *fn, HirExpr **actual_args, int actual
 				HirExpr *nf = hir_expr_create(HIR_EXPR_FIELD);
 				nf->loc = eu->loc;
 				nf->resolved = eu->resolved;
-				nf->data.field.base = actual_args[p];               /* SHARED substituted base */
+				nf->data.field.base = actual_args[p];                  /* SHARED substituted base */
 				nf->data.field.field_name = eu->data.field.field_name; /* SHARED */
 				return nf;
 			}
@@ -1549,10 +1551,10 @@ static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr *
 			while (else_arm && else_arm->kind == HIR_EXPR_UNARY &&
 			       (else_arm->data.unary.op == UNARY_MOVE || else_arm->data.unary.op == UNARY_COPY))
 				else_arm = else_arm->data.unary.operand;
-			int else_pure = (else_arm && else_arm->kind == HIR_EXPR_CALL && else_arm->data.call.callee &&
-			                 else_arm->data.call.callee->kind == HIR_EXPR_NAME &&
-			                 else_arm->data.call.callee->data.name.name &&
-			                 strcmp(else_arm->data.call.callee->data.name.name, "pure") == 0);
+			int else_pure =
+			    (else_arm && else_arm->kind == HIR_EXPR_CALL && else_arm->data.call.callee &&
+			     else_arm->data.call.callee->kind == HIR_EXPR_NAME && else_arm->data.call.callee->data.name.name &&
+			     strcmp(else_arm->data.call.callee->data.name.name, "pure") == 0);
 			if (!else_pure) {
 				fprintf(stderr, "Error: value-producing `ifS` (non-`pure()` else arm) is not yet supported\n");
 				ctx->had_error = 1;
@@ -1570,9 +1572,9 @@ static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr *
 		                      : NULL;
 		if (tf) {
 			/* THEN is a builder (e.g. `fail` = `seq(write, exit)`): recurse so its seq body folds. */
-			HirExpr *r = eff_inline_build(ctx, tf, then_call->data.call.args, then_call->data.call.arg_count,
-			                              out_proc, out_finalizer, out_prefix, out_prefix_proc, out_zip_calls,
-			                              out_zip_procs, out_zip_count, out_select_cond);
+			HirExpr *r = eff_inline_build(ctx, tf, then_call->data.call.args, then_call->data.call.arg_count, out_proc,
+			                              out_finalizer, out_prefix, out_prefix_proc, out_zip_calls, out_zip_procs,
+			                              out_zip_count, out_select_cond);
 			*out_select_cond = cond; /* set AFTER recursion so the recursive prologue doesn't reset it */
 			return r;
 		}
@@ -2165,8 +2167,8 @@ static const char *get_shaped_field_info(CodegenContext *ctx, HirExpr *field_exp
 /* Forward declarations */
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf);
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
-static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts,
-                            int stmt_count, const char *row_var);
+static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts, int stmt_count,
+                             const char *row_var);
 static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
 /* Failure-policy MACRO inliner: bind a policy's params to the op's operand SSAs as mutable locals,
@@ -2251,6 +2253,27 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 		                  bv->string_len, bv->llvm_name);
 		strcpy(base_ptr, ep);
 		snprintf(base_len, sizeof(base_len), "%d", bv->string_len);
+	} else if (bv->type == 4 && bv->arch_name) {
+		/* An ARRAY column read in an `each`/`system` (`raw[lo:hi]`, `raw :: [N]char`): each row owns a
+		 * `[N]T`, so the sub-slice views THIS row. `codegen_expression` on the bare column name already
+		 * yields the current row's element-0 pointer (it folds in `loop_idx * N`), and the base length is
+		 * the per-row width N. Without this, a query column fell through to `return 0` → a `null` arg. */
+		HirArchetypeDecl *ca = find_archetype_decl(ctx, bv->arch_name);
+		HirField *cf = NULL;
+		if (ca)
+			for (int fi = 0; fi < ca->field_count; fi++)
+				if (ca->fields[fi]->kind == FIELD_COLUMN && ca->fields[fi]->name &&
+				    strcmp(ca->fields[fi]->name, base->data.name.name) == 0) {
+					cf = ca->fields[fi];
+					break;
+				}
+		int coln = (cf && cf->type) ? field_total_elements(cf->type) : 1;
+		if (!cf || coln <= 1)
+			return 0;
+		elem_base = field_base_type_name(cf->type);
+		elem_llvm = llvm_type_from_arche(elem_base);
+		codegen_expression(ctx, base, base_ptr); /* current row's element-0 pointer */
+		snprintf(base_len, sizeof(base_len), "%d", coln);
 	} else {
 		return 0;
 	}
@@ -3519,8 +3542,7 @@ static void coerce_syscall_arg(CodegenContext *ctx, HirExpr *arg, char *out, int
 	codegen_expression(ctx, arg, ab);
 	HirType *rt = &arg->resolved;
 	HirExpr *arg_u = arg;
-	while (arg_u->kind == HIR_EXPR_UNARY &&
-	       (arg_u->data.unary.op == UNARY_MOVE || arg_u->data.unary.op == UNARY_COPY))
+	while (arg_u->kind == HIR_EXPR_UNARY && (arg_u->data.unary.op == UNARY_MOVE || arg_u->data.unary.op == UNARY_COPY))
 		arg_u = arg_u->data.unary.operand;
 	ValueInfo *avi = (arg_u->kind == HIR_EXPR_NAME) ? find_value(ctx, arg_u->data.name.name) : NULL;
 	if (avi && (avi->type == 7 || avi->type == 2 || avi->type == 6)) {
@@ -3605,8 +3627,7 @@ static ValueInfo *cg_alloc_shaped_out_buf(CodegenContext *ctx, HirBindingTarget 
 	char *arr = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca [%d x %s]\n", arr, n, lt);
 	char *ptr = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", ptr, n, lt, n, lt,
-	                  arr);
+	buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", ptr, n, lt, n, lt, arr);
 	ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 	vi->name = malloc(strlen(tgt->name) + 1);
 	strcpy(vi->name, tgt->name);
@@ -5341,6 +5362,31 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					continue;
 				}
 			}
+			/* A call returning a `[]T` slice used directly as an arg (e.g. `%s` on `mime_by_ext(p)`):
+			 * unpack its (ptr, len) so it passes the element pointer, not the whole `{ptr,i64}` struct
+			 * (which lands as a wrong-typed vararg → a `{ptr,i64}` value in an i32 slot). */
+			if (inner->kind == HIR_EXPR_CALL) {
+				char sp[256], sl[256];
+				const char *se = NULL;
+				if (codegen_eval_slice(ctx, inner, sp, sl, &se)) {
+					const char *el = llvm_type_from_arche(se ? se : "char");
+					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+					vi->name = strdup("");
+					vi->llvm_name = strdup(sp);
+					vi->type = 6;
+					vi->is_slice = 1;
+					vi->len_ssa = strdup(sl);
+					vi->field_type = se;
+					vi->string_len = -1;
+					vi->bit_width = strcmp(el, "double") == 0 ? 64
+					                : strcmp(el, "i8") == 0   ? 8
+					                : strcmp(el, "i64") == 0  ? 64
+					                                          : 32;
+					arg_slice_vi[i] = vi;
+					strcpy(arg_bufs[i], sp);
+					continue;
+				}
+			}
 			codegen_expression(ctx, expr->data.call.args[i], arg_bufs[i]);
 		}
 
@@ -5464,8 +5510,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			 * element pointer (the auto-indexed array-column read). A non-extern `T[]` param is a (ptr,len)
 			 * slice — pass the column width N as the length (so e.g. `str.strlen(s)` sees the whole row, not
 			 * a ptr with a zero length); a shaped/extern param takes the bare pointer. */
-			if ((callee_wants_slice || callee_wants_shaped_arr) &&
-			    expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
+			if ((callee_wants_slice || callee_wants_shaped_arr) && expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
 				ValueInfo *avi = find_value(ctx, expr->data.call.args[i]->data.name.name);
 				if (avi && avi->type == 4 && avi->arch_name) {
 					HirArchetypeDecl *aa = find_archetype_decl(ctx, avi->arch_name);
@@ -6245,8 +6290,8 @@ static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *
 				/* Resolve to the pool's GLOBAL: a static pool's `@<name>` is the same storage a `map`
 				 * gets as its `%arch_<name>` parameter, and an `each`/fan only has the global — so the
 				 * global is correct in both. (The old `%arch_<name>` was an undefined value inside a fan.) */
-				emit_query_pool_ptr(ctx, vi->arch_name, get_arch_static_capacity(ctx, vi->arch_name) > 0,
-				                    arch_ptr_buf, sizeof(arch_ptr_buf));
+				emit_query_pool_ptr(ctx, vi->arch_name, get_arch_static_capacity(ctx, vi->arch_name) > 0, arch_ptr_buf,
+				                    sizeof(arch_ptr_buf));
 				*out_arch_ptr = arch_ptr_buf;
 				*out_count_idx = arch->field_count;
 			}
@@ -7706,9 +7751,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			HirProcDecl *zip_procs[16];
 			int zip_count = 0;
 			HirExpr *select_cond = NULL;
-			eff_inlined = eff_inline_build(ctx, callee_func, rhs->data.call.args, rhs->data.call.arg_count, &eff_ext,
-			                               &eff_fin, &eff_prefix, &eff_prefix_proc, zip_calls, zip_procs, &zip_count,
-			                               &select_cond);
+			eff_inlined =
+			    eff_inline_build(ctx, callee_func, rhs->data.call.args, rhs->data.call.arg_count, &eff_ext, &eff_fin,
+			                     &eff_prefix, &eff_prefix_proc, zip_calls, zip_procs, &zip_count, &select_cond);
 			/* Emit the builder's input-build PRELUDE. A func→Eff builder may construct a caller-built INPUT
 			 * buffer the extern READS (e.g. `os.sleep_ms`'s `req` timespec: `req[0] = …; req[1] = …`) via
 			 * statements BEFORE the terminal `return <eff>`. The fusion recovers only the return's extern, so
@@ -7887,10 +7932,10 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 						vi->string_len = -1;
 						const char *el = llvm_type_from_arche(vi->field_type);
 						vi->bit_width = strcmp(el, "double") == 0 ? 64
-						                : strcmp(el, "i8") == 0     ? 8
-						                : strcmp(el, "i16") == 0    ? 16
-						                : strcmp(el, "i64") == 0    ? 64
-						                                            : 32;
+						                : strcmp(el, "i8") == 0   ? 8
+						                : strcmp(el, "i16") == 0  ? 16
+						                : strcmp(el, "i64") == 0  ? 64
+						                                          : 32;
 					} else {
 						const char *elem = return_member_llvm(ot);
 						char *slot = gen_value_name(ctx);
@@ -8179,6 +8224,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					ValueInfo *e = find_value(ctx, tgt->name);
 					if (e && e->type == 1)
 						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, res, elem, e->llvm_name);
+					else if (e && e->type == 4 && ctx->implicit_loop_index[0] && !ctx->in_map) {
+						/* Existing scalar COLUMN out-target (`fmt.sprintf(…)(buf, body_len)`, `body_len` a
+						 * query column): store the extern's result into THIS row's slot, mirroring a
+						 * `body_len = x` assign. Without this the result was silently DROPPED — the buffer
+						 * out-param wrote in place but the length column kept its old value. */
+						const char *row = (e->loop_idx && e->loop_idx[0]) ? e->loop_idx : ctx->implicit_loop_index;
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, elem, elem,
+						                  e->llvm_name, row);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, res, elem, gep);
+					}
 				}
 			}
 			break;
@@ -8551,7 +8607,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					char ebuf[256];
 					codegen_expression(ctx, elems[i], ebuf);
 					char promo[256];
-					const char *ev = col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+					const char *ev =
+					    col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
 					char *gep = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, lt, lt, tgt->llvm_name, i);
 					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lt, ev, lt, gep);
@@ -10110,24 +10167,34 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 				                  base_type, col_idx, flat_slot);
 			}
 			if (col_n > 1 && strcmp(base_type, "i8") == 0) {
-				/* char[N] column: copy the whole row (col_n bytes) from the source
-				 * pointer %f<i> into the row slot. Numeric array columns fall through
-				 * to the scalar store below (element-0 init, legacy semantics). */
-				int bytes = col_n * llvm_type_sizeof(base_type);
-				char dstbuf[64];
-				char srcbuf[64];
-				if (strcmp(base_type, "i8") == 0) {
-					snprintf(dstbuf, sizeof dstbuf, "%%slot%d", col_idx);
-					snprintf(srcbuf, sizeof srcbuf, "%%f%d", i);
-				} else {
-					snprintf(dstbuf, sizeof dstbuf, "%%mcdst%d", col_idx);
-					snprintf(srcbuf, sizeof srcbuf, "%%mcsrc%d", col_idx);
-					buffer_append_fmt(ctx, "  %s = bitcast %s* %%slot%d to i8*\n", dstbuf, base_type, col_idx);
-					buffer_append_fmt(ctx, "  %s = bitcast %s* %%f%d to i8*\n", srcbuf, base_type, i);
-				}
-				buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n", dstbuf,
-				                  srcbuf, bytes);
-				ctx->uses_memcpy = 1;
+				/* char[N] column: zero-pad the row slot, then copy the NUL-terminated source up to the
+				 * column width. A whole-width memcpy would OVER-READ a short runtime source — e.g. an
+				 * `argv` slice sitting near the stack top → SIGSEGV — whereas a NUL-bounded copy reads only
+				 * the live bytes; the slot stays zero-padded (also clearing any stale bytes of a reused
+				 * slot). Numeric array columns fall through to the scalar store below (element-0 init). */
+				int ci = col_idx;
+				buffer_append_fmt(ctx, "  call void @llvm.memset.p0.i64(i8* %%slot%d, i8 0, i64 %d, i1 false)\n", ci,
+				                  col_n);
+				buffer_append_fmt(ctx, "  %%cpj%d = alloca i64\n", ci);
+				buffer_append_fmt(ctx, "  store i64 0, i64* %%cpj%d\n", ci);
+				buffer_append_fmt(ctx, "  br label %%cpcond%d\n", ci);
+				buffer_append_fmt(ctx, "cpcond%d:\n", ci);
+				buffer_append_fmt(ctx, "  %%cjv%d = load i64, i64* %%cpj%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  %%clt%d = icmp ult i64 %%cjv%d, %d\n", ci, ci, col_n - 1);
+				buffer_append_fmt(ctx, "  br i1 %%clt%d, label %%cpld%d, label %%cpend%d\n", ci, ci, ci);
+				buffer_append_fmt(ctx, "cpld%d:\n", ci);
+				buffer_append_fmt(ctx, "  %%csp%d = getelementptr i8, i8* %%f%d, i64 %%cjv%d\n", ci, i, ci);
+				buffer_append_fmt(ctx, "  %%csc%d = load i8, i8* %%csp%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  %%cnz%d = icmp ne i8 %%csc%d, 0\n", ci, ci);
+				buffer_append_fmt(ctx, "  br i1 %%cnz%d, label %%cpbody%d, label %%cpend%d\n", ci, ci, ci);
+				buffer_append_fmt(ctx, "cpbody%d:\n", ci);
+				buffer_append_fmt(ctx, "  %%cdp%d = getelementptr i8, i8* %%slot%d, i64 %%cjv%d\n", ci, ci, ci);
+				buffer_append_fmt(ctx, "  store i8 %%csc%d, i8* %%cdp%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  %%cjn%d = add i64 %%cjv%d, 1\n", ci, ci);
+				buffer_append_fmt(ctx, "  store i64 %%cjn%d, i64* %%cpj%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  br label %%cpcond%d\n", ci);
+				buffer_append_fmt(ctx, "cpend%d:\n", ci);
+				ctx->uses_memset = 1;
 			} else {
 				buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
 			}
@@ -11378,8 +11445,8 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys, int dec
  * scalars at the current row. Shared by the top-level `each` decl (wrapped in a no-arg fn) and an inline
  * anonymous `each` statement (emitted into the enclosing function so the body captures enclosing locals;
  * the row index is saved/restored so nested fans don't clobber each other). */
-static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts,
-                            int stmt_count, const char *row_var) {
+static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts, int stmt_count,
+                             const char *row_var) {
 	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
 	 * rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine which
 	 * archetype(s) we fan over (a query may still match several same-shape archetypes). */
@@ -11406,8 +11473,8 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		char base_buf[256];
 		emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
 		char *cgep = gen_value_name(ctx); /* row count = the struct field after all columns */
-		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep,
-		                  arch_name, arch_name, base_buf, arch->field_count);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
+		                  arch_name, base_buf, arch->field_count);
 		char *count = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
 		int id = ctx->value_counter++;
@@ -11421,8 +11488,8 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		char *row = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", row, ralloca);
 		char *cmp = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n  br i1 %s, label %%%s, label %%%s\n%s:\n", cmp, row,
-		                  count, cmp, lbody, lend, lbody);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n  br i1 %s, label %%%s, label %%%s\n%s:\n", cmp, row, count,
+		                  cmp, lbody, lend, lbody);
 		/* Liveness skip: the fan iterates 0..count, but `count` is a high-water mark — `delete` frees a slot
 		 * (sign-bit set in its generation) WITHOUT shrinking count. A tombstoned row has gen < 0; a live row
 		 * has gen >= 0. Skip dead slots so a drained pool re-iterates nothing and a delete-then-each pass
@@ -11465,9 +11532,9 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 				if (arch->fields[f]->kind == FIELD_COLUMN) {
 					char *field_ptr = gen_value_name(ctx);
 					if (is_static) {
-						buffer_append_fmt(
-						    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
-						    field_ptr, arch_name, arch_name, base_buf, f);
+						buffer_append_fmt(ctx,
+						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+						                  field_ptr, arch_name, arch_name, base_buf, f);
 					} else {
 						char *field_gep = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
@@ -11529,7 +11596,8 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		}
 		char saved_idx[64];
 		snprintf(saved_idx, sizeof(saved_idx), "%s", ctx->implicit_loop_index);
-		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", row); /* col[row]; saved/restored so a NESTED each restores the outer row */
+		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s",
+		         row); /* col[row]; saved/restored so a NESTED each restores the outer row */
 		ctx->block_terminated = 0;
 		for (int s = 0; s < stmt_count; s++)
 			codegen_statement(ctx, stmts[s]);
@@ -11545,7 +11613,6 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		ctx->block_terminated = 0;
 	}
 }
-
 
 static void codegen_each_decl(CodegenContext *ctx, HirEachDecl *each, int decl_unit) {
 	/* Per-unit: emitted only in its declaring unit (whole-program emits all) — see codegen_system_decl. */
@@ -12100,6 +12167,7 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->cb_pending_capacity = 0;
 	ctx->efield_name_counter = 0;
 	ctx->uses_memcpy = 0;
+	ctx->uses_memset = 0;
 	ctx->drop_reg = NULL;
 	ctx->drop_reg_count = 0;
 	ctx->drop_reg_capacity = 0;
@@ -12842,6 +12910,8 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	 * order is irrelevant in LLVM IR). */
 	if (ctx->uses_memcpy)
 		buffer_append(ctx, "\ndeclare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n");
+	if (ctx->uses_memset)
+		buffer_append(ctx, "declare void @llvm.memset.p0.i64(i8*, i8, i64, i1)\n");
 
 	/* Output the generated IR */
 	fprintf(output, "%s", ctx->output_buffer);

@@ -2181,7 +2181,8 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 					/* BUILD SITE: an extern under-applied in VALUE position (its in-args, no out-slots) builds
 					 * an Eff value — the out-slots are the extern's out-params, and the concrete extern identity
 					 * rides in the type for the run-site fusion. A VOID extern (no out-params) builds the empty
-					 * `Eff()`. Only an extern is inert under-applied (a proc → E0221, emitted in analyze_expression). */
+					 * `Eff()`. Only an extern is inert under-applied (a proc → E0221, emitted in analyze_expression).
+					 */
 					DeclSummary *ps = find_proc_sig(ctx, func_name);
 					if (ps && ps->is_extern) {
 						int oc = ps->out_param_count;
@@ -2191,7 +2192,8 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 						const char **names = oc > 16 ? malloc((size_t)oc * sizeof(const char *)) : nbuf;
 						for (int i = 0; i < oc; i++) {
 							outs[i] = ps->out_params[i].type_id;
-							names[i] = ps->out_params[i].name; /* INFER the out-slot names from the extern's out-params */
+							names[i] =
+							    ps->out_params[i].name; /* INFER the out-slot names from the extern's out-params */
 						}
 						result = tyid_of_eff_named(ctx->ty_arena, func_name, outs, names, oc);
 						if (outs != obuf)
@@ -2463,8 +2465,8 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		 * (a PURE value), else the `else` arm (ifS) or nothing (whenS = implicit `pure()`). The conditional
 		 * layer over the static applicative — arms stay statically visible, only WHICH runs is gated (no
 		 * `bind`). Recognized here; codegen emits the guard/branch around the folded arm(s). */
-		if (func_name && ((strcmp(func_name, "ifS") == 0 && argc == 3) ||
-		                  (strcmp(func_name, "whenS") == 0 && argc == 2))) {
+		if (func_name &&
+		    ((strcmp(func_name, "ifS") == 0 && argc == 3) || (strcmp(func_name, "whenS") == 0 && argc == 2))) {
 			for (int i = 0; i < argc; i++) {
 				ctx->analyzing_call_arg = 1;
 				analyze_expression(ctx, sem_node_at_expr(v, i));
@@ -3141,8 +3143,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_assign_to_const(ctx, sem_node_loc(target.node), tn);
 			else if (t && t->is_consumed)
 				sem_emit_assign_after_move(ctx, sem_node_loc(target.node), tn);
-			else if (t && !t->is_out_place && !t->is_param &&
-			         tyid_kind(ctx->ty_arena, t->type_id) == TYK_SLICE)
+			else if (t && !t->is_out_place && !t->is_param && tyid_kind(ctx->ty_arena, t->type_id) == TYK_SLICE)
 				/* A slice's pointer is fixed at creation: a LOCAL slice variable (born at its `:=`) may be
 				 * written THROUGH (`s[i] = x`) but never REASSIGNED to a different slice (`s = other`) — that
 				 * would repoint the view. An out-param writeback (`out = buf[0:r]`, is_out_place) and a param
@@ -4740,7 +4741,8 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *
 			if (tyid_kind(ctx->ty_arena, call_type_id(ctx, inner)) == TYK_EFF)
 				return "runs an effect (an Eff value)";
 			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(inner)) : NULL;
-			char *fb = (!cn && sv_count(inner, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(inner, SN_CALLEE_NAME)) : NULL;
+			char *fb =
+			    (!cn && sv_count(inner, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(inner, SN_CALLEE_NAME)) : NULL;
 			const char *name = cn ? cn : fb;
 			if (name && (r = func_call_effect_reason(ctx, name))) {
 				free(fb);

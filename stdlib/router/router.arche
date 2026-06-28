@@ -45,7 +45,8 @@ resolve :: each (query { pattern, hid }) {
         if (bestseg > 2) {
           bestseg = 2;
         }
-      } else {
+      }
+      else {
         if (!seg_eq_spans(pattern, qs, qe, path, ps, pe)) {
           sc = 0;
           break;
@@ -57,7 +58,8 @@ resolve :: each (query { pattern, hid }) {
     if (sc < 0) {
       if (ps < pn) {
         sc = 0;
-      } else {
+      }
+      else {
         sc = bestseg;
       }
     }

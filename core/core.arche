@@ -46,7 +46,7 @@ clamp :: policy(len: int, i: int) {
 
 @policy(bounds)
 wrap :: policy(len: int, i: int) {
-  i = ( (i % len) + len) % len;
+  i = ((i % len) + len) % len;
 }
 
 @policy(bounds)
@@ -88,7 +88,7 @@ reject :: policy(count: int, cap: int, ok: int) {
 // A schedule LEAF is a bare map/each/system name (`#run seq({ boot, forever(frame) })`) — there is no
 // `run` constructor. The combinators below compose those leaves; `#run` folds the whole tree at compile time.
 Schedule :: sum {
-  seq( []Schedule) par( []Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
+  seq([]Schedule) par([]Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
 }
 
 once :: func(s: Schedule) -> Schedule {

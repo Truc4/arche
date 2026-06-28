@@ -1,7 +1,7 @@
 // Tier-1 transparent alias: `dist :: alias float` is THE SAME type as float — interchangeable both ways.
 // RUN: %arche build -o %t %s && %t | grep "r=3"
 #import { fmt }
-dist :: alias float;
+dist  :: alias float;
 entry :: system {
   d  : dist  = 3.0;
   f  : float = d;

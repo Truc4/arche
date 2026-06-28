@@ -1,0 +1,19 @@
+// RUN: %arche build -o %t %s && %t | grep -q "^bcd len=3$"
+// Regression: a module-qualified call in a slice BOUND (`s[lo : str.strlen(s)]`) must be resolved by the
+// HIR qualify pass. That pass had no SLICE case, so it never descended into `slice.lo`/`slice.hi`; the
+// callee stayed a FIELD node and codegen emitted a NULL func_name → `call @unknown(...)` — invalid IR.
+#import { fmt str }
+
+S :: arche { raw :: [16]char }
+[1]S(1);
+
+seed :: each (query { raw }) {
+  fmt.sprintf(_, "abcd")(raw, _:);
+}
+
+go :: each (query { raw }) {
+  v := raw[1: str.strlen(raw)]; // strlen("abcd")=4 → raw[1:4] = "bcd"
+  fmt.printf("%s len=%d\n", v, v.length);
+}
+
+#run seq({ seed, go })

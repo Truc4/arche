@@ -2,7 +2,7 @@
 // policy owns the reversed case (it's applied to the length `hi-lo`, which clamps to 0), not a hidden
 // compiler net-clamp. Runtime bounds so nothing folds away.
 // RUN: %arche build -o %t %s && %t | grep -qF "rev_len=0"
-#import { os  fmt }
+#import { os fmt }
 entry :: system {
   os.argc()(argc:);
   a: [4]int;

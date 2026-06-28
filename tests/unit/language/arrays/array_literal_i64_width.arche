@@ -8,9 +8,9 @@
 
 entry :: system {
   a: [2]i64;
-  a = { 1000, 2 };                  // decl-then-assign
-  b: [3]i64 = { 300, 400, 500 };    // bind-with-init
-  c: [2]int = { 70000, 8 };         // non-char i32 element, value > i16 to prove width
+  a = { 1000, 2 }; // decl-then-assign
+  b : [3]i64 = { 300, 400, 500 }; // bind-with-init
+  c : [2]int = { 70000, 8 }; // non-char i32 element, value > i16 to prove width
   fmt.printf("a=%d %d b=%d %d %d c=%d %d\n", a[0], a[1], b[0], b[1], b[2], c[0], c[1]);
 }
 

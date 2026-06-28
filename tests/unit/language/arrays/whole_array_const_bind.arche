@@ -5,8 +5,8 @@
 // `buf[lo:hi]` binds are. Covers int + float consts, inferred and explicit type.
 // RUN: %arche build -o %t %s && %t | grep -x "10 30 2.5 3"
 #import { fmt }
-XS   :: { 10, 20, 30 }
-FS   :: { 1.5, 2.5 }
+XS    :: { 10, 20, 30 }
+FS    :: { 1.5, 2.5 }
 entry :: system {
   whole := XS;
   typed: [3]i32 = XS;

@@ -2851,8 +2851,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					 * purity, enforced in semantic, not a codegen shape). */
 					if (sv_count(rhs, SN_OUT_PARAM) > 0) {
 						HirDecl *pd = lower_proc_from(rhs, nm);
-						if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc &&
-						    syntax_decl_has_intrinsic_decorator(d))
+						if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))
 							pd->data.proc->is_intrinsic = 1;
 						return pd;
 					}
@@ -3598,6 +3597,13 @@ static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 		hir_q_expr(e->data.index.base, q);
 		for (int i = 0; i < e->data.index.index_count; i++)
 			hir_q_expr(e->data.index.indices[i], q);
+		break;
+	case HIR_EXPR_SLICE:
+		/* A qualified call in a slice BOUND (`buf[0 : mod.f(x)]`) must be visited too — without this its
+		 * FIELD callee stays unresolved and codegen emits a NULL func_name (`@unknown`). */
+		hir_q_expr(e->data.slice.base, q);
+		hir_q_expr(e->data.slice.lo, q);
+		hir_q_expr(e->data.slice.hi, q);
 		break;
 	case HIR_EXPR_BINARY:
 		hir_q_expr(e->data.binary.left, q);

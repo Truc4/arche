@@ -23,6 +23,12 @@ send :: func(s: socket, data: []char) -> Eff([]char, int) {
   return net_send(s, data, data.length);
 }
 
+// Send the first `n` bytes of `buf` — an explicit-length send (no `.length` on the arg), for callers that
+// already carry the byte count and want to avoid materializing a `buf[0:n]` slice.
+send_n :: func(s: socket, buf: []char, n: int) -> Eff([]char, int) {
+  return net_send(s, buf, n);
+}
+
 recv :: func(s: socket, n: int) -> Eff([]char, int) {
   return net_recv(s, _, n);
 }

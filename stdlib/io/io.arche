@@ -18,10 +18,12 @@ clamp_fd :: func(r: i64) -> fd {
   return fd(r);
 }
 fopen_read :: func(path: []char) -> Eff(fd) {
-  return os.sys_open(path, 0, 0) |> clamp_fd; // path is read-only (plain-in); single out-slot → clamp_fd
+  return os.sys_open(path, 0, 0)
+    |> clamp_fd; // path is read-only (plain-in); single out-slot → clamp_fd
 }
 fopen_write :: func(path: []char) -> Eff(fd) {
-  return os.sys_open(path, 577, 420) |> clamp_fd;
+  return os.sys_open(path, 577, 420)
+    |> clamp_fd;
 }
 fwrite :: func(f: fd, buf: []char, n: int) -> Eff(i64) {
   return os.sys_write(i64(f), buf, n); // buf read-only (the kernel reads it)

@@ -6,8 +6,8 @@
 // whole_array_const_bind.arche.)
 // RUN: %arche build -o %t %s && %t | grep -x "10 6 7 2 2"
 #import { fmt }
-XS   :: { 10, 20, 30 }
-M    :: { { 1, 2, 3 }, { 4, 5, 6 } }
+XS    :: { 10, 20, 30 }
+M     :: { { 1, 2, 3 }, { 4, 5, 6 } }
 entry :: system {
   row := M[1]; // a [3]i32 row alias
   buf: [5]int;

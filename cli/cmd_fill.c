@@ -238,7 +238,8 @@ int arche_fill_driver(const char *driver_path) {
 			cn += snprintf(comment + cn, sizeof(comment) - (size_t)cn, "%s%s: %d", c ? ", " : "",
 			               reqs[r].contrib_dev[c], reqs[r].contrib_min[c]);
 		if (reqs[r].contrib_n > 1)
-			bn += snprintf(block + bn, sizeof(block) - (size_t)bn, "[%d]%s; // %s\n", reqs[r].min, reqs[r].name, comment);
+			bn +=
+			    snprintf(block + bn, sizeof(block) - (size_t)bn, "[%d]%s; // %s\n", reqs[r].min, reqs[r].name, comment);
 		else
 			bn += snprintf(block + bn, sizeof(block) - (size_t)bn, "[%d]%s;\n", reqs[r].min, reqs[r].name);
 		printf("filled [%d]%s\n", reqs[r].min, reqs[r].name);

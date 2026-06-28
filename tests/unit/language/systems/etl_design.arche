@@ -45,4 +45,12 @@ verify :: system {
   fmt.printf("ok\n");
 }
 
-#run seq({ task1_compute_revenue, task2_filter_invalid, task3_bucket_timestamps, task4_process, verify })
+#run seq(
+  {
+    task1_compute_revenue,
+    task2_filter_invalid,
+    task3_bucket_timestamps,
+    task4_process,
+    verify,
+  },
+)

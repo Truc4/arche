@@ -6,14 +6,15 @@
 // (0 on a malformed one). io-as-data, like `router.resolve`: the LOGIC lives here; the application owns the
 // request pool (rows with a `raw :: [N]char` + the result columns) and runs this each over it.
 parse_request_line :: each (
-  query { raw, method_start, method_len, target_start, target_len, ok }
+  query { raw, raw_len, method_start, method_len, target_start, target_len, ok }
 ) {
   ok           = 0;
   method_start = 0;
   method_len   = 0;
   target_start = 0;
   target_len   = 0;
-  n := str.strlen(raw);
+  n := raw_len; // the bytes net.recv filled — NOT strlen (a kernel-written buffer is not
+  // NUL-terminated, and a reused slot has stale tail bytes)
   if (n >= 5) {
     sp1 := str.find_char(raw, 0, n, ' ');
     sp2 := str.find_char(raw, sp1 + 1, n, ' ');
@@ -35,31 +36,34 @@ parse_request_line :: each (
 /// Content-Type for a path, chosen by file extension. Returns a NUL-terminated string literal — safe
 /// to hand to `%s`. Unknown extensions fall back to `application/octet-stream`.
 mime_by_ext :: func(path: []char) -> []char {
-  if (str.ends_with(path, ".html")) {
+  // Bound to the NUL-terminated content: a char BUFFER's `.length` is its capacity, so `ends_with` would
+  // otherwise compare the buffer's zero-padded tail instead of the file name's actual extension.
+  p := path[0: str.strlen(path)];
+  if (str.ends_with(p, ".html")) {
     return "text/html; charset=utf-8";
   }
-  if (str.ends_with(path, ".htm")) {
+  if (str.ends_with(p, ".htm")) {
     return "text/html; charset=utf-8";
   }
-  if (str.ends_with(path, ".css")) {
+  if (str.ends_with(p, ".css")) {
     return "text/css; charset=utf-8";
   }
-  if (str.ends_with(path, ".js")) {
+  if (str.ends_with(p, ".js")) {
     return "application/javascript";
   }
-  if (str.ends_with(path, ".json")) {
+  if (str.ends_with(p, ".json")) {
     return "application/json";
   }
-  if (str.ends_with(path, ".png")) {
+  if (str.ends_with(p, ".png")) {
     return "image/png";
   }
-  if (str.ends_with(path, ".jpg")) {
+  if (str.ends_with(p, ".jpg")) {
     return "image/jpeg";
   }
-  if (str.ends_with(path, ".svg")) {
+  if (str.ends_with(p, ".svg")) {
     return "image/svg+xml";
   }
-  if (str.ends_with(path, ".txt")) {
+  if (str.ends_with(p, ".txt")) {
     return "text/plain; charset=utf-8";
   }
   return "application/octet-stream";
@@ -85,17 +89,26 @@ reason :: func(status: int) -> []char {
   return "OK";
 }
 
-// Send each prepared response ROW (io-as-data, like `gfx.circle` over the `Player` pool): build the status
-// line + headers into the row's `hdr` buffer, send them, then the body iff `send_body` (0 for HEAD). The
-// application fills the row's columns after routing — `status`, a NUL-terminated `ctype` buffer, the `body`
-// buffer + its `body_len`, `send_body` — then runs this each over its connection pool. `%s` formats only
-// the NUL-terminated `reason`/`ctype` (never the body slice, which is sent raw via `body[0:body_len]`).
-respond :: each (query { sock, status, ctype, body, body_len, send_body, hdr }) {
-  rs := reason(status);
-  fmt.sprintf(_, "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
-              status, rs, ctype, body_len)(hdr, n:);
-  net.send(sock, hdr[0: n])(_:, _:);
-  if (send_body == 1) {
-    net.send(sock, body[0: body_len])(_:, _:);
-  }
+// Send each prepared response ROW (io-as-data): build the status line + headers into the row's `hdr`
+// buffer, send them over the connection's `sock`, then the body iff `send_body` (0 for HEAD). The response
+// columns (`status`, a NUL-terminated `ctype`, the `body` + its `body_len`, `send_body`, the `hdr` scratch)
+// live on the application's response pool; the `socket` is a CREATE-ONCE resource on a separate connection
+// pool, so it is reached by NESTING a `sock` fan inside (one connection per response row). `%s` formats
+// only the NUL-terminated `reason`/`ctype` (never the body slice, sent raw via `body[0:body_len]`).
+respond :: each (query { sock }) {
+  each (query { status, ctype, body, body_len, send_body, hdr }) {
+    rs := reason(status);
+    fmt.sprintf(
+      _,
+      "HTTP/1.1 %d %s\r\nContent-Type: %s\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+      status,
+      rs,
+      ctype,
+      body_len,
+    )(hdr, n:);
+    net.send_n(sock, hdr, n)(_:, _:);
+    if (send_body == 1) {
+      net.send_n(sock, body, body_len)(_:, _:);
+    }
+  };
 }

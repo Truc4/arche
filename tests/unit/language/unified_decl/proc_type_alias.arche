@@ -1,7 +1,7 @@
 // A named func TYPE annotating a top-level default binding (was a proc type; proc removed).
 // RUN: %arche build -o %t %s && %t | grep "code=404"
 #import { fmt }
-handler :: func() -> int;
+handler   :: func() -> int;
 not_found :: func() -> int {
   return 404;
 }

@@ -8,7 +8,7 @@ entry :: system {
   if (fd > 0) {
     buf: [64]char;
     os.read(fd, 64)(buf, rd_v:);
-  v := buf[0: rd_v];
+    v := buf[0: rd_v];
     os.close(fd)(_:);
     if (v.length > 0) {
       fmt.print("read ok\n")(_:);

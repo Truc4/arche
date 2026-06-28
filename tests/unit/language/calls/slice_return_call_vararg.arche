@@ -1,0 +1,25 @@
+// RUN: %arche build -o %t %s && %t | grep -q "^<one>$"
+// Regression: a func returning `[]char` used DIRECTLY as a `%s` vararg must pass its element pointer, not
+// the whole `{ptr,i64}` fat-pointer struct — which landed in an i32 vararg slot → invalid IR. Only the
+// slice-EXPR arg form (`buf[lo:hi]`) was unpacked; a slice-returning CALL wasn't.
+#import { fmt }
+
+pick :: func(n: int) -> []char {
+  if (n == 1) {
+    return "one";
+  }
+  return "many";
+}
+
+S :: arche { out :: [16]char }
+[1]S(1);
+
+go :: each (query { out }) {
+  fmt.sprintf(_, "<%s>", pick(1))(out, _:);
+}
+
+show :: each (query { out }) {
+  fmt.printf("%s\n", out);
+}
+
+#run seq({ go, show })

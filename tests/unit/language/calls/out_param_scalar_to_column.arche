@@ -1,0 +1,19 @@
+// RUN: %arche build -o %t %s && %t | grep -q "^body_len=3 body=ok$"
+// Regression: an extern proc's scalar OUT result (here `fmt.sprintf`'s `n`) bound directly to a query
+// COLUMN must store into that column. The extern-call writeback only handled a LOCAL out-target
+// (`type==1`) and silently DROPPED a column target — the buffer out-param wrote in place but the paired
+// length column kept its old value (0). The buffer (`body`) writes in place; only `n`→`body_len` regressed.
+#import { fmt }
+
+S :: arche { body :: [32]char, body_len :: int }
+[1]S(1);
+
+fill :: each (query { body, body_len }) {
+  fmt.sprintf(_, "ok\n")(body, body_len);
+}
+
+show :: each (query { body, body_len }) {
+  fmt.printf("body_len=%d body=%s", body_len, body); // body carries its own trailing newline
+}
+
+#run seq({ fill, show })

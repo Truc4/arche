@@ -4,7 +4,7 @@
 // removed. Selecting `bar.qux` must run the `bar.qux` arm.
 // RUN: %arche build -o %t %s && %t | grep -q "got qux"
 #import { fmt }
-bar  :: enum { foo, qux, zap }
+bar   :: enum { foo, qux, zap }
 entry :: system {
   baz := bar.qux;
   match baz {

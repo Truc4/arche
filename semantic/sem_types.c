@@ -47,9 +47,9 @@ typedef struct {
 			const char *archetype_name;
 		} handle;
 		struct {
-			const char *extern_name; /* interned; the under-applied extern's name, or NULL for a structural
-			                          * annotation `Eff(T…)` matched only on out-slots */
-			TypeId *out_slots;       /* [out_slot_count] — the types yielded when run */
+			const char *extern_name;     /* interned; the under-applied extern's name, or NULL for a structural
+			                              * annotation `Eff(T…)` matched only on out-slots */
+			TypeId *out_slots;           /* [out_slot_count] — the types yielded when run */
 			const char **out_slot_names; /* [out_slot_count] — interned NAME per out-slot (a named parameter,
 			                              * not an anonymous return); NULL entry = unnamed. The names are
 			                              * intrinsic to the Eff (declarable as `Eff(buf: T, …)` or inferred
