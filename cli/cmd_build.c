@@ -32,6 +32,7 @@ enum {
 	B_PROC_LEAF,
 	B_SYS_FOREIGN_WRITE,
 	B_POOL_INDEX,
+	B_PROC_NOT_PRIMITIVE,
 	B_EMIT_GPU,
 	B_GPU,
 	B_WNO_LSA,
@@ -77,6 +78,8 @@ static const ArgSpec k_build_specs[] = {
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
     {B_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
      "pool-index-outside-query lint (W0029): warn (default) | error | allow"},
+    {B_PROC_NOT_PRIMITIVE, "--proc-not-primitive", ARG_VALUE, 0, 0, "<level>",
+     "proc-not-primitive lint (W0030): error (default) | warn | allow"},
     {B_EMIT_GPU, "--emit-gpu", ARG_VALUE, 0, 0, "<dir>",
      "also emit a GLSL compute shader per `@gpu` map into <dir> (side artifact; CPU build unchanged)"},
     {B_GPU, "--gpu", ARG_FLAG, 0, 0, NULL,
@@ -155,6 +158,11 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	 * still demote it (W0024 is error-by-default; this is the dedicated opt-out). */
 	if (cli_apply_map_foreign_write(args_value(&p, B_SYS_FOREIGN_WRITE)) != 0) {
 		fprintf(stderr, "%s: --map-foreign-write expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_proc_not_primitive(args_value(&p, B_PROC_NOT_PRIMITIVE)) != 0) {
+		fprintf(stderr, "%s: --proc-not-primitive expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}

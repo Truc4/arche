@@ -1,7 +1,8 @@
 // Compile-time callback: a proc-typed param bound per call site, monomorphized to
 // a direct call (no fn-pointer). The same `run_task` skeleton specializes for each
 // continuation; the callback arg is erased from the ABI.
-// RUN: %arche build -o %t %s && %t | grep -A1 "work=9" | grep "cleanup"
+// Callbacks use the (deprecated) proc-callback feature, so relax W0030 for the leaf proc callbacks.
+// RUN: %arche build --proc-not-primitive=allow -o %t %s && %t | grep -A1 "work=9" | grep "cleanup"
 #import { fmt }
 done_handler :: proc()();
 

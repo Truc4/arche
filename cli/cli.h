@@ -57,6 +57,10 @@ int cli_apply_map_foreign_write(const char *value);
 /* Apply `--pool-index=error|warn|allow` (W0029 pool_index_outside_query). NULL → keep the warn-by-default. */
 int cli_apply_pool_index(const char *value);
 
+/* Apply `--proc-not-primitive=error|warn|allow` (W0030 proc_not_primitive — a non-foreign proc). NULL →
+ * keep the error-by-default. Shared by build/check/run. */
+int cli_apply_proc_not_primitive(const char *value);
+
 /* Read a whole file into a freshly malloc'd, NUL-terminated buffer (caller frees). On error prints
  * a perror message and returns NULL. Shared by the build/check/run subcommands. */
 char *cli_read_file(const char *path);

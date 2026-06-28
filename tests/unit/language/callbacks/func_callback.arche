@@ -1,6 +1,7 @@
 // A func (value-returning) callback: the bound func is called directly and its
 // result used. Distinct funcs produce distinct specializations of `apply`.
-// RUN: %arche build -o %t %s && %t | grep "20"
+// Callbacks use the (deprecated) proc-callback feature, so relax W0030 for the leaf proc callbacks.
+// RUN: %arche build --proc-not-primitive=allow -o %t %s && %t | grep "20"
 #import { fmt }
 unary :: func(x: int) -> int;
 

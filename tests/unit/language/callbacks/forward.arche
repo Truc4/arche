@@ -1,5 +1,6 @@
 // A callback with an argument forwarded through a higher-order proc.
-// RUN: %arche build -o %t %s && %t | grep "n=7"
+// Callbacks use the (deprecated) proc-callback feature, so relax W0030 for the leaf proc callbacks.
+// RUN: %arche build --proc-not-primitive=allow -o %t %s && %t | grep "n=7"
 #import { fmt }
 logger :: proc(n: int)();
 

@@ -1,5 +1,6 @@
 // A callback param can be an inline proc/func signature, not just a named alias.
-// RUN: %arche build -o %t %s && %t | grep -c "hi" | grep "2"
+// Callbacks use the (deprecated) proc-callback feature, so relax W0030 for the leaf proc callbacks.
+// RUN: %arche build --proc-not-primitive=allow -o %t %s && %t | grep -c "hi" | grep "2"
 #import { fmt }
 twice :: proc()() {
   fmt.printf("hi\n");

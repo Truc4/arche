@@ -1,6 +1,7 @@
 // A callback threaded through nested higher-order procs (`outer` → `inner` → `cb`),
 // each monomorphized per call site; the callback arg is erased from the ABI.
-// RUN: %arche build -o %t %s && %t | grep "hello"
+// Callbacks use the (deprecated) proc-callback feature, so relax W0030 for the leaf proc callbacks.
+// RUN: %arche build --proc-not-primitive=allow -o %t %s && %t | grep "hello"
 #import { fmt }
 h :: proc()();
 

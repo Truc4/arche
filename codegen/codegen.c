@@ -7709,6 +7709,40 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			eff_inlined = eff_inline_build(ctx, callee_func, rhs->data.call.args, rhs->data.call.arg_count, &eff_ext,
 			                               &eff_fin, &eff_prefix, &eff_prefix_proc, zip_calls, zip_procs, &zip_count,
 			                               &select_cond);
+			/* Emit the builder's input-build PRELUDE. A func→Eff builder may construct a caller-built INPUT
+			 * buffer the extern READS (e.g. `os.sleep_ms`'s `req` timespec: `req[0] = …; req[1] = …`) via
+			 * statements BEFORE the terminal `return <eff>`. The fusion recovers only the return's extern, so
+			 * those statements — which build the locals the fused extern references by name — must be emitted
+			 * here, with the builder's params bound to the actual args, or the extern reads an uninitialized
+			 * buffer (a NULL/garbage timespec → a no-op sleep). A builder that is only `return <eff>` has no
+			 * prelude (ret_idx == 0) and this is a no-op. (flat-effect-model §4 case 3.) */
+			if (eff_inlined && callee_func) {
+				int ret_idx = -1;
+				for (int si = 0; si < callee_func->stmt_count; si++)
+					if (callee_func->stmts[si] && callee_func->stmts[si]->kind == HIR_STMT_RETURN) {
+						ret_idx = si;
+						break;
+					}
+				if (ret_idx > 0) {
+					for (int pi = 0; pi < callee_func->param_count && pi < rhs->data.call.arg_count; pi++) {
+						char av[256];
+						codegen_expression(ctx, rhs->data.call.args[pi], av);
+						HirType *pt = callee_func->params[pi]->type;
+						/* Coerce the actual arg to the param's scalar width — the call-boundary coercion the
+						 * fusion otherwise skips (e.g. `sleep_ms(DT - work)`: an i64 arg into an `int` param). */
+						if (!pt || pt->tag == HIR_TYPE_INT) {
+							int pw = (pt && pt->tag == HIR_TYPE_INT && pt->int_width) ? pt->int_width : 32;
+							char cav[256];
+							emit_int_convert(ctx, av, &rhs->data.call.args[pi]->resolved, pw, cav);
+							add_value(ctx, callee_func->params[pi]->name, cav, 0);
+						} else {
+							add_value(ctx, callee_func->params[pi]->name, av, 0);
+						}
+					}
+					for (int si = 0; si < ret_idx; si++)
+						codegen_statement(ctx, callee_func->stmts[si]);
+				}
+			}
 			if (eff_inlined && select_cond) {
 				/* `ifS` GUARD form: `if (cond) { <then effect> }`. The THEN arm folded into eff_prefix +
 				 * eff_inlined (main); emit it inside the taken branch. Eff() result → nothing to bind. */

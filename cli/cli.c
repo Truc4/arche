@@ -68,6 +68,20 @@ int cli_apply_pool_index(const char *value) {
 	return 0;
 }
 
+int cli_apply_proc_not_primitive(const char *value) {
+	if (!value)
+		return 0; /* flag absent — keep the error-by-default (set in ensure_init) */
+	if (strcmp(value, "error") == 0)
+		semantic_set_lint_proc_not_primitive(1, 1);
+	else if (strcmp(value, "warn") == 0)
+		semantic_set_lint_proc_not_primitive(1, 0);
+	else if (strcmp(value, "allow") == 0)
+		semantic_set_lint_proc_not_primitive(0, 0);
+	else
+		return -1; /* unknown level */
+	return 0;
+}
+
 static int cli_has_arche_ext(const char *name) {
 	size_t n = strlen(name);
 	return n > 6 && strcmp(name + n - 6, ".arche") == 0;
