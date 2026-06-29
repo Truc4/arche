@@ -46,6 +46,10 @@ void semantic_context_free(SemanticContext *ctx);
 /* The resolved-type side model (keyed by syntax tree node id); read by lowering. */
 SemModel *sem_context_model(SemanticContext *ctx);
 
+/* The overflow policy a pool with NO explicit `?handler` resolves to: `@default(proc, pool, X)` if set,
+ * else the `"reject"` baseline. Used by the analyzer to render the implicit pool-policy inlay. */
+const char *semantic_default_pool_policy(const SemanticContext *ctx);
+
 /* The interned TypeId arena (Phase 3); read by lowering's map_type_id. */
 TypeArena *sem_context_arena(SemanticContext *ctx);
 

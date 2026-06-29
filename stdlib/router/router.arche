@@ -1,11 +1,11 @@
 #import { str }
 
-// Flat-table routing LOGIC — no data shapes here. The application owns the data: a route table (rows with
-// `pattern :: [64]char` + `hid :: int`) and a request pool (rows with `path :: [64]char`, the result
-// columns `out_h`/`cap0_start`/`cap0_len :: int`, and a running `best :: int`). `resolve` fans the
-// requests against every route, scores each match (static 3 > param 2 > catchall 1 > 0), and writes the
-// best handler + first capture span onto the request row. A trie would link nodes by index (hand-indexing,
-// forbidden); a flat scan stays pure-columnar.
+/// Flat-table routing LOGIC — no data shapes here. The application owns the data: a route table (rows with
+/// `pattern :: [64]char` + `hid :: int`) and a request pool (rows with `path :: [64]char`, the result
+/// columns `out_h`/`cap0_start`/`cap0_len :: int`, and a running `best :: int`). `resolve` fans the
+/// requests against every route, scores each match (static 3 > param 2 > catchall 1 > 0), and writes the
+/// best handler + first capture span onto the request row. A trie would link nodes by index (hand-indexing,
+/// forbidden); a flat scan stays pure-columnar.
 resolve :: each (query { pattern, hid }) {
   each (query { path, out_h, cap0_start, cap0_len, best }) {
     sc := -1;
@@ -89,7 +89,7 @@ seg_end :: func(p: []char, start: int, n: int) -> int {
   return n;
 }
 
-// Byte-equal two spans `a[as:ae)` and `b[bs:be)`.
+/// Byte-equal two spans `a[as:ae)` and `b[bs:be)`.
 seg_eq_spans :: func(a: []char, as: int, ae: int, b: []char, bs: int, be: int) -> bool {
   if (ae - as != be - bs) {
     return false;

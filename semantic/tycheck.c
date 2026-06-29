@@ -696,6 +696,8 @@ void tycheck_run(SemanticContext *ctx) {
 		if (d->kind == DECL_FUNC || d->kind == DECL_PROC || d->kind == DECL_SYSTEM || d->kind == DECL_EACH ||
 		    d->kind == DECL_MAP) {
 			const DeclSummary *fn = d->kind == DECL_FUNC ? d : NULL;
+			/* An `each` body IS a per-row loop, so `continue` (skip to the next element) is valid in it. */
+			cx.loop_depth = (d->kind == DECL_EACH) ? 1 : 0;
 			for (int k = 0, sc = sem_stmt_count(d->body_node); k < sc; k++)
 				visit_stmt(&cx, sem_stmt_at(d->body_node, k), fn);
 		}

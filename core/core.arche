@@ -78,9 +78,6 @@ reject :: policy(count: int, cap: int, ok: int) {
   }
 }
 
-// Crash on overflow — the infallible pool policy. A full pool is a programmer error here, not a runtime
-// condition to branch on, so the insert site need not handle `ok`. (The codegen binds `count`/`cap`; a
-// non-full insert leaves `ok`/`slot` at their accept defaults.)
 @policy(pool)
 abort :: policy(count: int, cap: int) {
   if (count >= cap) {
@@ -89,15 +86,6 @@ abort :: policy(count: int, cap: int) {
   }
 }
 
-// ── Scheduling (the flat effect model §9 / docs/design/scheduling.md): the Schedule is a first-class
-// value the runtime executes. It is a compile-time-folded tree (Approach A): combinators are pure funcs
-// the `#run` site evaluates to a constant, erased from codegen — no runtime representation, no fn pointers.
-// There is no `World`, and the schedule reads NO program state: runtime conditions are scrapped. Pacing
-// is a system's own accumulator, conditional work lives in a system body, and loop-end is `os.exit` today.
-// `when` is reserved but UNWIRED. TODO(loop-end): the one place a runtime condition might earn itself is
-// loop termination — stop the loop on a quit flag so teardown runs after (`loop`-until / `when(quit,halt)`).
-// A schedule LEAF is a bare map/each/system name (`#run seq({ boot, forever(frame) })`) — there is no
-// `run` constructor. The combinators below compose those leaves; `#run` folds the whole tree at compile time.
 Schedule :: sum {
   seq([]Schedule) par([]Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
 }

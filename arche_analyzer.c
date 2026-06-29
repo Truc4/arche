@@ -739,6 +739,50 @@ static void emit_policy_hint(SyntaxView op, SemanticContext *ctx, int in_func) {
 	emit_syn(end.line, end.column + (int)end.length, 0, 0, "policy", in_func ? "!clamp" : "!abort");
 }
 
+/* A pool declaration's IMPLICIT overflow policy as an inlay: a ghost `?reject` (or the `@default(proc,
+ * pool, X)` override) right after `[N]P`, when no explicit `?handler` is written. Mirrors the bounds/divide
+ * policy ghost — the pool's failure behaviour is never a surprise. A pool static decl leads with `[` (the
+ * capacity); a buffer/scalar static leads with its name, so the bracket discriminates. */
+/* The last token of `v` (recursively) that is NOT a trailing `;` — where an explicit `?handler` would go
+ * on a pool decl, so the ghost renders BEFORE the `;` (`[N]P ?reject;`), not after it (which would be
+ * invalid if made explicit). */
+static CvPos last_token_before_semi(SyntaxView v) {
+	CvPos best = {0, 0, 0, 0};
+	if (!v.node)
+		return best;
+	for (int i = 0; i < v.node->child_count; i++) {
+		const SyntaxElem *e = &v.node->children[i];
+		if (e->tag == SE_NODE) {
+			CvPos sub = last_token_before_semi((SyntaxView){e->as.node, v.src});
+			if (sub.line)
+				best = sub;
+		} else if (e->as.token.kind != TOK_SEMI) {
+			best = (CvPos){e->as.token.line, e->as.token.column, e->as.token.offset, e->as.token.length};
+		}
+	}
+	return best;
+}
+
+static void emit_pool_policy_hint(SyntaxView decl, SemanticContext *ctx) {
+	if (sv_present(sv_child(decl, SN_POLICY_REF)))
+		return; /* explicit `?handler` already visible */
+	/* pool form leads with `[` */
+	int is_pool = 0;
+	for (int i = 0; i < decl.node->child_count; i++)
+		if (decl.node->children[i].tag == SE_TOKEN) {
+			is_pool = decl.node->children[i].as.token.kind == TOK_LBRACKET;
+			break;
+		}
+	if (!is_pool)
+		return;
+	CvPos end = last_token_before_semi(decl);
+	if (!end.line)
+		return;
+	char ghost[64];
+	snprintf(ghost, sizeof ghost, "?%s", semantic_default_pool_policy(ctx));
+	emit_syn(end.line, end.column + (int)end.length, 1, 0, "policy", ghost);
+}
+
 static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 	if (!v.node)
 		return;
@@ -751,6 +795,8 @@ static void walk(SyntaxView v, SemanticContext *ctx, int in_func) {
 	if (vk == SN_BIND_STMT || vk == SN_CONST_DECL || vk == SN_STATIC_DECL || vk == SN_FUNC_DECL || vk == SN_PROC_DECL ||
 	    vk == SN_MAP_DECL || vk == SN_ARCHETYPE_DECL)
 		emit_type_hint(v, ctx);
+	if (vk == SN_STATIC_DECL)
+		emit_pool_policy_hint(v, ctx); /* pool `[N]P` with no `?handler` → ghost `?reject` */
 	if (sv_kind(v) == SN_TYPE_REF)
 		emit_typeref_hint(v, ctx);
 	else if (sv_kind(v) == SN_EXPR_STMT)

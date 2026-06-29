@@ -1,1 +1,1 @@
-// flat-table router: LOGIC only; the app owns the Route/Req shapes and allocates them.
+//! flat-table router: LOGIC only; the app owns the Route/Req shapes and allocates them.

@@ -376,7 +376,9 @@ A `system` takes **no parameters and returns nothing**. It is named in a `#run` 
 runtime runs it; a program's **entry point is a `#run` schedule**, not a decl named `main` (a `main`
 decl is a hard error, [E0225](explain/E0225.md)). To run an effect **per matching row**, use
 `each (query { … })` — the effectful sibling of `map`: where a `map` body is a branch-free column
-kernel, an `each` body may branch, call, `insert`/`delete`, and run effects, once per row.
+kernel, an `each` body may branch, call, `insert`/`delete`, and run effects, once per row. Being a
+sequential per-element fan, it is a loop: `continue` skips the rest of the current element and advances to
+the next row (guard-clause style). There is no `break` — stopping a fan early is incoherent.
 
 `proc` is **reserved for the foreign boundary** — only a `#foreign`/`@syscall`/`@intrinsic`
 declaration (or a `@drop` hook) is a `proc`. A non-foreign `proc` is an error
@@ -659,8 +661,10 @@ gates whether the call must handle `ok`:
   clean form. `delete(h)` is likewise infallible (it aborts on a stale handle).
 
 So you never silently ignore overflow: either the pool declares a visible policy that handles it, or you
-handle `ok` at the call site. A pool policy binds `(count, cap, ok, slot)` — set `ok = 0` to reject, or
-redirect `slot` to a victim row to evict:
+handle `ok` at the call site. A policy-less pool's implicit policy is surfaced as an editor inlay — a ghost
+`?reject` (or the `@default(proc, pool, X)` override) on the declaration — so the failure behaviour is never
+a surprise. A pool policy binds `(count, cap, ok, slot)` — set `ok = 0` to reject, or redirect `slot` to a
+victim row to evict:
 
 ```arche
 [8]Conn ?abort;              // a full connection pool crashes — overflow is a bug here

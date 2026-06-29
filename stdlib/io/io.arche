@@ -10,7 +10,7 @@ stderr :: func() -> fd {
   return fd.stderr;
 }
 
-// `|> clamp_fd` folds the raw i64 open result into an `fd` (errno < 0 clamped to 0). Callers UNCHANGED.
+/// `|> clamp_fd` folds the raw i64 open result into an `fd` (errno < 0 clamped to 0). Callers UNCHANGED.
 clamp_fd :: func(r: i64) -> fd {
   if (r < 0) {
     return fd(0);
@@ -19,68 +19,60 @@ clamp_fd :: func(r: i64) -> fd {
 }
 fopen_read :: func(path: []char) -> Eff(fd) {
   return os.sys_open(path, 0, 0)
-    |> clamp_fd; // path is read-only (plain-in); single out-slot → clamp_fd
+    |> clamp_fd;
 }
 fopen_write :: func(path: []char) -> Eff(fd) {
   return os.sys_open(path, 577, 420)
     |> clamp_fd;
 }
 fwrite :: func(f: fd, buf: []char, n: int) -> Eff(i64) {
-  return os.sys_write(i64(f), buf, n); // buf read-only (the kernel reads it)
+  return os.sys_write(i64(f), buf, n);
 }
 
-// Buffer-fill reads: the buffer is the caller-allocated OUT (the kernel fills it); `k` is the byte count
-// (negative errno on failure — the caller cooks it). The caller allocates at the out-binding (variable
-// size): `io.fread(f, n)(buf: [256]char, k:); buf[0:k]` — or `(cb, k:)` into an existing/queried buffer.
+/// Buffer-fill reads: the buffer is the caller-allocated OUT (the kernel fills it); `k` is the byte count
+/// (negative errno on failure — the caller cooks it). The caller allocates at the out-binding (variable
+/// size): `io.fread(f, n)(buf: [256]char, k:); buf[0:k]` — or `(cb, k:)` into an existing/queried buffer.
 fread :: func(f: fd, n: int) -> Eff([]char, i64) {
-  return os.sys_read(i64(f), _, n); // `_` is the C-ABI in-slot; the buffer is the OUT
+  return os.sys_read(i64(f), _, n);
 }
 
 read :: func(f: fd, n: int) -> Eff([]char, i64) {
-  return fread(f, n); // layered over fread — yields (filled buffer, byte count)
+  return fread(f, n);
 }
-
-// io-as-data line handling: there is no per-char `fread_line` proc. Bulk-read a chunk into a buffer column
-// (`io.read`/`io.read_chunk`, a `func→Eff` filling caller-allocated storage), then scan that column for
-// '\n' boundaries — a columnar pass, not a result-dependent per-byte read sequence.
 
 fclose :: func(f: fd) -> Eff(i64) {
   return os.syscall(3, f, 0, 0, 0, 0, 0);
 }
 
-// io-as-data: an open file is a ROW; its fd is data in the row; close = the row leaving the pool.
-// Park an `fd` column in any archetype and deleting that row fires this destructor (queried by the
-// `fd` type — no wrapper archetype). Compiler-invoked on `delete`, never called by hand. Streams
-// (stdin/stdout/stderr) are never pooled, so they are never closed.
 @drop(fd)
 fd_autoclose :: proc(own f: fd) {
-  fclose(f)(_:); // run the close Eff (syscall 3), discard the result
+  fclose(f)(_:);
 }
 
 stdout_write :: func(buf: []char, n: int) -> Eff(i64) {
-  return os.write(1, buf, n); // layered over os.write (func→Eff) — the fusion recurses to the syscall
+  return os.write(1, buf, n);
 }
 stderr_write :: func(buf: []char, n: int) -> Eff(i64) {
   return os.write(2, buf, n);
 }
 stdin_read :: func(n: int) -> Eff([]char, i64) {
-  return os.read(0, n); // layered over os.read — yields (filled buffer, byte count)
+  return os.read(0, n);
 }
 
 open :: func(own path: []char) -> Eff(fd) {
-  return fopen_read(move path); // layered over fopen_read
+  return fopen_read(move path);
 }
 close :: func(f: fd) -> Eff(i64) {
-  return fclose(f); // layered over fclose (func→Eff)
+  return fclose(f);
 }
 read_chunk :: func(f: fd, size: int) -> Eff([]char, i64) {
-  return fread(f, size); // layered over fread — yields (filled buffer, byte count)
+  return fread(f, size);
 }
 
-// A pure `func → Eff`: `zip` the mmap (its base is an inert `rawptr`) with the file size, then `|> mem.bound`
-// folds (address, size) into a CHECKED whole-file `[]char` view INSIDE the Eff. `zip` runs the map before
-// the size (left-to-right), so `arche_file_size` reads the size stashed by the map. The raw address is never
-// sliceable on its own — `mem.bound` is the single audited FFI pointer→slice door.
+/// A pure `func → Eff`: `zip` the mmap (its base is an inert `rawptr`) with the file size, then `|> mem.bound`
+/// folds (address, size) into a CHECKED whole-file `[]char` view INSIDE the Eff. `zip` runs the map before
+/// the size (left-to-right), so `arche_file_size` reads the size stashed by the map. The raw address is never
+/// sliceable on its own — `mem.bound` is the single audited FFI pointer→slice door.
 file_map :: func(own path: []char) -> Eff([]char) {
   return zip(arche_file_map(move path), arche_file_size())
     |> mem.bound;
@@ -89,12 +81,12 @@ file_size :: func() -> Eff(i64) {
   return arche_file_size();
 }
 file_unmap :: func(own data: []char, size: i64) -> Eff() {
-  return arche_file_unmap(move data, size); // void extern → empty Eff()
+  return arche_file_unmap(move data, size);
 }
 
 #module
 #foreign {
-  arche_file_map   :: proc(own path: []char)(p: rawptr); // mmap base as an inert address; bound with the size
+  arche_file_map   :: proc(own path: []char)(p: rawptr);
   arche_file_size  :: proc()(n: i64);
   arche_file_unmap :: proc(own data: []char, size: i64);
 }

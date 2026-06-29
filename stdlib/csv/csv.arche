@@ -14,7 +14,7 @@ cell :: func { cell_float, cell_int }
 /// result-dependent effectful sequence to decompose across systems). So an archetype-param proc is a
 /// recognized form, not the effectful-proc the ban targets — no `@allow` needed.
 load :: proc(arch: archetype, own path: []char) {
-  load_cols: [64]int; // field-index → CSV-column-index scratch; a local (used only within this proc)
+  load_cols: [64]int;
   io.file_map(move path)(data:);
   io.file_size()(size: i64);
 
@@ -58,7 +58,7 @@ load :: proc(arch: archetype, own path: []char) {
     }
     pos = nl + 1;
   }
-  io.file_unmap(move data, size)(); // run the Eff() (was a bare build — the unmap never happened)
+  io.file_unmap(move data, size)();
 }
 
 #file

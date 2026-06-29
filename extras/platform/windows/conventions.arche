@@ -1,6 +1,6 @@
-// windows backend for the `platform` device — selected by `[target.windows] platform = "windows"`.
-// Same public surface as the linux backend (name / sep / null_device); only the values differ.
-// Not a standalone test (exercised by demo.arche). RUN: true
+/// windows backend for the `platform` device — selected by `[target.windows] platform = "windows"`.
+/// Same public surface as the linux backend (name / sep / null_device); only the values differ.
+/// Not a standalone test (exercised by demo.arche). RUN: true
 name        :: "windows";
 sep         :: "\\";
 null_device :: "NUL";

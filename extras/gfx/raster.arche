@@ -1,12 +1,5 @@
-// gfx rasterization — the "draw" category of the gfx device (same unit as gfx.arche). PROC-FREE, and
-// JOIN-FREE: a draw op is a `system` composer that NESTS two single-query fans. The OUTER `each` fans over
-// the window pool (any pool with a `handle`), establishing that window's framebuffer as a writable local;
-// the INNER `each` fans over the shape pool, painting each shape into the captured framebuffer. Two windows
-// just open two windows (the outer loop runs twice) — there is no singleton, no broadcast, no join. The
-// driver names neither pool; gfx queries components. Colours are 0xRRGGBB ints.
-
-// Draw a filled disc per drawable entity — centre `pos`, radius `r`, colour `color` — into each window's
-// framebuffer, clamped to its bounds.
+/// Draw a filled disc per drawable entity — centre `pos`, radius `r`, colour `color` — into each window's
+/// framebuffer, clamped to its bounds.
 circle :: system {
   each (query { handle }) {
     frame(handle)(px:, w:, h:);
@@ -45,9 +38,9 @@ circle :: system {
   };
 }
 
-// Draw a filled axis-aligned rectangle per drawable entity — top-left `rx,ry`, size `rw,rh`, colour
-// `rcolor` — into each window's framebuffer, clamped to its bounds. (Components are `r`-prefixed so they
-// don't shadow the window's `w`/`h` locals inside the fan.)
+/// Draw a filled axis-aligned rectangle per drawable entity — top-left `rx,ry`, size `rw,rh`, colour
+/// `rcolor` — into each window's framebuffer, clamped to its bounds. (Components are `r`-prefixed so they
+/// don't shadow the window's `w`/`h` locals inside the fan.)
 rect :: system {
   each (query { handle }) {
     frame(handle)(px:, w:, h:);

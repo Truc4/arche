@@ -1,0 +1,10 @@
+// The analyzer surfaces a pool's IMPLICIT overflow policy as an inlay: a ghost `?reject` right after a
+// `[N]P` declaration that has no explicit `?handler` (just as a fallible index shows a ghost `!abort`). A
+// pool with an explicit `?abort`/`?evict_*` already shows it in source, so it gets no ghost.
+// RUN: %build/arche-analyzer --dump %s | grep -qF "policy ?reject"
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy ?") -eq 1
+Foo :: arche { v :: int }
+[4]Foo;
+
+Bar :: arche { v :: int }
+[8]Bar ?abort;

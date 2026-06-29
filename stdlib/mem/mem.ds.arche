@@ -1,5 +1,5 @@
-// The FFI memory boundary's exported type. `rawptr` is an INERT machine address — just an `i64`, with no
-// memory semantics (no deref/index/length). The only operation that interprets one as memory is `mem.bound`
-// (see mem.arche), which forms a checked slice. Modeling it as an i64 alias makes "bound is the only flow"
-// structural, not a lint: an integer simply has no other way to become memory.
+/// The FFI memory boundary's exported type. `rawptr` is an INERT machine address — just an `i64`, with no
+/// memory semantics (no deref/index/length). The only operation that interprets one as memory is `mem.bound`
+/// (see mem.arche), which forms a checked slice. Modeling it as an i64 alias makes "bound is the only flow"
+/// structural, not a lint: an integer simply has no other way to become memory.
 rawptr :: i64;

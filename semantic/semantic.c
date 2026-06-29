@@ -10724,6 +10724,12 @@ SemModel *sem_context_model(SemanticContext *ctx) {
 	return ctx ? ctx->model : NULL;
 }
 
+const char *semantic_default_pool_policy(const SemanticContext *ctx) {
+	if (ctx && ctx->default_pool_policy)
+		return ctx->default_pool_policy; /* `@default(proc, pool, X)` */
+	return "reject";                     /* the baseline a policy-less pool resolves to */
+}
+
 TypeArena *sem_context_arena(SemanticContext *ctx) {
 	return ctx ? ctx->ty_arena : NULL;
 }

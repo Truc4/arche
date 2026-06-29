@@ -1,11 +1,11 @@
-// Datasheet for the `gfx` device — a minimal software-framebuffer windowing library.
-//
-// gfx has per-backend VARIANT subfolders (x11/, wayland/), each shipping a `#foreign` block over a
-// C shim plus the `#link` for that backend's system library. The active variant is chosen by
-// `arche.toml` ([target.*] / [select]) or `ARCHE_SELECT=gfx=x11|wayland`. The public surface
-// (open / blit / poll / close) lives in gfx.arche (always merged) and forwards to the selected
-// backend's `gfx_be_*` symbols, so a driver's code is identical across backends.
-//
-// `window` is an opaque handle wrapping the backend's per-window C state pointer. It auto-closes at
-// scope exit via the `@drop(window)` on `close` (gfx.arche).
+/// Datasheet for the `gfx` device — a minimal software-framebuffer windowing library.
+///
+/// gfx has per-backend VARIANT subfolders (x11/, wayland/), each shipping a `#foreign` block over a
+/// C shim plus the `#link` for that backend's system library. The active variant is chosen by
+/// `arche.toml` ([target.*] / [select]) or `ARCHE_SELECT=gfx=x11|wayland`. The public surface
+/// (open / blit / poll / close) lives in gfx.arche (always merged) and forwards to the selected
+/// backend's `gfx_be_*` symbols, so a driver's code is identical across backends.
+///
+/// `window` is an opaque handle wrapping the backend's per-window C state pointer. It auto-closes at
+/// scope exit via the `@drop(window)` on `close` (gfx.arche).
 window :: opaque;

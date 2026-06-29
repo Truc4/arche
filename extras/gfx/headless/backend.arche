@@ -1,10 +1,10 @@
-// Headless backend for gfx: an in-memory software framebuffer with NO windowing system — merged under
-// ARCHE_SELECT=gfx=headless. Its purpose is CI/testing: the same `gfx.clear/rect/circle` raster code runs
-// against a real buffer that `present` can dump to a PPM, so pixels can be asserted with no display.
-//
-// Binds the gfx_headless.c shim (auto-discovered from this variant folder). No `#link` — pure libc.
-// The `gfx_be_*` symbols are #module-private; importers see only gfx.open/frame/present/poll/close.
-// Not a standalone test.
+/// Headless backend for gfx: an in-memory software framebuffer with NO windowing system — merged under
+/// ARCHE_SELECT=gfx=headless. Its purpose is CI/testing: the same `gfx.clear/rect/circle` raster code runs
+/// against a real buffer that `present` can dump to a PPM, so pixels can be asserted with no display.
+///
+/// Binds the gfx_headless.c shim (auto-discovered from this variant folder). No `#link` — pure libc.
+/// The `gfx_be_*` symbols are #module-private; importers see only gfx.open/frame/present/poll/close.
+/// Not a standalone test.
 // RUN: true
 #module
 #foreign

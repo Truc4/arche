@@ -1,10 +1,9 @@
 #import { net str fmt }
 
-// Parse the request line "METHOD SP TARGET SP VERSION" of each request ROW into SPANS over its own `raw`
-// buffer column (no copies): the method is `raw[method_start : method_start+method_len]`, the target
-// `raw[target_start : target_start+target_len]` (its `?query` trimmed), and `ok` flags a well-formed line
-// (0 on a malformed one). io-as-data, like `router.resolve`: the LOGIC lives here; the application owns the
-// request pool (rows with a `raw :: [N]char` + the result columns) and runs this each over it.
+/// Parse each request row's "METHOD SP TARGET SP VERSION" line into SPANS over its own `raw` buffer (no
+/// copies; `raw_len` is the received byte count, never a NUL-terminated length): method/target as
+/// `start`+`len` with the target's `?query` trimmed, and `ok` = 0 on a malformed line. The app owns the
+/// request pool and runs this `each` over it.
 parse_request_line :: each (
   query { raw, raw_len, method_start, method_len, target_start, target_len, ok }
 ) {
@@ -13,8 +12,7 @@ parse_request_line :: each (
   method_len   = 0;
   target_start = 0;
   target_len   = 0;
-  n := raw_len; // the bytes net.recv filled — NOT strlen (a kernel-written buffer is not
-  // NUL-terminated, and a reused slot has stale tail bytes)
+  n := raw_len;
   if (n >= 5) {
     sp1 := str.find_char(raw, 0, n, ' ');
     sp2 := str.find_char(raw, sp1 + 1, n, ' ');
@@ -34,10 +32,9 @@ parse_request_line :: each (
 }
 
 /// Content-Type for a path, chosen by file extension. Returns a NUL-terminated string literal — safe
-/// to hand to `%s`. Unknown extensions fall back to `application/octet-stream`.
+/// to hand to `%s`. Matched on the NUL-terminated content (a char buffer's `.length` is its capacity).
+/// Unknown extensions fall back to `application/octet-stream`.
 mime_by_ext :: func(path: []char) -> []char {
-  // Bound to the NUL-terminated content: a char BUFFER's `.length` is its capacity, so `ends_with` would
-  // otherwise compare the buffer's zero-padded tail instead of the file name's actual extension.
   p := path[0: str.strlen(path)];
   if (str.ends_with(p, ".html")) {
     return "text/html; charset=utf-8";
@@ -89,12 +86,9 @@ reason :: func(status: int) -> []char {
   return "OK";
 }
 
-// Send each prepared response ROW (io-as-data): build the status line + headers into the row's `hdr`
-// buffer, send them over the connection's `sock`, then the body iff `send_body` (0 for HEAD). The response
-// columns (`status`, a NUL-terminated `ctype`, the `body` + its `body_len`, `send_body`, the `hdr` scratch)
-// live on the application's response pool; the `socket` is a CREATE-ONCE resource on a separate connection
-// pool, so it is reached by NESTING a `sock` fan inside (one connection per response row). `%s` formats
-// only the NUL-terminated `reason`/`ctype` (never the body slice, sent raw via `body[0:body_len]`).
+/// Send each prepared response row: build the status line + headers into `hdr`, send them over `sock`,
+/// then the body iff `send_body` (0 for HEAD). The socket is a create-once resource on a separate
+/// connection pool, reached by NESTING a `sock` fan inside.
 respond :: each (query { sock }) {
   each (query { status, ctype, body, body_len, send_body, hdr }) {
     rs := reason(status);

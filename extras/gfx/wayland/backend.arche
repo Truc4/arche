@@ -1,7 +1,7 @@
-// wayland backend for gfx: merged only under ARCHE_SELECT=gfx=wayland. Binds the wl_shm + xdg-shell C
-// shim (gfx_wl.c + the generated xdg-shell-protocol.c, both auto-compiled) and links libwayland-client.
-// Exposes the SAME `gfx_be_*` surface as the x11 backend, so gfx.arche's public wrappers are
-// backend-agnostic. Not a standalone test.
+/// wayland backend for gfx: merged only under ARCHE_SELECT=gfx=wayland. Binds the wl_shm + xdg-shell C
+/// shim (gfx_wl.c + the generated xdg-shell-protocol.c, both auto-compiled) and links libwayland-client.
+/// Exposes the SAME `gfx_be_*` surface as the x11 backend, so gfx.arche's public wrappers are
+/// backend-agnostic. Not a standalone test.
 // RUN: true
 #link {
   "wayland-client"

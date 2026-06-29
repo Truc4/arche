@@ -1,13 +1,13 @@
-// Showcase driver for the `platform` device. It writes the SAME calls regardless of OS; the active
-// target (from arche.toml's `target`, or `--target`) decides whether the linux/ or windows/ backend
-// supplies the values. Run it both ways:
-//
-//     arche run extras/demo.arche                    # target = "linux" (from extras/arche.toml)
-//     arche build --target windows -o /tmp/d extras/demo.arche && /tmp/d
-//
-// The backends expose `name`/`sep`/`null_device` as `[]char` string CONSTS; the active target picks
-// which file supplies them. (os.write prints the []char slices directly.)
-//
+/// Showcase driver for the `platform` device. It writes the SAME calls regardless of OS; the active
+/// target (from arche.toml's `target`, or `--target`) decides whether the linux/ or windows/ backend
+/// supplies the values. Run it both ways:
+///
+///     arche run extras/demo.arche                    # target = "linux" (from extras/arche.toml)
+///     arche build --target windows -o /tmp/d extras/demo.arche && /tmp/d
+///
+/// The backends expose `name`/`sep`/`null_device` as `[]char` string CONSTS; the active target picks
+/// which file supplies them. (os.write prints the []char slices directly.)
+///
 // RUN: %arche run %s | grep "os=linux sep=/ null=/dev/null"
 // RUN: %arche build --target windows -o %t %s && %t | grep "os=windows sep=. null=NUL"
 #import { platform os }

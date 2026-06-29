@@ -1,12 +1,3 @@
-// The C FFI memory boundary — the ONE audited place a foreign address becomes usable memory.
-// `rawptr` (the inert i64 address type) is declared in the datasheet (mem.ds.arche); this impl is behavior.
-//
-// `bound(p, n)` interprets the foreign address `p` as the base of `n` bytes and returns a CHECKED `[]char`
-// slice over them. This is the single unsafe primitive at the FFI boundary: the caller (a `#foreign`
-// wrapper) vouches that `p` points to `n` valid bytes — exactly the contract C already upholds (e.g.
-// `mmap` base + `fstat` size, or `argv[i]` + `strlen`). Downstream the result is an ordinary bounds-checked
-// slice. `@intrinsic`: codegen emits `inttoptr` + the slice directly; the body below is an unreachable
-// placeholder (there is no way to express "the memory at an address" in pure arche — that IS the primitive).
 @intrinsic
 bound :: func(p: rawptr, n: i64) -> []char {
   return "";

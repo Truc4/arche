@@ -5,7 +5,7 @@
 //     the prover folds N -> 4 and proves i in [0,4) against M=4.
 // (Regression: the policy pass once skipped DECL_SYSTEM, and the loop bound only folded a literal,
 // not a named const, so both sites wrongly kept a `!abort` ghost.)
-// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy") -eq 0
+// RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "policy !") -eq 0
 #import { fmt }
 S :: arche { v :: int }
 [1]S(1);

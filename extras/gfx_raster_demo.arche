@@ -1,6 +1,6 @@
-// gfx raster showcase: clear the framebuffer, draw a moving circle + a fixed rect, present, repeat.
-// gfx owns the framebuffer; this driver only hands gfx a `window` handle and colors — it never touches
-// pixels. Run: arche run extras/gfx_raster_demo.arche
+/// gfx raster showcase: clear the framebuffer, draw a moving circle + a fixed rect, present, repeat.
+/// gfx owns the framebuffer; this driver only hands gfx a `window` handle and colors — it never touches
+/// pixels. Run: arche run extras/gfx_raster_demo.arche
 #import { gfx os }
 
 entry :: system {
@@ -9,10 +9,10 @@ entry :: system {
   t       := 0;
   is_open := true;
   for (; is_open;) {
-    gfx.clear(win, 1052704); // 0x101020 dark blue-grey
-    cx := 80 + t % 480; // circle slides across
-    gfx.circle(win, cx, 240, 60, 16744512); // 0xFF8040 orange
-    gfx.rect(win, 40, 40, 90, 90, 65280); // 0x00FF00 green square
+    gfx.clear(win, 1052704);
+    cx := 80 + t % 480;
+    gfx.circle(win, cx, 240, 60, 16744512);
+    gfx.rect(win, 40, 40, 90, 90, 65280);
     gfx.present(win);
     gfx.poll(win)(is_open);
     t = t + 6;

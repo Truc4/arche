@@ -1,7 +1,7 @@
-// x11 backend for gfx: merged only under ARCHE_SELECT=gfx=x11 (the default). Binds the Xlib C shim
-// (gfx_x11.c) and links libX11. The `gfx_be_*` symbols are #module-private — the public wrappers in
-// gfx.arche (same device unit) call them; importers see only gfx.open/frame/present/poll/close.
-// Not a standalone test.
+/// x11 backend for gfx: merged only under ARCHE_SELECT=gfx=x11 (the default). Binds the Xlib C shim
+/// (gfx_x11.c) and links libX11. The `gfx_be_*` symbols are #module-private — the public wrappers in
+/// gfx.arche (same device unit) call them; importers see only gfx.open/frame/present/poll/close.
+/// Not a standalone test.
 // RUN: true
 #link {
   "X11"

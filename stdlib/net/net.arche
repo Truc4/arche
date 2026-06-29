@@ -9,22 +9,20 @@ connect :: func(own ip: []char, port: int) -> Eff(socket) {
   return net_connect(move ip, port);
 }
 
-// Explicit close → `func → Eff`. The `@drop` is on the `net_close` extern (auto-run at scope exit);
-// closing early consumes `s` (so the auto-drop is suppressed) and the caller runs the Eff:
-// `net.close(move s)()`.
+/// Explicit close → `func → Eff`. The `@drop` is on the `net_close` extern (auto-run at scope exit);
+/// closing early consumes `s` (so the auto-drop is suppressed) and the caller runs the Eff:
+/// `net.close(move s)()`.
 close :: func(own s: socket) -> Eff() {
   return net_close(move s);
 }
 
-// `send`'s `data` is a read-only IN (the kernel reads the bytes to send): `send(s, data)(_:, n:)`, n =
-// bytes sent. `recv`'s buffer is the caller-allocated OUT (the kernel fills it); `_` is the C-ABI shadow:
-// `recv(s, n)(buf: [N]char, r:); buf[0:r]` — or `(cb, r:)` into an existing/queried buffer.
+/// `send`'s `data` is a read-only IN (the kernel reads the bytes to send): `send(s, data)(_:, n:)`, n =
+/// bytes sent. `recv`'s buffer is the caller-allocated OUT (the kernel fills it); `_` is the C-ABI shadow:
+/// `recv(s, n)(buf: [N]char, r:); buf[0:r]` — or `(cb, r:)` into an existing/queried buffer.
 send :: func(s: socket, data: []char) -> Eff([]char, int) {
   return net_send(s, data, data.length);
 }
 
-// Send the first `n` bytes of `buf` — an explicit-length send (no `.length` on the arg), for callers that
-// already carry the byte count and want to avoid materializing a `buf[0:n]` slice.
 send_n :: func(s: socket, buf: []char, n: int) -> Eff([]char, int) {
   return net_send(s, buf, n);
 }

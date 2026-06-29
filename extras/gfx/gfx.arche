@@ -1,24 +1,17 @@
-// gfx public surface (always merged, backend-agnostic). Each op QUERIES the window (its `handle`) and
-// forwards to the selected variant's `gfx_be_*` foreign symbol. The window lives in a `[1]` pool the driver
-// sizes. See docs/design/queries-systems-and-joins.md for the query/nested-fan model.
-
-// Build the open effect as an `Eff(window)`; a boot system runs it (`gfx.open(w,h,title)(win:)`) and
-// inserts the handle into its Window pool.
+/// Build the open effect as an `Eff(window)`; a boot system runs it (`gfx.open(w,h,title)(win:)`) and
+/// inserts the handle into its Window pool.
 open :: func(w: int, h: int, own title: []char) -> Eff(window) {
   return gfx_be_open(w, h, move title);
 }
 
-// The `@drop(window)` is on the `gfx_be_close` extern itself (each backend) — the runtime calls it when a
-// window leaves scope. No wrapper proc: the destructor is the primitive.
-
-// A window's framebuffer + dimensions, as ONE Eff via the applicative product `zip` of three independent
-// backend reads. A draw system binds all three at once: `gfx.frame(handle)(px:, w:, h:)` — no per-system
-// 3-line capture. (`px` is the writable pixel buffer; `w`/`h` its extent.)
+/// A window's framebuffer + dimensions, as ONE Eff via the applicative product `zip` of three independent
+/// backend reads. A draw system binds all three at once: `gfx.frame(handle)(px:, w:, h:)` — no per-system
+/// 3-line capture. (`px` is the writable pixel buffer; `w`/`h` its extent.)
 frame :: func(h: window) -> Eff([]int, int, int) {
   return zip(gfx_be_frame(h), gfx_be_w(h), gfx_be_h(h));
 }
 
-// Fill each window's framebuffer with its `bg` colour (0xRRGGBB).
+/// Fill each window's framebuffer with its `bg` colour (0xRRGGBB).
 clear :: system {
   each (query { handle, bg }) {
     frame(handle)(px:, w:, h:);
@@ -29,18 +22,15 @@ clear :: system {
   };
 }
 
-// Present the framebuffer to the window.
+/// Present the framebuffer to the window.
 present :: system (query { handle }) {
   gfx_be_present(handle);
 }
 
-// A window-close event as data: empty while open, one row once closed. The driver owns `[1]Closed` and
-// reacts (e.g. an `each (Closed)` that halts). `at` is the close stamp.
+/// A window-close event as data: empty while open, one row once closed. The driver owns `[1]Closed` and
+/// reacts (e.g. an `each (Closed)` that halts). `at` is the close stamp.
 Closed :: arche { at :: i64 }
 
-// Pump events; on a close request, record it by inserting a `Closed` row. Best-effort: as a library `poll`
-// cannot know the driver's `Closed` policy, so it HANDLES `ok` by intentionally ignoring it (`_ok`) — a
-// failed insert means a close is already pending (the row exists), which is exactly the state we wanted.
 poll :: system {
   each (query { handle }) {
     gfx_be_poll(handle)(r:);

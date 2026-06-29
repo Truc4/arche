@@ -11599,8 +11599,19 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s",
 		         row); /* col[row]; saved/restored so a NESTED each restores the outer row */
 		ctx->block_terminated = 0;
+		/* `continue` in the body skips to the next row: push this fan's row-advance (`eachrow_cont`) as the
+		 * continue target. (No break: stopping a data-parallel-ish fan early is incoherent.) Buffer lives for
+		 * the whole emission, and a nested each pushes its own, so `continue` always hits the innermost row. */
+		char lcont_br[52];
+		snprintf(lcont_br, sizeof lcont_br, "%%%s", lcont);
+		if (ctx->loop_cont_count >= ctx->loop_cont_capacity) {
+			ctx->loop_cont_capacity = ctx->loop_cont_capacity ? ctx->loop_cont_capacity * 2 : 8;
+			ctx->loop_cont_labels = realloc(ctx->loop_cont_labels, ctx->loop_cont_capacity * sizeof(char *));
+		}
+		ctx->loop_cont_labels[ctx->loop_cont_count++] = lcont_br;
 		for (int s = 0; s < stmt_count; s++)
 			codegen_statement(ctx, stmts[s]);
+		ctx->loop_cont_count--;
 		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", saved_idx);
 		pop_value_scope(ctx);
 		/* end of the live body → fall into the continue block (unless the body already terminated, e.g.
