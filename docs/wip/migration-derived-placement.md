@@ -55,7 +55,7 @@ From the kernel bodies alone, with no annotation, the compiler can derive the pe
 
 | Kernel | reads | writes | notes |
 |--------|-------|--------|-------|
-| `game.step` (map over `Movers`) | `pos`, `vel` | `pos`, `vel` | branch-free, so a GPU kernel candidate |
+| `game.step` (map over `Movers`) | `pos`, `vel` | `pos`, `vel` | branch-free + effect-free ⇒ **GPU-eligible** (§6, §7) |
 | `gfx.circle` (reads Player to draw) | `pos`, `color`, `r` | none on the pool (writes the framebuffer) | read-only consumer of the pool |
 
 Two conclusions fall straight out:
@@ -64,6 +64,16 @@ Two conclusions fall straight out:
 
 Nothing above is written by the arche-rpg author. It is recovered from the existing `map` and the existing
 `gfx.circle` access pattern.
+
+One refinement on "GPU kernel candidate," because an earlier draft of this doc framed branch-freedom as a
+fact *sniffed from the body*. That is the wrong framing: **branch-freedom is not an independent property you
+ask for — it *is* GPU-eligibility.** "Branchless" and "GPU-eligible" name the same fact. The placer derives a
+single predicate over the unit — `branchless ∧ effect-free ∧ bounded` — and that predicate *is* the CPU/GPU
+axis: fail any conjunct and the unit is CPU-only (branches are free on a CPU anyway, §7); pass all three and
+it is eligible for the GPU, where a cost model then decides whether it actually goes (§5, legality vs
+profitability). So there is no "branch flag," no "explicit ask for branch power," and nothing the author
+annotates — only a derived predicate. The author never says `@gpu` and never says "branchless"; both fall
+out of the kind they wrote and what its body touches.
 
 ---
 
@@ -193,3 +203,169 @@ modes, the schedule, the layout, and the CPU/GPU placement are recovered from th
 - arche-rpg's `map (Movers)` over an archetype pool sits in exactly that non-affine columnar zone, which is
   why it is a fair example. It is small and mostly serial, so the *performance* win is modest; its value is
   as the smallest real program exercising the full derive -> schedule -> place pipeline end to end.
+- **Legality vs profitability — the split that shrinks the open cell.** The placement decision is two
+  questions, not one. *Legality* ("can this go wide?") is the derived predicate `branchless ∧ effect-free ∧
+  bounded` (§0, §6) — trivial, no body analysis beyond what the schedule already needs, no research.
+  *Profitability* ("should it?") is the static cost model. Only profitability is the genuinely-open
+  research cell; legality is settled. So the unsolved part of this doc is narrower than it first reads:
+  not "static placement," but "static *cost* over non-affine columnar storage with no runtime scheduler."
+
+---
+
+## 6. Dev/release placement — no annotations, ever
+
+The load-bearing fact that keeps placement annotation-free: **placement is a performance decision, not a
+correctness one.** A kernel computes the same result on the CPU or the GPU; the CPU is always a legal home
+for any kernel. So a placement can be *wrong* (slow) without being *incorrect*. That decouples the two build
+modes:
+
+- **Dev = CPU-only.** Everything is CPU-legal, so a dev build needs **zero** placement analysis and **zero**
+  declarations — each unit compiles independently for the CPU, trivially separately-compilable. The
+  branch-freedom / GPU-eligibility question never even arises, because on the CPU branches are free (§7).
+  "Approximate" placement isn't a compromise here: CPU is *exact for results*, just unoptimized.
+- **Release = whole-program.** GPU placement (derive `branchless ∧ effect-free ∧ bounded`, then run the cost
+  model) happens only in the optimized build, where the whole program is in hand anyway — so it is fully
+  **derived**, never declared.
+
+This is why there are no branch/placement annotations *anywhere*: dev sidesteps the question, release derives
+it whole-program. An earlier line of thought wanted to surface branch-ness as a *signature color* so GPU
+placement could be separately compiled — that idea is **cut**. The only consumer of a per-unit GPU-eligibility
+bit is GPU placement, and the only mode that does GPU placement (release) is whole-program, so the bit is
+never needed at a module boundary.
+
+Honest flag: dev-on-CPU means GPU placement and any GPU-specific behavior (float precision, divergence cost)
+is exercised only in release/perf builds — a normal dev/release tradeoff (iterate logic on the CPU, validate
+placement in release), not a hidden one.
+
+## 7. Branchless is a placement technique, not a speed technique
+
+A tempting error is to read this whole document as "branches are bad, make everything branchless." On a CPU
+that is simply false. A well-predicted branch is ~0 extra cycles; a misprediction is ~15-20; and the
+branches in real kernels — a connection sitting in one state across many reads, a loop bound that rarely
+changes — are *highly* predictable. Reifying that control flow into data (`select`, mask-arithmetic
+`x * (a >= b)`, transition tables, per-tick state machines) is **pure overhead on a CPU**: you pay rescans,
+predicated wasted work, and — for I/O state machines — polling syscalls, all to delete branches that cost
+almost nothing.
+
+Branchlessness pays *only* where branches are genuinely expensive:
+
+- **SIMD/GPU lane divergence** — a divergent branch masks whole lanes, 15-30× the cost of a predicted CPU
+  branch. Here predication is the only way to keep lanes full.
+- **Pathological misprediction at scale** — stream/packet processing of millions of elements in lockstep,
+  where mispredicts (not syscalls) dominate.
+
+**Rule: reify control flow into data only for the kernels you will actually place wide.** Everywhere else,
+branches belong in funcs/systems and run on the CPU, where they are free. Branchless is the price you pay to
+make a kernel GPU-eligible and statically costable — it is not a speedup you collect on the CPU.
+
+A note on one branchless idiom this doc gestured at: the *transition-table-as-value composed by a parallel
+scan* (the simdjson / data-parallel-FSM technique, the only way to parallelize an inherently sequential state
+machine) is **not expressible in arche today.** `scan` is an unimplemented Phase-2 spec
+(`tests/unit/language/collectives/scan_int.arche:2`, "red until scan is implemented"), and even the spec
+restricts the scan operator to a fixed monoid set with a known identity (`semantic.c:2496`) — so a
+user-defined associative combiner (composing transition functions) would be a real language feature
+(custom-operator scan), not a design idiom over existing primitives. Treat the scan-FSM as future work, not
+as something the patterns below can lean on.
+
+## 8. Control flow in leaves is banned; the monadic tail decomposes
+
+The endpoint of "everything that touches data in parallel is branchless" is a hard rule, with the same
+character as the flat-effect model's *a system cannot call a system*: **data-dependent control flow in a leaf
+(`map`/`each`/`system`) is unspellable.** Generalize `map`'s existing `E0046` to every leaf — a branch or a
+data-dependent loop in a leaf body is a hard error, with **no flag and no `@allow`**. Hitting it is not a
+case to opt out of; it is a signal to *redesign*. Control flow goes to exactly three places instead:
+
+- **pure branching/looping → a `func`** (its legitimate home — recursion is free there; it runs on the CPU,
+  where branches cost nothing);
+- **conditional effects → selective values** (`whenS`/`ifS`) — a value the leaf runs, not an `if` in its body;
+- **result-dependent sequencing → decompose** (state-as-data; below).
+
+The objection is "but the monadic tail — read a header, then read *that many* bytes — has to live somewhere,
+and the flat-effect model puts it inline in a system/each." The claim here is that the monadic tail is **not
+irreducible**: it decomposes, and the ban is what forces the decomposition.
+
+```arche
+// BEFORE — the BANNED inline monadic form (data-dependent sequencing + branches in a leaf):
+handle :: each (query { fd, ok }) {
+  hdr: [1]char;
+  read(fd, hdr, 1)(got:, err:);
+  if err != 0 || got == 0 { ok = 0; return; }   // branch + early return — banned
+  len := int(hdr[0]);
+  body: [256]char;
+  read(fd, body, len)(got:, err:);                // read #2 SHAPED BY read #1's runtime result
+  ok = (err == 0 && got == len);
+}
+```
+
+```arche
+// PROPOSED — state as data, one branchless step per tick. States linear so "phase complete" = +1:
+//   NEED_HDR = 0, NEED_BODY = 1, DONE = 2.   `want - have` is the bytes to pull in BOTH phases
+//   (want = HDR in phase 0, want = HDR + len in phase 1), so the read needs no state branch.
+tick :: each (query { fd, state, want, have, buf } as r) {
+  going    := (state < DONE);              // 1 while unfinished, else 0   (mask)
+  req      := (want - have) * going;       // bytes to pull; 0 once DONE   (mask)
+  recv(fd, req)(buf, got:);  have = have + got;
+  was_hdr  := (state == NEED_HDR);         // mask, BEFORE advancing
+  done_now := (have >= want) * going;      // finished this phase this tick? (mask)
+  want   = select(done_now * was_hdr, HDR + body_len(buf), want);  // re-arm `want` on header completion
+  state  = state + done_now;               // 0->1 (hdr), 1->2 (body); never past DONE
+
+  whenS(state == DONE, send_all(fd, build_response(buf, want)))(_:, _:);  // reply — selective, not an `if`
+  whenS(state == DONE, delete(r))(_:);                                     // evict — `delete` IS an effect
+}
+```
+
+`select(c, a, b)` and mask-arithmetic are real (`tests/unit/gpu/physics_step.arche:15`; README "Conditional
+Behavior", `tests/unit/language/types/int_mask_times_float_column.arche`). `delete` is a structural-mutation
+effect, so the selective rung gates it exactly like `send`; it lowers to a guarded emit into the deferred
+command buffer, flushed at the stage barrier (which also sidesteps iterator invalidation — you queue the
+delete, the body finishes on the present row, removal happens at the seam).
+
+Two facts worth pinning:
+
+- **It collapses to ONE `each`, not separate systems.** Once conditionality is `whenS`/`select` values, there
+  is nothing to *call* between the steps, so advance + reply + evict are one body. Separate systems are forced
+  only by a real barrier: a deferred `insert`/`delete` must land before the next step reads pool *membership*;
+  a cross-row reduction/sort must complete; or the next step queries a different archetype. None hold here.
+- **Decomposition spreads work across *ticks*, not *systems*.** The `read#1 then read#2` sequencing became
+  `tick` re-run each loop iteration — same system count as the inline version. "ECS decomposition" (a producer
+  system writes a column a consumer reads) is only forced when the monadic step must be *shared between*
+  systems or hits one of those barriers; a self-contained framed read is just "reify state into columns + loop
+  one branchless `each`."
+
+**Honest cost (cross-ref §7): on a CPU this is objectively slower and buys nothing there** — per-tick rescan
+of every active connection, polling `recv`s that mostly return EAGAIN, and predicated waste (`body_len` and
+`build_response` evaluated every tick). The inline branchy event loop, driven by readiness (epoll), wins on a
+CPU. The branchless form is the right shape *only* if this FSM is placed wide (§7).
+
+**Prerequisites / consequences.** This rule is not free to adopt:
+
+1. The **selective layer must be finished** — value-producing `ifS`, not just the currently-wired guard form
+   (`whenS`, `ifS` with a `pure()` else) — or legitimate static conditionals have nowhere to land.
+2. It **changes the flat-effect model's position.** `the-flat-effect-model.md` §5/§8 currently *permit* the
+   monadic tail to live inline in a flat system/each as an "honest cost." This rule rewrites that to "monadic
+   tail = redesign trigger → decompose."
+3. The one sanctioned holdout — `csv.load` under `@allow(proc_not_primitive)` — must become the pending
+   archetype-targeted load system, or the no-escape-hatch rule has an escape hatch.
+
+## 9. The permission signature (one `system`, kinds as presets)
+
+The kinds stop being primitives. There is one `system`, carrying a **permission signature**: the read set
+(the query), the write set (a `(mutables)` list), and the `eff` flag. The write set is a *separate list*, not
+Bevy-style `&mut` inside the query, because arche queries are **named and shared** across many systems while
+mutability is per-use — so it hoists out of the query to the system that writes. `map` and `each` are then
+just named flag-presets over this signature (`map` = no `eff`, fanning over a query; etc.), not distinct kinds.
+
+There is deliberately **no branch flag** on this signature, and **no branch color on funcs.** Leaves are
+branchless *by ban* (§8), so they are GPU-eligible by construction; funcs may branch freely and run on the
+CPU. Branch-ness is not a permission to grant — it is just the CPU/GPU axis (§0), derived whole-program in a
+release build (§6) and invisible in dev. The only signature-level capability that gates placement is `eff`
+(effects ⇒ CPU); branch-freedom rides along as part of the derived GPU-eligibility predicate, never as a
+declared bit.
+
+---
+
+> **Relationship to landed law.** §6-§9 are WIP. Promoting them would amend
+> [the-flat-effect-model.md](../design/the-flat-effect-model.md) §5/§8, which today *permits* the inline
+> monadic tail. Until then, the flat-effect model is the source of truth and these sections are a proposed
+> direction, not current behavior.

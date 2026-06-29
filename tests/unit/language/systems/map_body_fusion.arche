@@ -1,0 +1,24 @@
+// A multi-statement map body fuses into ONE loop (intermediates stay in registers), not one full-column
+// sweep per statement — the zero-cost-abstraction guarantee. Two checks:
+//   1. behavioral: the in-iteration read-after-write is honored (statement 3 reads b updated by statement 2):
+//      a=1,b=10 -> a=a+b=11 -> b=b*2=20 -> a=a+b=31. Wrong (unfused-but-stale) would give 21.
+//   2. structural: exactly ONE fused loop is emitted for the 3-statement map body.
+// RUN: %arche build -o %t %s && %t | grep -qF "a0=31 b0=20"
+// RUN: %arche build --emit=llvm-ir -o %t.ll %s && test $(grep -cE '^fmap_vloop_[0-9]+:' %t.ll) -eq 1
+#import { fmt }
+a :: float;
+b :: float;
+P :: arche { a, b }
+[4]P(4) { a: 1.0, b: 10.0 }
+
+step :: map (query { a, b }) {
+  a = a + b;
+  b = b * 2.0;
+  a = a + b;
+}
+
+verify :: system {
+  fmt.printf("a0=%.0f b0=%.0f\n", P.a[0] * 1.0, P.b[0] * 1.0);
+}
+
+#run seq({ step, verify })

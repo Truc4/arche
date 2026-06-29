@@ -44,6 +44,19 @@ typedef struct {
 	char versioned_name[512];
 } MapVersion;
 
+/* One column-assignment in a fused map body: `col_ptr[i] (op)= rhs` evaluated at the shared loop index.
+ * All strings are strdup'd on record (struct_ptr may be a caller stack buffer) and freed on flush. */
+#define MAP_BATCH_MAX 128
+typedef struct {
+	char *col_ptr;     /* target column base (SSA) */
+	char *count;       /* element count (SSA); shared across a batch */
+	char *scalar_type; /* "double"/"i32"/... */
+	char *arche_type;  /* "float"/"int"/... */
+	char *struct_ptr;  /* struct base for GEP hoisting (may be NULL) */
+	HirExpr *rhs;      /* RHS expression (stable HIR pointer) */
+	int op;            /* OP_NONE = store; else load+op+store */
+} MapBatchItem;
+
 struct CodegenContext {
 	HirProgram *ast;
 	SemanticContext *sem_ctx;
@@ -112,6 +125,13 @@ struct CodegenContext {
 
 	/* Implicit loop context */
 	char implicit_loop_index[64]; /* SSA reg name for current implicit loop ("" = not in loop) */
+
+	/* Map-body statement fusion: when active, `emit_whole_column_loop` RECORDS its column assignment
+	 * instead of emitting a per-statement loop; `flush_map_batch` then emits ONE fused loop over all
+	 * recorded items (intermediates stay in registers — the zero-cost-abstraction fix). */
+	int map_batch_active;
+	MapBatchItem map_batch_items[MAP_BATCH_MAX];
+	int map_batch_count;
 
 	/* Loop exit label stack for break statements */
 	char **loop_exit_labels;
@@ -6591,6 +6611,227 @@ static const char *float_promote_operand(CodegenContext *ctx, const HirExpr *rhs
 	return buf;
 }
 
+/* strdup without relying on POSIX `strdup` under -std=c99 -Werror. */
+static char *cg_strdup(const char *s) {
+	if (!s)
+		return NULL;
+	size_t n = strlen(s) + 1;
+	char *d = malloc(n);
+	if (d)
+		memcpy(d, s, n);
+	return d;
+}
+
+/* Emit ONE column assignment `col_ptr[idx] (op)= rhs` at the current implicit loop index. The caller has
+ * already set ctx->implicit_loop_index = idx and ctx->vector_lanes (0 = scalar, 4 = AVX). Shared by the
+ * fused multi-statement loop (flush_map_batch); mirrors the per-statement body of emit_whole_column_loop. */
+static void emit_column_assign_body(CodegenContext *ctx, const char *col_ptr, const char *scalar_type,
+                                    const char *arche_type, HirExpr *rhs, int op, const char *idx) {
+	int col_is_float = strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0;
+	int col_unsigned = arche_type[0] == 'u';
+	int vec = ctx->vector_lanes > 0;
+
+	char rhs_buf[256];
+	codegen_expression(ctx, rhs, rhs_buf);
+
+	char compute_result[256];
+	strcpy(compute_result, rhs_buf);
+	if (op != OP_NONE) {
+		char *loaded = gen_value_name(ctx);
+		char *gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, scalar_type, scalar_type, col_ptr, idx);
+		const char *load_type = vec ? elem_llvm_type(ctx, arche_type) : scalar_type;
+		const char *load_src = gep;
+		if (vec) {
+			char *vec_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, gep, load_type);
+			load_src = vec_ptr;
+		}
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, load_type, load_src, vec ? 8 : 4);
+		const char *op_str;
+		switch (op) {
+		case OP_ADD:
+			op_str = col_is_float ? "fadd" : "add";
+			break;
+		case OP_SUB:
+			op_str = col_is_float ? "fsub" : "sub";
+			break;
+		case OP_MUL:
+			op_str = col_is_float ? "fmul" : "mul";
+			break;
+		case OP_DIV:
+			op_str = col_is_float ? "fdiv" : (col_unsigned ? "udiv" : "sdiv");
+			break;
+		case OP_MOD:
+			op_str = col_is_float ? "frem" : (col_unsigned ? "urem" : "srem");
+			break;
+		default:
+			op_str = col_is_float ? "fadd" : "add";
+			break;
+		}
+		char *op_result = gen_value_name(ctx);
+		char rhs_promo[256];
+		const char *rhs_op =
+		    col_is_float ? float_promote_operand(ctx, rhs, rhs_buf, rhs_promo, sizeof(rhs_promo)) : rhs_buf;
+		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
+			emit_int_divmod(ctx, op_str, load_type, loaded, rhs_buf, NULL, op_result);
+		else
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_op);
+		strcpy(compute_result, op_result);
+	}
+
+	char *target_gep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_gep, scalar_type, scalar_type, col_ptr,
+	                  idx);
+	if (op == OP_NONE && scalar_type[0] == 'i') {
+		char coerced[256];
+		emit_int_convert(ctx, compute_result, &rhs->resolved, atoi(scalar_type + 1), coerced);
+		strcpy(compute_result, coerced);
+	}
+	if (vec) {
+		const char *vec_type = elem_llvm_type(ctx, arche_type);
+		char *vec_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, target_gep, vec_type);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 8\n", vec_type, compute_result, vec_type, vec_ptr);
+	} else {
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 4\n", scalar_type, compute_result, scalar_type, target_gep);
+	}
+}
+
+/* Emit ONE fused loop running every recorded column assignment per element (intermediates stay in
+ * registers) — the zero-cost-abstraction fix: a multi-statement map/whole-column body compiles to a
+ * single pass over the rows instead of one full-column sweep per statement. */
+static void flush_map_batch(CodegenContext *ctx) {
+	int n = ctx->map_batch_count;
+	if (n <= 0) {
+		ctx->map_batch_count = 0;
+		return;
+	}
+	MapBatchItem *items = ctx->map_batch_items;
+	const char *count = items[0].count; /* same archetype ⇒ same count for every item */
+
+	/* Vectorize the whole group only if EVERY item is a float column with no scalar-forcing RHS. */
+	int vectorize = 1;
+	for (int i = 0; i < n; i++) {
+		const char *at = items[i].arche_type;
+		int is_f = strcmp(at, "float") == 0 || strcmp(at, "double") == 0;
+		if (!is_f || rhs_forces_scalar(ctx, items[i].rhs)) {
+			vectorize = 0;
+			break;
+		}
+	}
+
+	for (int i = 0; i < n; i++)
+		if (items[i].struct_ptr)
+			hoist_column_geps(ctx, items[i].rhs, items[i].struct_ptr);
+
+	char *count_aligned = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = and i64 %s, -4\n", count_aligned, count);
+
+	char *v_ctr_alloca = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", v_ctr_alloca);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", v_ctr_alloca);
+
+	char vloop[40], vbody[40], ssetup[40], scheck[40], sbody[40], done[40];
+	snprintf(vloop, sizeof(vloop), "fmap_vloop_%d", ctx->value_counter++);
+	snprintf(vbody, sizeof(vbody), "fmap_vbody_%d", ctx->value_counter++);
+	snprintf(ssetup, sizeof(ssetup), "fmap_ssetup_%d", ctx->value_counter++);
+	snprintf(scheck, sizeof(scheck), "fmap_scheck_%d", ctx->value_counter++);
+	snprintf(sbody, sizeof(sbody), "fmap_sbody_%d", ctx->value_counter++);
+	snprintf(done, sizeof(done), "fmap_done_%d", ctx->value_counter++);
+
+	/* Vector (or unit-stride scalar) loop over the aligned prefix. */
+	buffer_append_fmt(ctx, "  br label %%%s\n\n%s:\n", vloop, vloop);
+	char *vi = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", vi, v_ctr_alloca);
+	char *vcond = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", vcond, vi, count_aligned);
+	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n%s:\n", vcond, vbody, ssetup, vbody);
+	ctx->vector_lanes = vectorize ? 4 : 0;
+	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", vi);
+	for (int i = 0; i < n; i++)
+		emit_column_assign_body(ctx, items[i].col_ptr, items[i].scalar_type, items[i].arche_type, items[i].rhs,
+		                        items[i].op, vi);
+	char *vi_new = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, %d\n", vi_new, vi, vectorize ? 4 : 1);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", vi_new, v_ctr_alloca);
+	buffer_append_fmt(ctx, "  br label %%%s\n\n", vloop);
+
+	/* Scalar tail over the remaining `count & 3` elements. */
+	buffer_append_fmt(ctx, "%s:\n", ssetup);
+	char *s_ctr_alloca = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", s_ctr_alloca);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_aligned, s_ctr_alloca);
+	buffer_append_fmt(ctx, "  br label %%%s\n\n%s:\n", scheck, scheck);
+	char *si = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", si, s_ctr_alloca);
+	char *scond = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", scond, si, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n%s:\n", scond, sbody, done, sbody);
+	ctx->vector_lanes = 0;
+	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", si);
+	for (int i = 0; i < n; i++)
+		emit_column_assign_body(ctx, items[i].col_ptr, items[i].scalar_type, items[i].arche_type, items[i].rhs,
+		                        items[i].op, si);
+	char *si_new = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", si_new, si);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", si_new, s_ctr_alloca);
+	buffer_append_fmt(ctx, "  br label %%%s\n\n%s:\n", scheck, done);
+
+	ctx->implicit_loop_index[0] = '\0';
+	ctx->vector_lanes = 0;
+	for (int i = 0; i < n; i++) {
+		free(items[i].col_ptr);
+		free(items[i].count);
+		free(items[i].scalar_type);
+		free(items[i].arche_type);
+		free(items[i].struct_ptr);
+	}
+	ctx->map_batch_count = 0;
+}
+
+/* True if a body statement is a whole-column assignment (Path A field-column or Path B map-param column) —
+ * the statements that funnel through emit_whole_column_loop and are therefore fusable. */
+static int stmt_targets_column(CodegenContext *ctx, HirStmt *stmt) {
+	if (stmt->kind != HIR_STMT_ASSIGN)
+		return 0;
+	HirExpr *t = stmt->data.assign_stmt.target;
+	if (t->kind == HIR_EXPR_FIELD)
+		return 1;
+	if (t->kind == HIR_EXPR_NAME) {
+		ValueInfo *v = find_value(ctx, t->data.name.name);
+		return v && v->type == 4; /* type 4 = column pointer (map parameter) */
+	}
+	return 0;
+}
+
+/* Walk a map/system body, fusing consecutive top-level whole-column assignments into ONE loop while
+ * emitting everything else (effects, control flow) normally. Batching is suspended around non-column
+ * statements so a column op nested in a for/if still emits its own loop in place. Enabled only when there
+ * is no active implicit index (whole-column multi-row context — never a `[1]` singleton driver, which
+ * assigns at a fixed index 0 rather than through the loop emitter). */
+static void codegen_body_fused(CodegenContext *ctx, HirStmt **stmts, int n) {
+	int can_batch = (ctx->implicit_loop_index[0] == '\0');
+	if (can_batch) {
+		ctx->map_batch_active = 1;
+		ctx->map_batch_count = 0;
+	}
+	for (int s = 0; s < n; s++) {
+		if (can_batch && !stmt_targets_column(ctx, stmts[s])) {
+			flush_map_batch(ctx); /* preserve order: emit pending fused loop before this statement */
+			ctx->map_batch_active = 0;
+			codegen_statement(ctx, stmts[s]);
+			ctx->map_batch_active = 1;
+		} else {
+			codegen_statement(ctx, stmts[s]);
+		}
+	}
+	if (can_batch) {
+		flush_map_batch(ctx);
+		ctx->map_batch_active = 0;
+	}
+}
+
 static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* SSA reg: scalar* column data */
                                    const char *count,                        /* SSA reg: i64 element count */
                                    const char *scalar_type,                  /* "double" or "i32" */
@@ -6599,6 +6840,22 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
                                    int op,                     /* OP_NONE = store, others = load+op+store */
                                    const char *struct_ptr_val) /* struct pointer for hoisting */
 {
+	/* Fusion: inside a map/whole-column body, RECORD this assignment instead of emitting its own loop;
+	 * flush_map_batch later emits ONE loop for the whole run. */
+	if (ctx->map_batch_active) {
+		if (ctx->map_batch_count >= MAP_BATCH_MAX)
+			flush_map_batch(ctx);
+		MapBatchItem *it = &ctx->map_batch_items[ctx->map_batch_count++];
+		it->col_ptr = cg_strdup(col_ptr);
+		it->count = cg_strdup(count);
+		it->scalar_type = cg_strdup(scalar_type);
+		it->arche_type = cg_strdup(arche_type);
+		it->struct_ptr = cg_strdup(struct_ptr_val);
+		it->rhs = rhs;
+		it->op = op;
+		return;
+	}
+
 	/* Hoist column base GEPs before loop to avoid recalculating them */
 	if (struct_ptr_val) {
 		hoist_column_geps(ctx, rhs, struct_ptr_val);
@@ -11419,15 +11676,13 @@ static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys, int dec
 			if (driver_is_singleton)
 				snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "0");
 			ctx->block_terminated = 0;
-			for (int s = 0; s < sys->stmt_count; s++)
-				codegen_statement(ctx, sys->stmts[s]);
+			codegen_body_fused(ctx, sys->stmts, sys->stmt_count);
 			ctx->implicit_loop_index[0] = '\0';
 			pop_value_scope(ctx);
 		}
 		ctx->in_columnar_system = prev_columnar;
 	} else {
-		for (int i = 0; i < sys->stmt_count; i++)
-			codegen_statement(ctx, sys->stmts[i]);
+		codegen_body_fused(ctx, sys->stmts, sys->stmt_count);
 	}
 	pop_value_scope(ctx);
 	buffer_append(ctx, "  ret void\n");
@@ -11872,11 +12127,11 @@ static void codegen_map_decl(CodegenContext *ctx, HirMapDecl *map, int decl_unit
 			add_arch_value(ctx, foreign_pools[fp], fp_llvm, foreign_pools[fp]);
 		}
 
-		/* Emit map body with this archetype's bindings */
+		/* Emit map body with this archetype's bindings. Fuse the body's whole-column assignments into ONE
+		 * per-element loop (intermediates stay in registers) instead of one full-column sweep per statement.
+		 * Flush before any non-column statement so emission order is preserved. */
 		ctx->in_map = 1;
-		for (int s = 0; s < map->stmt_count; s++) {
-			codegen_statement(ctx, map->stmts[s]);
-		}
+		codegen_body_fused(ctx, map->stmts, map->stmt_count);
 		ctx->in_map = 0;
 
 		pop_value_scope(ctx);
@@ -12630,6 +12885,11 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 }
 
 void codegen_generate(CodegenContext *ctx, FILE *output) {
+	/* Map-body fusion state starts clean (the caller-allocated ctx may not zero new fields; per-unit
+	 * incremental codegen reuses fresh contexts). */
+	ctx->map_batch_active = 0;
+	ctx->map_batch_count = 0;
+
 	/* RAII: build the opaque-type -> destructor registry before emitting any body. */
 	codegen_build_drop_registry(ctx);
 
