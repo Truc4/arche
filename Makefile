@@ -292,10 +292,13 @@ test-gpu-run: $(TARGET)
 test-gpu-exe: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-exe: SKIP (glslc not found)"; exit 0; }
 	@mkdir -p $(BUILD_DIR)/gpu
-	@for t in scale:"x0=0 x3=30" physics_step:"p0=1 p7=8"; do \
+	@for t in scale:"x0=0 x3=30" physics_step:"p0=1 p7=8" resident:"v0=3 v7=10"; do \
 		name=$${t%%:*}; want=$${t#*:}; \
-		./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/$$name.exe tests/unit/gpu/$$name.arche >/dev/null 2>&1 \
-			|| { echo "test-gpu-exe: SKIP ($$name --gpu build failed; likely no libvulkan at link)"; exit 0; }; \
+		./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/$$name.exe tests/unit/gpu/$$name.arche >$(BUILD_DIR)/gpu/$$name.build 2>&1 \
+			|| { if grep -qiE 'Failed to optimize|undefined value|Failed to compile|Failed to generate|verification failed' $(BUILD_DIR)/gpu/$$name.build; then \
+					echo "test-gpu-exe: FAIL $$name — codegen error in --gpu build:"; cat $(BUILD_DIR)/gpu/$$name.build; exit 1; \
+				fi; \
+				echo "test-gpu-exe: SKIP ($$name --gpu link failed; likely no libvulkan)"; exit 0; }; \
 		out=$$(ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/$$name.exe 2>$(BUILD_DIR)/gpu/$$name.err); \
 		echo "$$out" | grep -qF "$$want" || { echo "test-gpu-exe: FAIL $$name — output [$$out] != [$$want]"; exit 1; }; \
 		if grep -q "gpu dispatch" $(BUILD_DIR)/gpu/$$name.err; then \

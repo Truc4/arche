@@ -19,10 +19,19 @@ typedef struct {
  * build). Returns NULL when no `@gpu` shader was embedded for `name` (→ CPU fallback). */
 const ArcheGpuShader *arche_gpu_lookup(const char *name);
 
-/* Run map `name` on the GPU over `ncol` columns of `count` elements (`elem_size` bytes each); the
- * host column buffers in `cols[]` are uploaded, the kernel runs, results are read back into the
- * same buffers. Returns 0 on success (ran on GPU), nonzero on ANY failure — the caller then runs
+/* Run map `name` on the GPU over `ncol` columns of `count` elements (`elem_size` bytes each).
+ * `resident == 0`: host buffers in `cols[]` are uploaded, the kernel runs, results are read back into
+ * the same buffers, device buffers freed (per-dispatch model).
+ * `resident == 1`: device buffers persist across dispatches in a host-pointer-keyed cache — uploaded
+ * once on first sight, reused (no re-upload) and NOT downloaded; the host copy stays stale until
+ * `arche_gpu_sync`. Returns 0 on success (ran on GPU), nonzero on ANY failure — the caller then runs
  * the CPU path, so a missing device / driver / shader is always safe. Provided by gpu_runtime.c. */
-int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count);
+int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count,
+                       int resident);
+
+/* Download resident device buffers back to host (the explicit GPU->CPU sync for a `gpu.sync(Pool)`
+ * schedule leaf). For each `cols[b]` that is a dirty resident buffer, copies device data back and clears
+ * the dirty flag. No-op for non-resident cols and in the no-Vulkan build. Provided by gpu_runtime.c. */
+void arche_gpu_sync(void **cols, unsigned ncol, unsigned elem_size, unsigned count);
 
 #endif

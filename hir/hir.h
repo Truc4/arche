@@ -87,10 +87,10 @@ typedef enum {
 /* A compile-time-folded Schedule node (Approach A: `#run`'s value-CTFE result). The runtime never sees
  * this — codegen walks it to emit a direct-dispatch function (@arche_run). `sym` is a system/map name
  * (SCHED_RUN) or a predicate func name (SCHED_WHEN); children are sub-schedules. No function pointers. */
-typedef enum { SCHED_RUN, SCHED_SEQ, SCHED_PAR, SCHED_LOOP, SCHED_WHEN, SCHED_HALT } SchedKind;
+typedef enum { SCHED_RUN, SCHED_SEQ, SCHED_PAR, SCHED_LOOP, SCHED_WHEN, SCHED_HALT, SCHED_GPU_SYNC } SchedKind;
 typedef struct ScheduleTree {
 	SchedKind kind;
-	char *sym; /* SCHED_RUN: system/map name; SCHED_WHEN: predicate func name; else NULL */
+	char *sym; /* SCHED_RUN: system/map name; SCHED_WHEN: predicate func name; SCHED_GPU_SYNC: pool name; else NULL */
 	struct ScheduleTree **children;
 	int child_count;
 } ScheduleTree;
@@ -235,6 +235,9 @@ typedef struct {
 	 * rows the driver must provide), not an allocation: it never emits storage; the driver's own pool
 	 * for the same shape must meet the minimum. Set only for HIR_STATIC_ARCHETYPE from a datasheet. */
 	int is_requirement;
+	/* `@resident`: the pool's columns stay GPU-resident across `@gpu` map dispatches (uploaded once,
+	 * reused, downloaded only at a `gpu.sync(Pool)`). Set only for HIR_STATIC_ARCHETYPE. */
+	int is_resident;
 	union {
 		struct {
 			char *archetype_name;

@@ -25,6 +25,7 @@
 
 #define ARCHE_GPU_MAX_COL 16
 #define ARCHE_GPU_MAX_CACHE 64
+#define ARCHE_GPU_MAX_RESIDENT 256
 
 /* One-time device state. `ready` is 0 = uninitialized, 1 = up, -1 = init failed (never retry). */
 static struct {
@@ -49,6 +50,28 @@ typedef struct {
 } PipeEntry;
 static PipeEntry g_pipes[ARCHE_GPU_MAX_CACHE];
 static int g_pipe_count = 0;
+
+/* Persistent (GPU-resident) column buffers, keyed by the host column pointer. A `@resident` pool's
+ * columns are created+uploaded once and reused across dispatches (no per-dispatch alloc/upload/download);
+ * `arche_gpu_sync` downloads the dirty ones back to host. Static pools have stable host bases + fixed
+ * size, so a host-pointer key with a fixed `bytes` is sufficient. */
+typedef struct {
+	void *host;
+	VkBuffer buf;
+	VkDeviceMemory mem;
+	void *mapped;
+	VkDeviceSize bytes;
+	int gpu_dirty; /* 1 = GPU wrote since the last sync; host copy is stale */
+} ResidentBuf;
+static ResidentBuf g_resident[ARCHE_GPU_MAX_RESIDENT];
+static int g_resident_count = 0;
+
+static ResidentBuf *resident_find(void *host) {
+	for (int i = 0; i < g_resident_count; i++)
+		if (g_resident[i].host == host)
+			return &g_resident[i];
+	return NULL;
+}
 
 static int gpu_debug(void) {
 	static int v = -1;
@@ -190,7 +213,80 @@ static PipeEntry *gpu_pipeline(const ArcheGpuShader *sh) {
 	return &g_pipes[g_pipe_count++];
 }
 
-int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count) {
+/* Copy between a host column and a DEVICE_LOCAL buffer through a temporary HOST_VISIBLE staging buffer
+ * (device-local VRAM is not host-mappable). to_device=1 uploads host->dev; to_device=0 downloads dev->host.
+ * Used to populate/read back GPU-resident buffers once, so the kernel runs against VRAM bandwidth (much
+ * higher than PCIe-mapped host memory). Returns 0 on success. */
+static int gpu_staged_copy(void *host, VkBuffer dev, VkDeviceSize bytes, int to_device) {
+	int rc = 1;
+	VkBuffer stg = VK_NULL_HANDLE;
+	VkDeviceMemory smem = VK_NULL_HANDLE;
+	void *mapped = NULL;
+	VkCommandBuffer cmd = VK_NULL_HANDLE;
+
+	VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+	                          .size = bytes,
+	                          .usage = to_device ? VK_BUFFER_USAGE_TRANSFER_SRC_BIT : VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+	                          .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+	if (vkCreateBuffer(G.dev, &bci, NULL, &stg) != VK_SUCCESS)
+		goto out;
+	VkMemoryRequirements mr;
+	vkGetBufferMemoryRequirements(G.dev, stg, &mr);
+	uint32_t mt = find_mem_type(mr.memoryTypeBits,
+	                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	if (mt == UINT32_MAX)
+		goto out;
+	VkMemoryAllocateInfo mai = {
+	    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = mr.size, .memoryTypeIndex = mt};
+	if (vkAllocateMemory(G.dev, &mai, NULL, &smem) != VK_SUCCESS)
+		goto out;
+	if (vkBindBufferMemory(G.dev, stg, smem, 0) != VK_SUCCESS)
+		goto out;
+	if (vkMapMemory(G.dev, smem, 0, bytes, 0, &mapped) != VK_SUCCESS)
+		goto out;
+	if (to_device)
+		memcpy(mapped, host, (size_t)bytes);
+
+	VkCommandBufferAllocateInfo cbai = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+	                                    .commandPool = G.cpool,
+	                                    .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+	                                    .commandBufferCount = 1};
+	if (vkAllocateCommandBuffers(G.dev, &cbai, &cmd) != VK_SUCCESS)
+		goto out;
+	VkCommandBufferBeginInfo cbbi = {.sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+	                                 .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT};
+	if (vkBeginCommandBuffer(cmd, &cbbi) != VK_SUCCESS)
+		goto out;
+	VkBufferCopy region = {.srcOffset = 0, .dstOffset = 0, .size = bytes};
+	if (to_device)
+		vkCmdCopyBuffer(cmd, stg, dev, 1, &region);
+	else
+		vkCmdCopyBuffer(cmd, dev, stg, 1, &region);
+	if (vkEndCommandBuffer(cmd) != VK_SUCCESS)
+		goto out;
+	VkSubmitInfo si = {.sType = VK_STRUCTURE_TYPE_SUBMIT_INFO, .commandBufferCount = 1, .pCommandBuffers = &cmd};
+	if (vkQueueSubmit(G.queue, 1, &si, VK_NULL_HANDLE) != VK_SUCCESS)
+		goto out;
+	if (vkQueueWaitIdle(G.queue) != VK_SUCCESS)
+		goto out;
+	if (!to_device)
+		memcpy(host, mapped, (size_t)bytes);
+	rc = 0;
+
+out:
+	if (cmd)
+		vkFreeCommandBuffers(G.dev, G.cpool, 1, &cmd);
+	if (mapped)
+		vkUnmapMemory(G.dev, smem);
+	if (stg)
+		vkDestroyBuffer(G.dev, stg, NULL);
+	if (smem)
+		vkFreeMemory(G.dev, smem, NULL);
+	return rc;
+}
+
+int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count,
+                       int resident) {
 	if (!name || ncol == 0 || ncol > ARCHE_GPU_MAX_COL || !cols)
 		return 1;
 	if (count == 0)
@@ -209,11 +305,60 @@ int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned el
 	VkBuffer buf[ARCHE_GPU_MAX_COL] = {0};
 	VkDeviceMemory mem[ARCHE_GPU_MAX_COL] = {0};
 	void *mapped[ARCHE_GPU_MAX_COL] = {0};
+	int from_cache[ARCHE_GPU_MAX_COL] = {0}; /* 1 = buffer owned by the resident cache (not freed here) */
 	VkDescriptorPool dpool = VK_NULL_HANDLE;
 	VkCommandBuffer cmd = VK_NULL_HANDLE;
 	int rc = 1;
 
 	for (unsigned b = 0; b < ncol; b++) {
+		/* Resident path: a DEVICE_LOCAL (VRAM) buffer that persists across dispatches. On a hit, reuse it
+		 * with no transfer — the kernel reads/writes VRAM at full device bandwidth. On a miss, create the
+		 * VRAM buffer and stage-upload the column once. */
+		if (resident && g_resident_count < ARCHE_GPU_MAX_RESIDENT) {
+			ResidentBuf *r = resident_find(cols[b]);
+			if (r && r->bytes == bytes) {
+				buf[b] = r->buf;
+				mem[b] = r->mem;
+				from_cache[b] = 1;
+				if (gpu_debug())
+					fprintf(stderr, "arche: gpu resident reuse '%s' col %u (%zu bytes, VRAM)\n", name, b,
+					        (size_t)bytes);
+				continue;
+			}
+			VkBufferCreateInfo dbci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+			                           .size = bytes,
+			                           .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
+			                                    VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+			                           .sharingMode = VK_SHARING_MODE_EXCLUSIVE};
+			if (vkCreateBuffer(G.dev, &dbci, NULL, &buf[b]) != VK_SUCCESS)
+				goto done;
+			VkMemoryRequirements dmr;
+			vkGetBufferMemoryRequirements(G.dev, buf[b], &dmr);
+			uint32_t dmt = find_mem_type(dmr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+			if (dmt == UINT32_MAX)
+				goto done;
+			VkMemoryAllocateInfo dmai = {
+			    .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO, .allocationSize = dmr.size, .memoryTypeIndex = dmt};
+			if (vkAllocateMemory(G.dev, &dmai, NULL, &mem[b]) != VK_SUCCESS)
+				goto done;
+			if (vkBindBufferMemory(G.dev, buf[b], mem[b], 0) != VK_SUCCESS)
+				goto done;
+			if (gpu_staged_copy(cols[b], buf[b], bytes, /*to_device=*/1) != 0)
+				goto done; /* upload once via staging */
+			ResidentBuf *nr = &g_resident[g_resident_count++];
+			nr->host = cols[b];
+			nr->buf = buf[b];
+			nr->mem = mem[b];
+			nr->mapped = NULL; /* device-local: not host-mapped */
+			nr->bytes = bytes;
+			nr->gpu_dirty = 0;
+			from_cache[b] = 1;
+			if (gpu_debug())
+				fprintf(stderr, "arche: gpu resident upload '%s' col %u (%zu bytes, VRAM)\n", name, b, (size_t)bytes);
+			continue;
+		}
+		/* Non-resident (or resident cache full): per-dispatch HOST_VISIBLE buffer, mapped + uploaded now,
+		 * downloaded and freed after the dispatch. */
 		VkBufferCreateInfo bci = {.sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
 		                          .size = bytes,
 		                          .usage = VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
@@ -284,21 +429,34 @@ int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned el
 	if (vkQueueWaitIdle(G.queue) != VK_SUCCESS)
 		goto done;
 
-	for (unsigned b = 0; b < ncol; b++)
-		memcpy(cols[b], mapped[b], (size_t)bytes); /* host-coherent: read results back */
+	for (unsigned b = 0; b < ncol; b++) {
+		if (from_cache[b]) {
+			/* Resident: leave the result in the device buffer (no download); mark stale-on-host so a later
+			 * `arche_gpu_sync` brings it back. */
+			ResidentBuf *r = resident_find(cols[b]);
+			if (r)
+				r->gpu_dirty = 1;
+		} else {
+			memcpy(cols[b], mapped[b], (size_t)bytes); /* per-dispatch: host-coherent read-back */
+		}
+	}
 	rc = 0;
 	if (gpu_debug())
-		fprintf(stderr, "arche: gpu dispatch '%s' (%u elems, %u cols) on %s\n", name, count, ncol, G.dev_name);
+		fprintf(stderr, "arche: gpu dispatch '%s' (%u elems, %u cols%s) on %s\n", name, count, ncol,
+		        resident ? ", resident" : "", G.dev_name);
 
 done:
 	if (cmd)
 		vkFreeCommandBuffers(G.dev, G.cpool, 1, &cmd);
 	if (dpool)
 		vkDestroyDescriptorPool(G.dev, dpool, NULL);
-	/* Free every column resource that was created — the arrays are zero-initialized and each handle is
-	 * null-guarded, so iterating the full width frees a buffer even if its memory alloc/map failed mid-loop
-	 * (a partial-failure leak the old `created` counter missed). */
+	/* Free every column resource that was created EXCEPT resident-cache-owned buffers (they persist).
+	 * The arrays are zero-initialized and each handle is null-guarded, so iterating the full width frees a
+	 * buffer even if its memory alloc/map failed mid-loop (a partial-failure leak the old `created` counter
+	 * missed). */
 	for (unsigned b = 0; b < ncol; b++) {
+		if (from_cache[b])
+			continue;
 		if (mapped[b])
 			vkUnmapMemory(G.dev, mem[b]);
 		if (buf[b])
@@ -309,13 +467,40 @@ done:
 	return rc;
 }
 
+/* Download dirty resident buffers back to host (the `gpu.sync(Pool)` leaf). */
+void arche_gpu_sync(void **cols, unsigned ncol, unsigned elem_size, unsigned count) {
+	(void)elem_size;
+	(void)count;
+	if (!cols)
+		return;
+	for (unsigned b = 0; b < ncol; b++) {
+		ResidentBuf *r = resident_find(cols[b]);
+		if (r && r->gpu_dirty) {
+			gpu_staged_copy(cols[b], r->buf, r->bytes, /*to_device=*/0); /* download VRAM -> host via staging */
+			r->gpu_dirty = 0;
+			if (gpu_debug())
+				fprintf(stderr, "arche: gpu sync download col (%zu bytes, VRAM)\n", (size_t)r->bytes);
+		}
+	}
+}
+
 #else /* no <vulkan/vulkan.h> at build time: always fall back to CPU */
 
-int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count) {
+int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count,
+                       int resident) {
 	/* No <vulkan/vulkan.h> at build time: always report failure so every dispatch runs the CPU path.
 	 * The `0 *` terms reference each argument (keeping -Wunused-parameter quiet) without altering the
 	 * result, which stays a constant nonzero. */
-	return 1 + 0 * (name != NULL) + 0 * (int)ncol + 0 * (cols != NULL) + 0 * (int)elem_size + 0 * (int)count;
+	return 1 + 0 * (name != NULL) + 0 * (int)ncol + 0 * (cols != NULL) + 0 * (int)elem_size + 0 * (int)count +
+	       0 * resident;
+}
+
+void arche_gpu_sync(void **cols, unsigned ncol, unsigned elem_size, unsigned count) {
+	/* No GPU: the CPU-fallback dispatch already wrote host columns, so there is nothing to download. */
+	(void)cols;
+	(void)ncol;
+	(void)elem_size;
+	(void)count;
 }
 
 #endif

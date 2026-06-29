@@ -1329,6 +1329,20 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	return 0;
 }
 
+/* 1 if the archetype's pool was declared `@resident` (GPU-resident columns). */
+static int cg_arch_is_resident(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
+			continue;
+		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->is_requirement || s->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0)
+			return s->is_resident;
+	}
+	return 0;
+}
+
 /* The program `@default` policy for a (effect_kind 0=proc/1=func, category 1/2/3) cell, or NULL. */
 static const char *cg_program_default(CodegenContext *ctx, int effect_kind, int category);
 
@@ -9857,6 +9871,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * dispatches one matching static pool whose columns are all float (the common case, and what the
 		 * GLSL emitter supports); a multi-pool, dynamic, or non-float map stays CPU-only. The column base
 		 * pointers are passed in map-param order — the same order the shader binds its SSBOs. */
+		/* GPU-eligibility seam: `is_gpu` is set by the `@gpu` decorator today; when the permission system
+		 * lands, the placer sets the same flag from the derived signature (branchless ∧ effect-free ∧
+		 * bounded). Dispatch keys on the kernel NAME, so it generalizes to any named kernel/`system`. */
 		char *gpu_done = NULL;
 		if (ctx->gpu && stmt->data.run_stmt.is_gpu && matching_count == 1 && map->param_count > 0 &&
 		    map->param_count <= 64) {
@@ -9917,8 +9934,10 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				                  nl + 1, nameg);
 				free(nameg);
 				char *rc = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = call i32 @arche_gpu_dispatch(i8* %s, i32 %d, i8** %s, i32 4, i32 %s)\n",
-				                  rc, namep, ncol, cols0, cnt32);
+				int resident = cg_arch_is_resident(ctx, an); /* `@resident` pool → keep buffers on-device */
+				buffer_append_fmt(ctx,
+				                  "  %s = call i32 @arche_gpu_dispatch(i8* %s, i32 %d, i8** %s, i32 4, i32 %s, i32 %d)\n",
+				                  rc, namep, ncol, cols0, cnt32, resident);
 				char *need_cpu = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", need_cpu, rc); /* nonzero → run CPU path */
 				char *cpu_lbl = gen_value_name(ctx);
@@ -11986,6 +12005,59 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 		ctx->block_terminated = 0;
 		break;
 	}
+	case SCHED_GPU_SYNC: {
+		/* `gpu.sync(Pool)` — download the pool's GPU-resident columns back to host. Gather the pool's float
+		 * column base pointers + live count and call arche_gpu_sync; the runtime downloads only those that
+		 * are actually resident + dirty (non-resident cols are a no-op). A no-op outside `--gpu` builds:
+		 * without GPU dispatch there is no residency and the host copy is already current. */
+		if (!ctx->gpu)
+			break;
+		const char *arch = t->sym ? canonical_arch_name(ctx, t->sym) : NULL;
+		HirArchetypeDecl *ga = arch ? find_archetype_decl(ctx, arch) : NULL;
+		if (!ga || get_arch_static_capacity(ctx, arch) <= 0)
+			break;
+		int col_field[64];
+		int ncol = 0;
+		for (int f = 0; f < ga->field_count && ncol < 64; f++)
+			if (ga->fields[f]->kind == FIELD_COLUMN && ga->fields[f]->type &&
+			    ga->fields[f]->type->tag == HIR_TYPE_FLOAT)
+				col_field[ncol++] = f;
+		if (ncol == 0)
+			break;
+		char *cols = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca [%d x i8*]\n", cols, ncol);
+		for (int p = 0; p < ncol; p++) {
+			char *cp = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n", cp,
+			                  arch, arch, arch, col_field[p]);
+			char *cp8 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast float* %s to i8*\n", cp8, cp);
+			char *slot = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot, ncol,
+			                  ncol, cols, p);
+			buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", cp8, slot);
+			free(cp);
+			free(cp8);
+			free(slot);
+		}
+		char *cols0 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 0\n", cols0, ncol, ncol,
+		                  cols);
+		char *cgep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n", cgep, arch,
+		                  arch, arch, ga->field_count);
+		char *cnt64 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt64, cgep);
+		char *cnt32 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cnt32, cnt64);
+		buffer_append_fmt(ctx, "  call void @arche_gpu_sync(i8** %s, i32 %d, i32 4, i32 %s)\n", cols0, ncol, cnt32);
+		free(cols);
+		free(cols0);
+		free(cgep);
+		free(cnt64);
+		free(cnt32);
+		break;
+	}
 	}
 }
 
@@ -12922,8 +12994,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		buffer_append(ctx, "declare i8* @arche_hot_resolve(i32, i8*)\n");
 
 	/* `--gpu`: the in-binary Vulkan dispatcher (runtime/gpu_runtime.c). Returns nonzero → CPU fallback. */
-	if (ctx->gpu)
-		buffer_append(ctx, "declare i32 @arche_gpu_dispatch(i8*, i32, i8**, i32, i32)\n");
+	if (ctx->gpu) {
+		buffer_append(ctx, "declare i32 @arche_gpu_dispatch(i8*, i32, i8**, i32, i32, i32)\n");
+		buffer_append(ctx, "declare void @arche_gpu_sync(i8**, i32, i32, i32)\n");
+	}
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
 	emit_cross_unit_declares(ctx);
@@ -13081,14 +13155,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	 * (archetype-parametric proc, archetype) pair encountered at a call site. */
 	drain_monomorph_worklist(ctx);
 
-	/* Emit global constants (strings, etc.) */
-	if (ctx->globals_pos > 0) {
-		buffer_append(ctx, "\n; Global constants\n");
-		char temp[ctx->globals_pos + 1];
-		strcpy(temp, ctx->globals_buffer);
-		buffer_append(ctx, temp);
-		buffer_append(ctx, "\n");
-	}
+	/* Global constants (strings, etc.) are emitted LAST, just before the output write — see below. The
+	 * synthesized `@arche_run`/`@main` below still intern globals (e.g. the `@gpu` dispatch's map-name
+	 * string passed to `arche_gpu_dispatch`); flushing here would drop any constant interned after this
+	 * point. LLVM places module globals in any order (forward refs resolve), so emitting them last is safe. */
 
 	/* Generate main entry point (always needed for initialization) */
 	int has_main_proc = 0;
@@ -13183,6 +13253,14 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		buffer_append(ctx, "\ndeclare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n");
 	if (ctx->uses_memset)
 		buffer_append(ctx, "declare void @llvm.memset.p0.i64(i8*, i8, i64, i1)\n");
+
+	/* Global constants (strings, etc.), emitted LAST so any constant interned during late body emission
+	 * (notably the `@gpu` dispatch's map-name in `@arche_run`) is captured. */
+	if (ctx->globals_pos > 0) {
+		buffer_append(ctx, "\n; Global constants\n");
+		buffer_append(ctx, ctx->globals_buffer);
+		buffer_append(ctx, "\n");
+	}
 
 	/* Output the generated IR */
 	fprintf(output, "%s", ctx->output_buffer);

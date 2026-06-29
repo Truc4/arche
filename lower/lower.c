@@ -2043,6 +2043,24 @@ static int syntax_decl_has_gpu_decorator(SyntaxView d) {
 	return 0;
 }
 
+/* `@resident` on a pool decl: its columns stay GPU-resident across dispatches (see HirStaticDecl). */
+static int syntax_decl_has_resident_decorator(SyntaxView d) {
+	if (!sv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 8 && memcmp(d.src + e2->as.token.offset, "resident", 8) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 /* The op category a `policy` decl serves, from `@policy(<category>)`: 1=bounds, 2=pool, 3=divide, 0=none.
  * `policy` lexes as TOK_POLICY (a keyword), so the sequence is `@ policy ( <cat> )`. */
 static int syntax_decl_policy_category(SyntaxView d) {
@@ -3036,6 +3054,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			 * the `.`-joined IDENT tokens before `[`. A bare `Particle[N]` yields "Particle"; a
 			 * qualified `lib.Particle[N]` yields "lib.Particle" (the imported shape's canonical name). */
 			sd->kind = HIR_STATIC_ARCHETYPE;
+			sd->is_resident = syntax_decl_has_resident_decorator(d); /* `@resident` → GPU-resident columns */
 			/* Prefix pool `[C]Name(N){V}`: the archetype name is the (possibly `.`-qualified) IDENT
 			 * run that sits at top level AFTER the capacity `[…]` and before any `(`/`{`. It is
 			 * collected in the phase walk below (the PH_NONE IDENT case), so a bare `[N]Particle`
@@ -3060,6 +3079,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			enum { PH_NONE, PH_CAP, PH_LEN, PH_FIELDS } phase = PH_NONE;
 			const char *pend = NULL;
 			int pend_len = 0;
+			int after_cap = 0; /* the archetype name follows the capacity `[]`; ignore leading decorator
+			                    * idents (`@resident`/`@gpu`) which sit at PH_NONE before the `[`. */
 			for (int i = 0; i < d.node->child_count; i++) {
 				SyntaxElem *ch = &d.node->children[i];
 				if (ch->tag == SE_TOKEN) {
@@ -3074,6 +3095,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 						phase = PH_FIELDS;
 						break;
 					case TOK_RBRACKET:
+						after_cap = 1;
+						phase = PH_NONE;
+						break;
 					case TOK_RPAREN:
 					case TOK_RBRACE:
 						phase = PH_NONE;
@@ -3082,7 +3106,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 						if (phase == PH_FIELDS) {
 							pend = d.src + ch->as.token.offset;
 							pend_len = (int)ch->as.token.length;
-						} else if (phase == PH_NONE) {
+						} else if (phase == PH_NONE && after_cap) {
 							/* archetype name segment — top level, after the capacity `[]` */
 							if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
 								namebuf[nl++] = '.';

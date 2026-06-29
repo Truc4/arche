@@ -1,19 +1,22 @@
-// Benchmark: the arche-rpg physics "step" four ways over identical 2M-row, disjoint-column pools:
-//   (1) `map`         — pure branchless data-parallel kernel (whole-column, implicit loop)
-//   (2) `each`        — same body as a per-row effect-capable fan
-//   (3) `system` cols — same math as WHOLE-COLUMN ops in a system (implicit loop per statement)
-//   (4) `system` loop — same math FUSED into one hand-indexed `for` loop (one pass over the rows)
-// All four compute identical results (checksums match). With map-body statement fusion landed:
-//   - (1) map ~= (3) whole-column system ~= (4) hand fused loop (~75ms): a multi-statement map/whole-column
-//     body now compiles to ONE per-element pass (intermediates in registers), not one full-column sweep
-//     per statement. The compile-time abstraction is zero-cost vs the hand loop.
-//   - (2) each is still ~2.5x slower (~200ms): the per-row fan is scalar + has fan overhead (separate fix).
-// History: before fusion, (1)/(3) ran ~178ms (6 column sweeps, memory-bandwidth-bound) — 2.4x off (4).
-// Fusion cut bytes moved (~128MB/pass -> ~64MB/pass), closing the gap; the kernel is bandwidth-bound, so
-// fusion (bytes), not SIMD, was the lever.
+// Benchmark: the arche-rpg physics "step" five ways over identical 2M-row, disjoint-column pools:
+//   (1) `map`        — pure branchless data-parallel kernel (CPU; fused to one pass)
+//   (2) `each`       — same body as a per-row effect-capable fan (CPU)
+//   (3) `system`     — same math as WHOLE-COLUMN ops (CPU; fused to one pass)
+//   (4) `system` loop— same math FUSED into one hand-indexed `for` loop (CPU)
+//   (5) `@gpu map`   — same body dispatched on the GPU (built with `--gpu`; CPU fallback if no device)
+// All five compute identical results (checksums match). Measured at N=2M (GPU = GTX 1650):
+//   (1) map ~78ms  (3) sys_cols ~78ms  (4) loop_fused ~76ms   — all fused to one pass after map fusion.
+//   (2) each ~200ms — scalar per-row fan (separate vectorization follow-up).
+//   (5) @gpu map ~600ms — with `@resident` MoverG + `gpu.sync(MoverG)`: columns are uploaded ONCE,
+//       reused across all 30 dispatches, and downloaded ONCE (debug: 4 uploads, 116 reuses, 4 downloads).
+//       This is ~11x faster than the per-dispatch model (~6550ms before residency), and the gpu/map ratio
+//       now SHRINKS with N (transfer paid once, not 30x). It is still ~6x slower than the fused CPU map:
+//       the remaining cost is (a) per-dispatch descriptor/command/submit/waitidle overhead x30 and (b) the
+//       resident buffers are HOST_VISIBLE (PCIe-accessed), not device-local VRAM. Both are future
+//       optimizations; this benchmark demonstrates the residency win, not a tuned GPU path.
 //
-// arm (4) hand-indexes a pool column (W0029) — build with `--pool-index=allow`:
-// RUN: build/arche build --pool-index=allow -o /tmp/mvse design_analysis/benchmarks/systems/arche/map_vs_each_step.arche && /tmp/mvse
+// arm (4) hand-indexes a pool column (W0029); arm (5) needs the GPU path:
+// RUN: build/arche build --gpu --pool-index=allow -o /tmp/mvse design_analysis/benchmarks/systems/arche/map_vs_each_step.arche && /tmp/mvse
 #import { fmt os }
 
 ax  :: float;
@@ -32,24 +35,32 @@ dx  :: float;
 dy  :: float;
 dvx :: float;
 dvy :: float;
+gx  :: float;
+gy  :: float;
+gvx :: float;
+gvy :: float;
 
 MoverA :: arche { ax, ay, avx, avy }
 MoverB :: arche { bx, by, bvx, bvy }
 MoverC :: arche { cx, cy, cvx, cvy }
 MoverD :: arche { dx, dy, dvx, dvy }
+MoverG :: arche { gx, gy, gvx, gvy }
 
 [2000000]MoverA(2000000) { ax: 10.0, ay: 10.0, avx: 0.0, avy: 0.0 }
 [2000000]MoverB(2000000) { bx: 10.0, by: 10.0, bvx: 0.0, bvy: 0.0 }
 [2000000]MoverC(2000000) { cx: 10.0, cy: 10.0, cvx: 0.0, cvy: 0.0 }
 [2000000]MoverD(2000000) { dx: 10.0, dy: 10.0, dvx: 0.0, dvy: 0.0 }
+@resident
+[2000000]MoverG(2000000) { gx: 10.0, gy: 10.0, gvx: 0.0, gvy: 0.0 }
 
-start    :: i64;
-map_ms   :: i64;
-each_ms  :: i64;
-sys_ms   :: i64;
-loop_ms  :: i64;
-Timer :: arche { start, map_ms, each_ms, sys_ms, loop_ms }
-[1]Timer(1) { start: 0, map_ms: 0, each_ms: 0, sys_ms: 0, loop_ms: 0 }
+start   :: i64;
+map_ms  :: i64;
+each_ms :: i64;
+sys_ms  :: i64;
+loop_ms :: i64;
+gpu_ms  :: i64;
+Timer :: arche { start, map_ms, each_ms, sys_ms, loop_ms, gpu_ms }
+[1]Timer(1) { start: 0, map_ms: 0, each_ms: 0, sys_ms: 0, loop_ms: 0, gpu_ms: 0 }
 
 // (1) map: pure branchless data-parallel kernel
 step_map :: map (query { ax, ay, avx, avy }) {
@@ -71,7 +82,7 @@ step_each :: each (query { bx, by, bvx, bvy }) {
   by = by + bvy;
 }
 
-// (3) system: identical math as WHOLE-COLUMN ops (one implicit loop PER statement)
+// (3) system: identical math as WHOLE-COLUMN ops
 step_sys :: system {
   MoverC.cvx = MoverC.cvx - (MoverC.cx - 400.0) * 0.05;
   MoverC.cvy = MoverC.cvy - (MoverC.cy - 300.0) * 0.05;
@@ -93,6 +104,17 @@ step_loop :: system {
   }
 }
 
+// (5) @gpu map: identical body, dispatched on the GPU when built with --gpu
+@gpu
+step_gpu :: map (query { gx, gy, gvx, gvy }) {
+  gvx = gvx - (gx - 400.0) * 0.05;
+  gvy = gvy - (gy - 300.0) * 0.05;
+  gvx = gvx * 0.99;
+  gvy = gvy * 0.99;
+  gx = gx + gvx;
+  gy = gy + gvy;
+}
+
 laps_map :: func() -> Schedule {
   return seq({ step_map, step_map, step_map, step_map, step_map,
                step_map, step_map, step_map, step_map, step_map });
@@ -109,6 +131,10 @@ laps_loop :: func() -> Schedule {
   return seq({ step_loop, step_loop, step_loop, step_loop, step_loop,
                step_loop, step_loop, step_loop, step_loop, step_loop });
 }
+laps_gpu :: func() -> Schedule {
+  return seq({ step_gpu, step_gpu, step_gpu, step_gpu, step_gpu,
+               step_gpu, step_gpu, step_gpu, step_gpu, step_gpu });
+}
 
 t_start_map :: system { os.now_ms()(now:); Timer.start[0] = now; }
 t_end_map :: system { os.now_ms()(now:); Timer.map_ms[0] = now - Timer.start[0]; }
@@ -118,14 +144,18 @@ t_start_sys :: system { os.now_ms()(now:); Timer.start[0] = now; }
 t_end_sys :: system { os.now_ms()(now:); Timer.sys_ms[0] = now - Timer.start[0]; }
 t_start_loop :: system { os.now_ms()(now:); Timer.start[0] = now; }
 t_end_loop :: system { os.now_ms()(now:); Timer.loop_ms[0] = now - Timer.start[0]; }
+t_start_gpu :: system { os.now_ms()(now:); Timer.start[0] = now; }
+t_end_gpu :: system { os.now_ms()(now:); Timer.gpu_ms[0] = now - Timer.start[0]; }
 
 report :: system {
   ca := reduce(+, MoverA.ax);
   cb := reduce(+, MoverB.bx);
   cc := reduce(+, MoverC.cx);
   cd := reduce(+, MoverD.dx);
-  fmt.printf("n=2000000 passes=30  map=%dms  each=%dms  sys_cols=%dms  loop_fused=%dms   checks: %g %g %g %g\n",
-             Timer.map_ms[0], Timer.each_ms[0], Timer.sys_ms[0], Timer.loop_ms[0], ca, cb, cc, cd);
+  cg := reduce(+, MoverG.gx);
+  fmt.printf("n=2000000 passes=30  map=%dms each=%dms sys_cols=%dms loop_fused=%dms gpu=%dms   checks: %g %g %g %g %g\n",
+             Timer.map_ms[0], Timer.each_ms[0], Timer.sys_ms[0], Timer.loop_ms[0], Timer.gpu_ms[0],
+             ca, cb, cc, cd, cg);
 }
 
 #run seq({
@@ -133,5 +163,6 @@ report :: system {
   t_start_each, laps_each(), laps_each(), laps_each(), t_end_each,
   t_start_sys,  laps_sys(),  laps_sys(),  laps_sys(),  t_end_sys,
   t_start_loop, laps_loop(), laps_loop(), laps_loop(), t_end_loop,
+  t_start_gpu,  laps_gpu(),  laps_gpu(),  laps_gpu(),  gpu.sync(MoverG), t_end_gpu,
   report,
 })

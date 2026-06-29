@@ -4382,6 +4382,22 @@ static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *
 
 	if (sv_kind(e) != SN_CALL_EXPR)
 		return NULL;
+
+	/* `gpu.sync(Pool)` — explicit GPU->CPU residency sync leaf. Handled before the generic callee-name
+	 * path, which returns NULL for qualified (`a.b`) calls. */
+	if (sv_count(e, SN_FIELD_NAME) == 1 && sem_expr_count(e) == 1) {
+		char *base = sv_name_expr_dup(e); /* leftmost callee segment ("gpu"); SN_CALLEE_NAME is empty when qualified */
+		char *fld = sem_cv_dup(sv_child_at(e, SN_FIELD_NAME, 0));
+		int is_gpu_sync = base && fld && strcmp(base, "gpu") == 0 && strcmp(fld, "sync") == 0;
+		free(base);
+		free(fld);
+		if (is_gpu_sync) {
+			ScheduleTree *g = sched_node(SCHED_GPU_SYNC);
+			g->sym = sv_name_expr_dup(sem_node_at_expr(e, 0)); /* the pool/archetype name */
+			return g;
+		}
+	}
+
 	char *callee = semantic_call_callee_name(ctx, e);
 	if (!callee)
 		return NULL;
@@ -9935,7 +9951,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			int al = 0;
 			int cap = dv.node->child_count + 1;
 			ds->static_fields = calloc(cap, sizeof(SyntaxView));
-			int phase = 0; /* 1=cap 2=len 3=fields */
+			int phase = 0;     /* 1=cap 2=len 3=fields */
+			int after_cap = 0; /* name follows `[]`; ignore leading decorator idents (`@resident`/`@gpu`) */
 			for (int i = 0; i < dv.node->child_count; i++) {
 				SyntaxElem *ch = &dv.node->children[i];
 				if (ch->tag == SE_TOKEN) {
@@ -9946,9 +9963,12 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 						phase = 2;
 					else if (tk == TOK_LBRACE)
 						phase = 3;
-					else if (tk == TOK_RBRACKET || tk == TOK_RPAREN || tk == TOK_RBRACE)
+					else if (tk == TOK_RBRACKET) {
+						after_cap = 1;
 						phase = 0;
-					else if (tk == TOK_IDENT && phase == 0) {
+					} else if (tk == TOK_RPAREN || tk == TOK_RBRACE)
+						phase = 0;
+					else if (tk == TOK_IDENT && phase == 0 && after_cap) {
 						/* archetype name segment (top level, after the capacity `[]`) */
 						if (al > 0 && al < (int)sizeof(an) - 1)
 							an[al++] = '.';

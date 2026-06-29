@@ -1,0 +1,28 @@
+// `@resident` pool + `gpu.sync(Pool)`: a `@gpu` map's columns stay GPU-resident across dispatches —
+// uploaded once, reused, downloaded once at the sync. `bump` runs 3x on the resident pool, so each value
+// gains 3; `gpu.sync(R)` brings the result back before the CPU read. Exercised end-to-end by `make
+// test-gpu-exe` (built with --gpu; CPU fallback still produces the same result with no device).
+// seed: v0=0, v7=7  ->  +3  ->  v0=3, v7=10.
+// The CPU build (here) runs `bump` on the CPU and `gpu.sync` is a no-op; the GPU path is covered by
+// `make test-gpu-exe`. Both must give the same result.
+// RUN: %arche build -o %t %s && %t | grep -qF "v0=3 v7=10"
+#import { fmt }
+v :: float;
+R :: arche { v }
+@resident
+[8]R(8);
+
+@gpu
+bump :: map (query { v }) {
+  v = v + 1.0;
+}
+
+seed :: system {
+  R.v = { 0.0, 1.0, 2.0, 3.0, 4.0, 5.0, 6.0, 7.0 };
+}
+
+verify :: system {
+  fmt.printf("v0=%.0f v7=%.0f\n", R.v[0] * 1.0, R.v[7] * 1.0);
+}
+
+#run seq({ seed, bump, bump, bump, gpu.sync(R), verify })

@@ -1189,6 +1189,13 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser);
 			continue;
 		}
+		if (cur_ident_is(parser, "resident", 8)) {
+			/* `@resident` marks a pool decl whose columns stay GPU-resident across `@gpu` dispatches
+			 * (uploaded once, reused, downloaded only at a `gpu.sync(Pool)`). No arguments — a marker on
+			 * the decl, read in lowering (syntax_decl_has_resident_decorator). */
+			advance(parser);
+			continue;
+		}
 		if (cur_ident_is(parser, "default", 7)) {
 			/* `@default(<kind>, <category>, <policy>)` — a STANDALONE top-level directive setting the
 			 * program's failure-policy default for one (effect-kind, op-category) cell. <kind> is the
