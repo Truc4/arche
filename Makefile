@@ -308,6 +308,30 @@ test-gpu-exe: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 		fi; \
 	done
 
+# DERIVED-DISPATCH gate (regression). A pure map with NO `@gpu` annotation, FORCED onto the GPU by the
+# placer (ARCHE_FORCE_PLACE=gpu). Asserts the derived placement actually DISPATCHES on the GPU — i.e. the
+# shader was embedded for a derived (un-annotated) map, not only for `@gpu` ones. Pre-fix this fell back to
+# the CPU silently (embed was gated on the `@gpu` flag) so no `gpu dispatch` ever ran. Output stays correct
+# (CPU fallback) with no device, so it SKIPs cleanly; on a Vulkan box it proves the GPU path ran.
+test-derived-gpu: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-derived-gpu: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@# Device-presence oracle: an EXPLICIT `@gpu` map. If even this won't dispatch, there is no usable
+	@# device → SKIP. If it DOES dispatch, a device is present, so the derived map MUST dispatch too —
+	@# anything less is the regression (derived placement that silently fell back to the CPU).
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-derived-gpu: SKIP (--gpu link failed for oracle; likely no libvulkan)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-derived-gpu: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@# Device is present. Build the derived (no-@gpu) map FORCED onto the GPU and require a real dispatch.
+	@ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/derived.exe tests/unit/gpu/derived_dispatch.arche >$(BUILD_DIR)/gpu/derived.build 2>&1 \
+		|| { echo "test-derived-gpu: FAIL — --gpu build of derived map failed:"; cat $(BUILD_DIR)/gpu/derived.build; exit 1; }
+	@out=$$(ARCHE_FORCE_PLACE=gpu ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/derived.exe 2>$(BUILD_DIR)/gpu/derived.err); \
+	echo "$$out" | grep -qF "x0=0 x3=30" || { echo "test-derived-gpu: FAIL — output [$$out] != [x0=0 x3=30]"; exit 1; }; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/derived.err \
+		|| { echo "test-derived-gpu: FAIL — device present (oracle dispatched) but DERIVED map fell back to CPU (shader not embedded for a non-@gpu placement)"; exit 1; }; \
+	echo "test-derived-gpu: PASS — derived (no @gpu) map dispatched on GPU, output [x0=0 x3=30]"
+
 # Derived-placement decision check (Slice 4): under a balanced synthetic machine profile, the build must
 # DERIVE heavy→GPU and membound→CPU (no annotations) for design_analysis/benchmarks/placement. Needs glslc
 # (a GPU-placed map embeds a shader); SKIP without it. The decision is a build-time fact (ARCHE_PLACE_DEBUG).

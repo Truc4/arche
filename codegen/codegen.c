@@ -1436,6 +1436,49 @@ static int cg_placement_prefer_gpu(const MachineProfile *p, double flops_per_ele
 	return gpu_t < cpu_t;
 }
 
+/* A per-map MEASURED placement decision, read from <ARCHE_CACHE_DIR>/placement.decisions if present (one
+ * "name gpu|cpu" line per map) — the build-time measurement's frozen result, which BEATS the estimate.
+ * Returns 1 (gpu), 0 (cpu), or -1 (no measured decision). */
+static int cg_placement_measured(const char *name) {
+	const char *cdir = getenv("ARCHE_CACHE_DIR");
+	if (!cdir || !name)
+		return -1;
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/placement.decisions", cdir);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return -1;
+	char ln[512];
+	int r = -1;
+	while (fgets(ln, sizeof(ln), f)) {
+		char nm[256], dec[16];
+		if (sscanf(ln, "%255s %15s", nm, dec) == 2 && strcmp(nm, name) == 0)
+			r = (strcmp(dec, "gpu") == 0) ? 1 : 0;
+	}
+	fclose(f);
+	return r;
+}
+
+/* Placement for an eligible pure map. Priority: `@gpu` force > `ARCHE_FORCE_PLACE` (a measurement build pins
+ * everything one way) > the MEASURED decision (the real, build-time-timed answer) > the static estimate (a
+ * cheap pre-filter only — the estimate is the thing AutoMap argues against, so it loses to measurement). */
+static int cg_placement_decide(CodegenContext *ctx, HirKernelDecl *map, long rows) {
+	if (map->is_gpu)
+		return 1;
+	const char *force = getenv("ARCHE_FORCE_PLACE");
+	if (force && *force)
+		return strcmp(force, "gpu") == 0;
+	/* measurement build: pin ONLY the named map to GPU (everything else CPU), so a per-map run isolates its
+	 * cost. */
+	const char *only = getenv("ARCHE_FORCE_PLACE_ONLY");
+	if (only && *only)
+		return map->name && strcmp(only, map->name) == 0;
+	int m = cg_placement_measured(map->name);
+	if (m >= 0)
+		return m;
+	return cg_placement_prefer_gpu(&ctx->profile, cg_kernel_flops_per_elem(map), map->param_count, rows);
+}
+
 static HirKernelDecl *find_map_decl(CodegenContext *ctx, const char *name) {
 	const char *rdot = strrchr(name, '.');
 	const char *rtail = rdot ? rdot + 1 : name;
@@ -9960,18 +10003,22 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				if (fi < 0)
 					ok = 0; /* a non-float / missing column → no GPU form for this map */
 			}
-			/* Profitability: `@gpu` forces GPU; otherwise the cost model over the per-machine profile + the
-			 * static pool's row count decides. If it prefers the CPU, drop the GPU form and fall through to the
-			 * direct CPU call below (the always-legal home). */
-			if (ok && !map->is_gpu &&
-			    !cg_placement_prefer_gpu(&ctx->profile, cg_kernel_flops_per_elem(map), map->param_count,
-			                             get_arch_static_capacity(ctx, an)))
+			/* Profitability: the layered decision (force → measured → estimate). If it prefers the CPU, drop
+			 * the GPU form and fall through to the direct CPU call below (the always-legal home). */
+			if (ok && !cg_placement_decide(ctx, map, get_arch_static_capacity(ctx, an)))
 				ok = 0;
 			if (getenv("ARCHE_PLACE_DEBUG"))
 				fprintf(stderr, "PLACE %s: fpe=%.0f rows=%d force=%d -> %s\n", map->name,
 				        cg_kernel_flops_per_elem(map), get_arch_static_capacity(ctx, an), map->is_gpu,
 				        ok ? "GPU" : "CPU");
 			if (ok) {
+				/* The placer chose GPU for this eligible map. Record it on the live decl so the shader-EMBED
+				 * pass (arche_gpu_embed → gpu_glsl_mark_runs, which runs AFTER codegen in compile.c) emits the
+				 * compute shader for it. Without this, a *derived* GPU placement (one not carrying an explicit
+				 * `@gpu`) would dispatch a kernel that was never embedded → arche_gpu_dispatch finds no shader →
+				 * silent CPU fallback (placement decided GPU, but the win never materializes). Setting is_gpu
+				 * here keeps the dispatch decision and the embedded-shader set consistent by construction. */
+				map->is_gpu = 1;
 				int ncol = map->param_count;
 				/* cols[]: an [ncol x i8*] of column base pointers (binding order). */
 				char *cols = gen_value_name(ctx);

@@ -206,15 +206,19 @@ modes, the schedule, the layout, and the CPU/GPU placement are recovered from th
 - **Legality vs profitability — the split that shrinks the open cell.** The placement decision is two
   questions, not one. *Legality* ("can this go wide?") is the derived predicate `branchless ∧ effect-free ∧
   bounded` (§0, §6) — trivial, no body analysis beyond what the schedule already needs, no research.
-  *Profitability* ("should it?") is the static cost model. Only profitability is the genuinely-open
-  research cell; legality is settled. So the unsolved part of this doc is narrower than it first reads:
-  not "static placement," but "static *cost* over non-affine columnar storage with no runtime scheduler."
-- **Resolution of the open cell — a per-machine calibration phase (landed, Slice 4).** The reason cost is
-  "runtime" elsewhere is machine-specific constants. arche measures them **once per machine** (`arche
-  calibrate` → a cached profile) and makes the placement decision at **build** time, frozen — no runtime
-  scheduler. Static pools supply the row counts, so every cost input is in hand. CPU/GPU placement is now
-  derived from a pure map's eligibility (`kind==MAP && !eff`, free) + the profile + intensity; see
-  `feature-plan/static-mapper.md` "Landed (Slice 4)". Residency-class derivation is the next follow-on.
+  *Profitability* ("should it?") is the genuinely-open cell; legality is settled. So the unsolved part is
+  narrower than it first reads: not "static placement," but **how profitability is decided**.
+- **The answer is measurement, not a static cost model (AutoMap's lesson).** An earlier framing here assumed
+  profitability is "the static cost model." [AutoMap](https://rohany.github.io/publications/sc2023-automap.pdf)
+  shows that's the wrong tool: it does an **offline search that profiles actual executions** and explicitly
+  rejects "static estimates" (performance is noisy, run-to-run — not an analytic function of the inputs).
+  Slice 4 shipped exactly the static-estimate approach AutoMap beats (`cg_placement_prefer_gpu` — it even
+  carries a static `pcie_gbps`), and it mispredicts: a `@resident` map run 40× measured **GPU 698 ms vs CPU
+  1936 ms** on the dev box, yet the model derives CPU. The real resolution: **measure at build time.** Because
+  static pools + a folded `#run` make every size/dispatch known before runtime, the build can run each
+  GPU-eligible map both ways at its real size and freeze the measured winner — AutoMap's measure-and-search,
+  but folded into `arche build` (no runtime scheduler). See `../design/static-mapper.md`
+  ("measure, don't estimate" + "Landed (Slice 4)"). Residency-class derivation is the other follow-on.
 
 ---
 
@@ -274,6 +278,16 @@ user-defined associative combiner (composing transition functions) would be a re
 as something the patterns below can lean on.
 
 ## 8. Control flow in leaves is banned; the monadic tail decomposes
+
+> **SUPERSEDED (Slices 1–2).** This section's "ban control flow in *every* leaf (generalize E0046 to
+> systems and fans)" was **dropped** — and there's no genuine reason for it. The landed model does the
+> opposite and it's cleaner: `eff` **lifts** E0046, so `map (Q) eff` and `system` branch freely; only the
+> **pure `map`** stays branchless (E0046). That's exactly right, because branchlessness only pays where a
+> kernel is GPU-placed, and the GPU-eligible kernel *is* the pure map — which E0046 already keeps branchless.
+> Effectful kernels run on the CPU, where branches are free (this doc's own §7). Banning control flow there
+> would be pure restriction contradicting §7. So: branchless where it's required (GPU-eligible pure maps),
+> control flow free everywhere else. The rest of this section is kept for the monadic-tail decomposition
+> argument, not the ban.
 
 The endpoint of "everything that touches data in parallel is branchless" is a hard rule, with the same
 character as the flat-effect model's *a system cannot call a system*: **data-dependent control flow in a leaf
