@@ -99,6 +99,7 @@ int fmt_run(int argc, char **argv, const GlobalOpts *g);
 int analyze_run(int argc, char **argv, const GlobalOpts *g);
 int completion_run(int argc, char **argv, const GlobalOpts *g);
 int version_run(int argc, char **argv, const GlobalOpts *g);
+int calibrate_run(int argc, char **argv, const GlobalOpts *g);
 int init_run(int argc, char **argv, const GlobalOpts *g);
 int fill_run(int argc, char **argv, const GlobalOpts *g);
 int inspect_run(int argc, char **argv, const GlobalOpts *g);

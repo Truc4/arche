@@ -88,6 +88,7 @@ struct CodegenContext {
 	int shared;         /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
 	int hot;            /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
 	int gpu;            /* --gpu: `run map @gpu` dispatches the embedded shader on the GPU (CPU fallback) */
+	MachineProfile profile; /* per-machine cost profile driving the DERIVED CPU/GPU placement (Slice 4) */
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
 	/* For tracking allocated values */
@@ -1370,6 +1371,69 @@ static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const ch
 		return pool;
 	const char *prog = cg_program_default(ctx, 0 /*proc*/, 2 /*pool*/);
 	return prog ? prog : "reject";
+}
+
+/* ===== Derived placement: arithmetic-intensity estimate + cost model (Slice 4) ===== */
+
+/* Coarse per-element arithmetic-op count of an expression (binary/unary ops; a call is weighted, callees
+ * not inlined — a v1 estimate). A pure map body is straight-line/branchless, so this captures its compute
+ * density. */
+static double cg_expr_flops(const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_BINARY:
+		return 1.0 + cg_expr_flops(e->data.binary.left) + cg_expr_flops(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return 1.0 + cg_expr_flops(e->data.unary.operand);
+	case HIR_EXPR_CALL: {
+		double f = 8.0; /* math builtin / func call — a coarse weight (transcendentals are pricey) */
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			f += cg_expr_flops(e->data.call.args[i]);
+		return f;
+	}
+	case HIR_EXPR_FIELD:
+		return cg_expr_flops(e->data.field.base);
+	case HIR_EXPR_INDEX: {
+		double f = cg_expr_flops(e->data.index.base);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			f += cg_expr_flops(e->data.index.indices[i]);
+		return f;
+	}
+	default:
+		return 0;
+	}
+}
+
+/* Per-element flop estimate of a kernel body (assignment / bind RHSs). */
+static double cg_kernel_flops_per_elem(const HirKernelDecl *k) {
+	double f = 0;
+	for (int i = 0; i < k->stmt_count; i++) {
+		const HirStmt *s = k->stmts[i];
+		if (!s)
+			continue;
+		if (s->kind == HIR_STMT_ASSIGN)
+			f += cg_expr_flops(s->data.assign_stmt.value);
+		else if (s->kind == HIR_STMT_BIND)
+			f += cg_expr_flops(s->data.bind_stmt.value);
+	}
+	return f;
+}
+
+/* The cost model: predict whether running this eligible map on the GPU beats the CPU, given the per-machine
+ * profile, the body's per-element flop count, the float-column count (4 bytes each), and the static row
+ * count. GPU pays a fixed launch + the PCIe round-trip; CPU pays only compute. Static pools give `rows` at
+ * build time, so this is a fully build-time decision (frozen — no runtime scheduler). Returns 1 ⇒ GPU. */
+static int cg_placement_prefer_gpu(const MachineProfile *p, double flops_per_elem, int ncol, long rows) {
+	if (!p->gpu_present || p->gpu_gflops <= 0 || p->cpu_gflops <= 0 || rows <= 0)
+		return 0;
+	double total_flops = flops_per_elem * (double)rows;
+	double bytes = (double)ncol * 4.0 * (double)rows; /* one column set, float */
+	double up = (p->pcie_up_gbps > 0) ? bytes / (p->pcie_up_gbps * 1e9) : 1e30;
+	double down = (p->pcie_down_gbps > 0) ? bytes / (p->pcie_down_gbps * 1e9) : 1e30;
+	double gpu_t = p->gpu_launch_us * 1e-6 + up + down + total_flops / (p->gpu_gflops * 1e9);
+	double cpu_t = total_flops / (p->cpu_gflops * 1e9);
+	return gpu_t < cpu_t;
 }
 
 static HirKernelDecl *find_map_decl(CodegenContext *ctx, const char *name) {
@@ -9872,12 +9936,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * dispatches one matching static pool whose columns are all float (the common case, and what the
 		 * GLSL emitter supports); a multi-pool, dynamic, or non-float map stays CPU-only. The column base
 		 * pointers are passed in map-param order — the same order the shader binds its SSBOs. */
-		/* GPU-eligibility seam: `is_gpu` is set by the `@gpu` decorator today; when the permission system
-		 * lands, the placer sets the same flag from the derived signature (branchless ∧ effect-free ∧
-		 * bounded). Dispatch keys on the kernel NAME, so it generalizes to any named kernel/`system`. */
+		/* DERIVED PLACEMENT (Slice 4): a scheduled pure map (find_map_decl already filtered to kind==MAP &&
+		 * !eff) is GPU-ELIGIBLE by construction — branchless (E0046) and effect-free. So under `--gpu` EVERY
+		 * such map is a candidate (no `@gpu` annotation needed); the cost model below (over the per-machine
+		 * profile + static row count) decides PROFITABILITY. `@gpu` remains a force-GPU override. Dispatch
+		 * keys on the kernel NAME, so it generalizes to any named kernel. */
 		char *gpu_done = NULL;
-		if (ctx->gpu && stmt->data.run_stmt.is_gpu && matching_count == 1 && map->param_count > 0 &&
-		    map->param_count <= 64) {
+		if (ctx->gpu && matching_count == 1 && map->param_count > 0 && map->param_count <= 64) {
 			const char *an = matching_archs[0];
 			HirArchetypeDecl *ga = find_archetype_decl(ctx, an);
 			int ok = ga != NULL && get_arch_static_capacity(ctx, an) > 0;
@@ -9895,6 +9960,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				if (fi < 0)
 					ok = 0; /* a non-float / missing column → no GPU form for this map */
 			}
+			/* Profitability: `@gpu` forces GPU; otherwise the cost model over the per-machine profile + the
+			 * static pool's row count decides. If it prefers the CPU, drop the GPU form and fall through to the
+			 * direct CPU call below (the always-legal home). */
+			if (ok && !map->is_gpu &&
+			    !cg_placement_prefer_gpu(&ctx->profile, cg_kernel_flops_per_elem(map), map->param_count,
+			                             get_arch_static_capacity(ctx, an)))
+				ok = 0;
+			if (getenv("ARCHE_PLACE_DEBUG"))
+				fprintf(stderr, "PLACE %s: fpe=%.0f rows=%d force=%d -> %s\n", map->name,
+				        cg_kernel_flops_per_elem(map), get_arch_static_capacity(ctx, an), map->is_gpu,
+				        ok ? "GPU" : "CPU");
 			if (ok) {
 				int ncol = map->param_count;
 				/* cols[]: an [ncol x i8*] of column base pointers (binding order). */
@@ -12426,6 +12502,66 @@ int codegen_gpu_enabled(void) {
 	return g_gpu_mode;
 }
 
+/* ===== Derived placement: the per-machine cost profile (Slice 4) ===== */
+static MachineProfile g_machine_profile;
+static int g_machine_profile_set = 0;
+
+void codegen_default_machine_profile(MachineProfile *out) {
+	/* Conservative CPU-only default: no measured device, so every kernel is placed on the CPU (the always-
+	 * legal home). A real profile from calibration overrides this. */
+	out->gpu_present = 0;
+	out->gpu_launch_us = 0;
+	out->pcie_up_gbps = 0;
+	out->pcie_down_gbps = 0;
+	out->cpu_gflops = 0;
+	out->gpu_gflops = 0;
+}
+
+void codegen_set_machine_profile(const MachineProfile *p) {
+	if (p) {
+		g_machine_profile = *p;
+		g_machine_profile_set = 1;
+	} else {
+		g_machine_profile_set = 0;
+	}
+}
+
+int codegen_load_machine_profile(const char *cache_dir, MachineProfile *out) {
+	if (!cache_dir || !out)
+		return 0;
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/machine.profile", cache_dir);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return 0;
+	MachineProfile p;
+	int n = fscanf(f, "gpu_present %d gpu_launch_us %lf pcie_up_gbps %lf pcie_down_gbps %lf cpu_gflops %lf "
+	                  "gpu_gflops %lf",
+	               &p.gpu_present, &p.gpu_launch_us, &p.pcie_up_gbps, &p.pcie_down_gbps, &p.cpu_gflops,
+	               &p.gpu_gflops);
+	fclose(f);
+	if (n != 6)
+		return 0;
+	*out = p;
+	return 1;
+}
+
+int codegen_save_machine_profile(const char *cache_dir, const MachineProfile *p) {
+	if (!cache_dir || !p)
+		return 0;
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/machine.profile", cache_dir);
+	FILE *f = fopen(path, "w");
+	if (!f)
+		return 0;
+	fprintf(f,
+	        "gpu_present %d\ngpu_launch_us %.6f\npcie_up_gbps %.6f\npcie_down_gbps %.6f\ncpu_gflops %.6f\n"
+	        "gpu_gflops %.6f\n",
+	        p->gpu_present, p->gpu_launch_us, p->pcie_up_gbps, p->pcie_down_gbps, p->cpu_gflops, p->gpu_gflops);
+	fclose(f);
+	return 1;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
@@ -12435,6 +12571,10 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->shared = g_shared_mode;
 	ctx->hot = g_hot_mode;
 	ctx->gpu = g_gpu_mode;
+	if (g_machine_profile_set)
+		ctx->profile = g_machine_profile;
+	else
+		codegen_default_machine_profile(&ctx->profile);
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;

@@ -1,0 +1,26 @@
+// Derived-placement showcase (Slice 4). NEITHER map is annotated — no `@gpu`, no `@resident`. Under a
+// `--gpu` build, every pure map is GPU-ELIGIBLE by construction (branchless + effect-free); the per-machine
+// cost profile (from `arche calibrate`, cached in ARCHE_CACHE_DIR) then decides PROFITABILITY per map, at
+// build time, frozen into the schedule — no runtime scheduler.
+//
+//   membound : ~1 flop / element  → the cost model keeps it on the CPU (launch + transfer dominate).
+//   heavy    : ~64 flops / element → on a machine where the GPU's throughput beats that overhead, the cost
+//              model places it on the GPU; on an overhead-dominated box it honestly stays on the CPU.
+//
+// See the decision with:  ARCHE_PLACE_DEBUG=1 ARCHE_CACHE_DIR=<dir> arche build --gpu -o /tmp/dp <this>
+// (a balanced profile picks heavy→GPU, membound→CPU; this box's real `arche calibrate` profile is CPU-only).
+#import { fmt }
+c :: float;
+P :: arche { c }
+[1000000]P(1000000);
+
+membound :: map (query { c }) (c) { c = c + 1.0; }
+
+heavy :: map (query { c }) (c) {
+  c = ((((((((((((((((((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001;
+}
+
+seed :: system { P.c = { 1.0 }; }
+check :: system eff { fmt.printf("c0=%.0f\n", P.c[0] * 1.0); }
+
+#run seq({ seed, membound, heavy, check })

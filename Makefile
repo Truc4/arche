@@ -60,7 +60,7 @@ RUNTIME_PIC_OBJS = $(BUILD_DIR)/runtime/stack_check.pic.o $(BUILD_DIR)/runtime/i
 
 OBJS = $(SRCS:.c=.o)
 # CLI multitool: dispatch + table-driven arg parser + one object per subcommand.
-CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o $(BUILD_DIR)/cli/cmd_init.o $(BUILD_DIR)/cli/cmd_fill.o $(BUILD_DIR)/cli/cmd_inspect.o
+CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o $(BUILD_DIR)/cli/cmd_calibrate.o $(BUILD_DIR)/cli/cmd_init.o $(BUILD_DIR)/cli/cmd_fill.o $(BUILD_DIR)/cli/cmd_inspect.o
 # Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
 # the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
 FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
@@ -307,6 +307,18 @@ test-gpu-exe: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 			echo "test-gpu-exe: SKIP $$name (no Vulkan device; CPU fallback output [$$want] correct)"; \
 		fi; \
 	done
+
+# Derived-placement decision check (Slice 4): under a balanced synthetic machine profile, the build must
+# DERIVE heavy→GPU and membound→CPU (no annotations) for design_analysis/benchmarks/placement. Needs glslc
+# (a GPU-placed map embeds a shader); SKIP without it. The decision is a build-time fact (ARCHE_PLACE_DEBUG).
+test-placement: $(TARGET)
+	@command -v glslc >/dev/null 2>&1 || { echo "test-placement: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/place
+	@printf 'gpu_present 1\ngpu_launch_us 100\npcie_up_gbps 10\npcie_down_gbps 10\ncpu_gflops 10\ngpu_gflops 2000\n' > $(BUILD_DIR)/place/machine.profile
+	@out=$$(ARCHE_PLACE_DEBUG=1 ARCHE_CACHE_DIR=$(BUILD_DIR)/place ./$(TARGET) build --gpu -o $(BUILD_DIR)/place/dp.exe design_analysis/benchmarks/placement/derived_placement.arche 2>&1); \
+	echo "$$out" | grep -qE 'PLACE membound:.*-> CPU' || { echo "test-placement: FAIL — membound not placed on CPU"; echo "$$out" | grep PLACE; exit 1; }; \
+	echo "$$out" | grep -qE 'PLACE heavy:.*-> GPU' || { echo "test-placement: FAIL — heavy not placed on GPU under a GPU-favorable profile"; echo "$$out" | grep PLACE; exit 1; }; \
+	echo "test-placement: PASS — derived membound→CPU, heavy→GPU (no annotations)"
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
 test-folder: $(TARGET) $(BUILD_DIR)

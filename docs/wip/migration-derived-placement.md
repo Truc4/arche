@@ -209,6 +209,12 @@ modes, the schedule, the layout, and the CPU/GPU placement are recovered from th
   *Profitability* ("should it?") is the static cost model. Only profitability is the genuinely-open
   research cell; legality is settled. So the unsolved part of this doc is narrower than it first reads:
   not "static placement," but "static *cost* over non-affine columnar storage with no runtime scheduler."
+- **Resolution of the open cell — a per-machine calibration phase (landed, Slice 4).** The reason cost is
+  "runtime" elsewhere is machine-specific constants. arche measures them **once per machine** (`arche
+  calibrate` → a cached profile) and makes the placement decision at **build** time, frozen — no runtime
+  scheduler. Static pools supply the row counts, so every cost input is in hand. CPU/GPU placement is now
+  derived from a pure map's eligibility (`kind==MAP && !eff`, free) + the profile + intensity; see
+  `feature-plan/static-mapper.md` "Landed (Slice 4)". Residency-class derivation is the next follow-on.
 
 ---
 

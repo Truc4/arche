@@ -681,6 +681,15 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	if (opts && opts->gpu && emit == EMIT_LINK) {
 		codegen_set_gpu(1);
 		codegen_force_whole_program();
+		/* Derived placement (Slice 4): load this machine's cached cost profile so the build can decide
+		 * CPU/GPU per eligible map. Absent ⇒ the CPU-only default (un-annotated maps stay CPU, no behavior
+		 * change) until `arche calibrate` / a calibrated build writes the profile. */
+		const char *cdir = getenv("ARCHE_CACHE_DIR");
+		MachineProfile mp;
+		if (cdir && codegen_load_machine_profile(cdir, &mp))
+			codegen_set_machine_profile(&mp);
+		else
+			codegen_set_machine_profile(NULL);
 	} else {
 		codegen_set_gpu(0);
 	}

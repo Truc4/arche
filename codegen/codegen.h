@@ -50,6 +50,29 @@ int codegen_hot_enabled(void);
 void codegen_set_gpu(int on);
 int codegen_gpu_enabled(void);
 
+/* ===== Derived placement (Slice 4): per-machine cost profile =====
+ * Placement (CPU vs GPU per eligible map) is DERIVED from the kernel signature + a per-machine cost
+ * profile, decided at build time and FROZEN into the schedule (no runtime scheduler). The profile is
+ * measured once per machine (calibration) and cached; static pools supply the row counts, so every cost
+ * input is known at build time. `@gpu` remains a force-GPU override. */
+typedef struct {
+	int gpu_present;       /* 0 ⇒ no usable device ⇒ CPU-only placement */
+	double gpu_launch_us;  /* fixed per-dispatch overhead (microseconds) */
+	double pcie_up_gbps;   /* host→device transfer bandwidth (GB/s) */
+	double pcie_down_gbps; /* device→host transfer bandwidth (GB/s) */
+	double cpu_gflops;     /* CPU arithmetic throughput (Gflop/s) */
+	double gpu_gflops;     /* GPU arithmetic throughput (Gflop/s) */
+} MachineProfile;
+
+/* A conservative CPU-only default (gpu_present=0) — used when no profile is cached. */
+void codegen_default_machine_profile(MachineProfile *out);
+/* Set the active build's profile (copied); the placement decision reads it. Call before codegen. */
+void codegen_set_machine_profile(const MachineProfile *p);
+/* Load <cache_dir>/machine.profile into `out` (1 on success; 0 ⇒ caller should default/calibrate). */
+int codegen_load_machine_profile(const char *cache_dir, MachineProfile *out);
+/* Write the profile to <cache_dir>/machine.profile (1 on success). */
+int codegen_save_machine_profile(const char *cache_dir, const MachineProfile *p);
+
 /* Test hook (tests/unit/compiler/codegen_tests.c). codegen_create malloc's its context and is reused
  * in-process across many compiles (the `arche test` doctest runner); it MUST zero-init every field it
  * relies on. This poisons an exact-size heap chunk, frees it, then lets codegen_create reuse that block

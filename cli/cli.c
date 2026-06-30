@@ -256,6 +256,7 @@ static const SubCmd k_cmds[] = {
     {"analyze", "language-server analysis (one-shot or --serve)", 0, analyze_run, analyze_specs},
     {"completion", "print a shell completion script (bash|zsh|fish)", 0, completion_run, NULL},
     {"version", "print the arche version", 0, version_run, NULL},
+    {"calibrate", "measure this machine's CPU/GPU cost constants for derived placement", 0, calibrate_run, NULL},
     {"init", "scaffold a device or driver (arche init <device|driver> <name>)", 0, init_run, NULL},
     {"fill", "size a driver's pools from its imported devices' datasheets", 0, fill_run, NULL},
     {"inspect", "view/edit a running `arche run` session's pools", 0, inspect_run, inspect_specs},
