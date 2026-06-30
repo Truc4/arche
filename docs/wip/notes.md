@@ -207,6 +207,57 @@ motivation rather than apparatus.
 
 ---
 
+## 6. Static residency/placement inference from access permissions
+
+The permission signature a system already declares — read set (query), write set (mutables), `eff`/branch
+flags — is enough to *derive* a data-residency level on the memory hierarchy at compile time, and to
+*constrain* it. The levels form a lattice: CPU-only (host RAM) → GPU host-visible (PCIe) → GPU device-local
+(VRAM) → CPU+GPU coherent. Two directions: (a) **infer** the level from permissions (read-only ⇒ replicate;
+written only by GPU kernels ⇒ VRAM-resident, no host sync; read by both CPU and GPU ⇒ coherent, with a sync
+edge inserted); (b) **enforce/forbid** a level (`@resident`/`@vram`/`@coherent` as a *bound* on the lattice;
+a compile error when the derived access pattern violates it).
+
+```arche
+@resident [N]Mover(N) { ... }                       // explicit flag now; placer-derived later
+step :: map (query { pos }) (vel) { ... }            // R pos, W vel  ->  derive: VRAM-resident, no sync
+#run seq({ ..., step, gpu.sync(Mover), report })     // a sync edge is needed only before a CPU read
+```
+
+Closest existing work:
+- [Legion (Bauer et al., SC 2012)](https://legion.stanford.edu/publications/) /
+  [Regent (Slaughter et al., SC 2015)](http://regent-lang.org/images/regent2015.pdf): region privileges
+  (read/write/reduce) + coherence are checked **statically**, but physical placement into the memory
+  hierarchy is left **entirely to the runtime mapper** — the static-region leader does not place statically.
+- GPU columnar DBMS — [Yogatama et al., VLDB 2022](https://www.vldb.org/pvldb/vol15/p2491-yogatama.pdf),
+  [Li et al., VLDB 2025](https://www.vldb.org/pvldb/vol18/p4518-li.pdf), CoGaDB: which columns live on the
+  GPU — but chosen by **runtime cost models / cache-aware replication**, not static access facts.
+- Polyhedral host↔device placement (PPCG, TACO 2013; Polly-ACC, ICS 2016): static, but **affine arrays only**.
+- [MLIR memref memory-space + bufferization](https://mlir.llvm.org/docs/Dialects/BufferizationOps/) / XLA
+  buffer assignment: static memory-*space* assignment, but the space is **annotated or target-lowered** over
+  a tensor graph — not inferred from access permissions. (A good lowering target, not the inference.)
+- Memory-hierarchy place lattices — Sequoia (SC 2006), Hierarchical Place Trees (LCPC 2009): the *vocabulary*
+  of residency levels, but programmer-mapped.
+- Static array-region analysis (Creusillet & Irigoin, IJPP 1996) + region inference (Tofte & Talpin, IC
+  1997): the static analyses that recover the accessed region / infer placement — arche gets the region for
+  free from the permission signature. StarPU access modes (Euro-Par 2009) and typestate (DeLine & Fähndrich,
+  ECOOP 2004) cover the privilege→coherence and enforce-the-sync-state halves.
+
+Not directly covered — and it splits cleanly on the same legality/profitability line as the placement work
+(`migration-derived-placement.md` §5):
+- **Residency-*class*** (which tiers are *legal* from the permissions: replicate read-only, VRAM for
+  GPU-exclusive, coherent for shared) is a clean integration of Legion's coherence rules lifted to
+  compile-time over columns — buildable now, not research.
+- **Residency-*profitability*** (which tier is *worth* it, statically, with no runtime mapper) is the genuine
+  open angle. Every system above that actually decides placement does it at **runtime** (Legion mapper, DB
+  cost models, LLM tiering) precisely because static profitability over real hardware is hard. arche's
+  no-runtime-scheduler constraint forces the static version nobody has cracked — and the
+  `map_vs_each_step` benchmark is direct evidence it's hard: an "ideal-parallel" branchless kernel still lost
+  on the GPU, because profitability hinges on arithmetic intensity + residency tier + hardware, not on
+  parallelism. **Static placement over non-affine columnar storage, no runtime scheduler, driven by the same
+  permission signature that already drives scheduling — that intersection is unoccupied.**
+
+---
+
 ## Untested candidates (mined from the implementation, no prior-art check yet)
 
 - Static compile-time-folded schedule: `#run` CTFE-folds to a static tree, no runtime scheduler, no
