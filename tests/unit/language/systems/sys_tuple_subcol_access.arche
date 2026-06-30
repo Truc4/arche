@@ -8,7 +8,7 @@ vel(x, y) :: int;
 Mover     :: arche { pos, vel }
 [4]Mover(2);
 Pair      :: query { pos, vel }
-integrate :: map (Pair) {
+integrate :: map (Pair) (pos) {
   pos += vel;
 }
 

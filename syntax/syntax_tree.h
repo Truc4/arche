@@ -44,6 +44,7 @@ typedef enum {
 	SN_PARAM,
 	SN_OUT_PARAM, /* an out-parameter of a proc: `name: T` in the second `(...)` list */
 	SN_OUT_ARG,   /* an out-argument at a proc call site: `name`, `name:`, or `name: T` */
+	SN_WRITE_PARAM, /* a column in a kernel's `(writes)` permission list: `map (Q) (pos, vel) {…}` */
 	SN_FIELD_DECL,
 	SN_RETURN_TYPES, /* the `-> (T, ...)` of a func */
 	SN_ARG_LIST,     /* call argument list */

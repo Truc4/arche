@@ -7,7 +7,7 @@
 /// best handler + first capture span onto the request row. A trie would link nodes by index (hand-indexing,
 /// forbidden); a flat scan stays pure-columnar.
 resolve :: map (query { pattern, hid }) eff {
-  map (query { path, out_h, cap0_start, cap0_len, best }) eff {
+  map (query { path, out_h, cap0_start, cap0_len, best }) (best, out_h, cap0_start, cap0_len) eff {
     sc := -1;
     cs := -1;
     cl := -1;

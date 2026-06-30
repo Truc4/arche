@@ -1,10 +1,11 @@
 # Systems and permissions — the unified kernel model
 
-> **Status: in progress — Slice 1 (`eff`) landed; `each` keyword removed.** The model unifies the kinds
-> to **`map` + `system`** under an **explicit permission signature** `<kind> <selector> (<writes>) [eff]`.
-> The effectful per-entity fan is now spelled **`map (Q) eff`** (the `each` keyword is gone — `each` is an
-> ordinary identifier). Slice 1 — the **`eff` permission** — is implemented; the remaining slices (explicit
-> `(writes)`, decl collapse, placement derivation) are below.
+> **Status: in progress — Slices 1 (`eff`) + 2 (`(writes)`) landed; `each` keyword removed.** The model
+> unifies the kinds to **`map` + `system`** under an **explicit permission signature**
+> `<kind> <selector> (<writes>) [eff]`. The effectful per-entity fan is spelled **`map (Q) eff`** (the
+> `each` keyword is gone — now an ordinary identifier). The `eff` permission and the explicit `(writes)`
+> write-set are implemented and enforced; the remaining slices (decl collapse, placement derivation) are
+> below.
 
 ## Slice plan (build order)
 
@@ -15,7 +16,15 @@ The full model is sliced for tractability; each slice is fully correct on its ow
    may not run effects (insert/delete, extern/proc calls, running an `Eff`, I/O); column/singleton writes
    are data work, not effects. `map (Q) eff` is the effectful per-entity fan and lifts the pure-map E0046
    transform-only restriction.
-2. **Explicit `(writes)` signature** — replace body-inferred read/write with the declared write-set.
+2. **Explicit `(writes)` signature — DONE.** A selector kernel declares the bound columns it assigns —
+   `map (Movers) (pos, vel) { … }` — checked by a body write-walk (`kernel_write_walk`): writing an
+   undeclared bound column, or omitting `(writes)` entirely, is a hard error (`E0227 write_set_mismatch`);
+   over-declaring is permitted (keeps the check sound). A `(writes)` list covers **selector-bound columns
+   only** (bare names); a run-once `system`'s whole-column bulk init `R.v = { … }` stays legal and is not
+   declared. Hand-indexing the kernel's own selector pool to write it (`R.v[i] = …`) inside a selector
+   kernel is a hard error (`E0228 indexed_write_in_selector`) — use the bound bare column; loaders / run-once
+   systems may still hand-index (the W0029 lint). The write-walk is the per-column write fact Slice 4's
+   placer reads off the signature.
 2b. **`each` keyword removed — DONE.** `map (Q) eff` parses directly to the per-entity fan (`SN_EACH_EXPR`
    machinery) — top-level *and* inline statement position — and supports the `as w` row-binder
    (`map (Q as w) eff`). The `each` keyword is removed (now an ordinary identifier); all sites migrated.
@@ -28,7 +37,8 @@ The full model is sliced for tractability; each slice is fully correct on its ow
 - **Signature grammar** `<kind> <selector> (<writes>) [eff]` — the `eff` permission is a bare contextual
   keyword trailing the selector (`system (Q) eff { … }`). (Slice 1 parses/enforces `eff`; `(writes)` is
   Slice 2.) *Resolved: yes.*
-- **Writes explicit** — the mutable set is declared, not inferred. *Resolved: yes (Slice 2 surface).*
+- **Writes explicit** — the mutable set is declared (selector-bound columns), checked against the body.
+  *Resolved: yes — implemented in Slice 2 (`E0227`/`E0228`).*
 - **`branch` derived, not declared** — branchlessness (GPU-eligibility) is derived from the body; there is
   no `branch` keyword. *Resolved: yes.*
 

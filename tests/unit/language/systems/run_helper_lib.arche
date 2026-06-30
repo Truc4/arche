@@ -10,7 +10,7 @@ Mob :: arche { hp }
 
 [10]Mob;
 
-bump :: map (query { hp }) {
+bump :: map (query { hp }) (hp) {
   hp = hp + 1;
 }
 

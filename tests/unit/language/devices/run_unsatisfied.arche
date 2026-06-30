@@ -2,7 +2,7 @@
 // silent no-op (the device/driver footgun: a driver runs a device's system but never defined an
 // archetype with the device's required components). Negative test for the driver-side diagnostic.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "no shape provides the components" %t.out
-integrate :: map (query { pos, vel }) {
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }
 

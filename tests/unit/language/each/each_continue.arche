@@ -11,7 +11,7 @@ seed :: system {
   S.v = { 1, 2, 3, 4 };
 }
 
-guard :: map (query { v, out }) eff {
+guard :: map (query { v, out }) (out) eff {
   if (v == 1) {
     out = 10;
     continue;

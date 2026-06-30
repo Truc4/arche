@@ -6,7 +6,7 @@
 /// request pool and runs this `each` over it.
 parse_request_line :: map (
   query { raw, raw_len, method_start, method_len, target_start, target_len, ok }
-) eff {
+) (ok, method_start, method_len, target_start, target_len) eff {
   ok           = 0;
   method_start = 0;
   method_len   = 0;

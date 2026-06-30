@@ -2,6 +2,6 @@
 // shape and no storage — the driver provides a shape with these components and sizes it. Not a
 // standalone test (it references the datasheet's global components).
 // RUN: true
-integrate :: map (query { pos, vel }) {
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }

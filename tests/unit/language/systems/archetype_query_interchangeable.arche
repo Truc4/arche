@@ -11,11 +11,11 @@ seed :: system {
   Ball.color = { 1, 2 };
 }
 
-bump :: map (Ball) {
+bump :: map (Ball) (color) {
   color = color + 100;
 }
 
-shift :: system (Ball) {
+shift :: system (Ball) (pos) {
   pos.x = pos.x + 1;
 }
 

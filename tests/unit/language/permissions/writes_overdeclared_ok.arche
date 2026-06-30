@@ -1,0 +1,12 @@
+// Over-declaring is permitted: a `(writes)` list may name a column the body doesn't (yet) write. This keeps
+// the check sound (no false positives on write forms the analysis doesn't model) — only UNDER-declaration
+// is an error. Here `(a, b)` is declared but only `a` is written.
+// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+#import { fmt }
+a :: float;
+b :: float;
+R :: arche { a, b }
+[4]R(4);
+k :: map (query { a, b }) (a, b) { a = a + 1.0; }
+done :: system eff { fmt.printf("ok\n"); }
+#run seq({ k, done })

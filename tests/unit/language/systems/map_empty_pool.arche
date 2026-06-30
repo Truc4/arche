@@ -5,7 +5,7 @@
 v :: int;
 N :: arche { v }
 [4]N;
-bump :: map (query { v }) {
+bump :: map (query { v }) (v) {
   v = v + 1;
 }
 verify :: system eff {

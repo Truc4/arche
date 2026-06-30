@@ -3,6 +3,6 @@
 // RUN: true
 Pt :: arche { px, py }
 
-step :: map (query { px, py }) {
+step :: map (query { px, py }) (px) {
   px = px + py;
 }

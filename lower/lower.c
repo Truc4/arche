@@ -2464,11 +2464,21 @@ static void lower_query_columns(SyntaxView f, HirStmt **stmts, int stmt_count, H
 /* The optional `eff` permission marker (`system (Q) eff { … }`) parses to an SN_EFF child. */
 static int sv_has_eff(SyntaxView f) { return sv_present(sv_child_at(f, SN_EFF, 0)); }
 
+/* Extract the declared `(writes)` column names (SN_WRITE_PARAM children) into a fresh char* array. */
+static void lower_writes(SyntaxView f, char ***out_writes, int *out_count) {
+	int n = sv_count(f, SN_WRITE_PARAM);
+	*out_count = n;
+	*out_writes = n ? calloc(n, sizeof(char *)) : NULL;
+	for (int i = 0; i < n; i++)
+		(*out_writes)[i] = txt_dup(sv_token(sv_child_at(f, SN_WRITE_PARAM, i), TOK_IDENT));
+}
+
 static HirDecl *lower_system_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_SYSTEM);
 	HirSystemDecl *as = calloc(1, sizeof(HirSystemDecl));
 	as->name = name;
 	as->eff = sv_has_eff(f);
+	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* `system(Q)` carries query columns (the effectful fan); a run-once `system { }` resolves to 0. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
@@ -2482,6 +2492,7 @@ static HirEachDecl *lower_each_payload(SyntaxView f, char *name) {
 	HirEachDecl *as = calloc(1, sizeof(HirEachDecl));
 	as->name = name;
 	as->eff = 1; /* the each fan (and `map (Q) eff`) is the effectful per-entity kind by construction */
+	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* `each(Q)` carries its query columns (flattened), bound per-element in codegen's row loop. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
@@ -2504,6 +2515,7 @@ static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
 	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
 	as->name = name;
+	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
 	 * `pos.x`→`pos_x` rewrite, so the produced scalar columns match the flattened params. */

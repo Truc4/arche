@@ -2,6 +2,6 @@
 // RUN: true
 Cell :: arche { v }
 
-bump :: map (query { v }) {
+bump :: map (query { v }) (v) {
   v = v + 1;
 }

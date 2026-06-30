@@ -1,0 +1,11 @@
+// A run-once `system` (no selector) MAY hand-index a pool column to write it — this is the load-by-index
+// primitive (csv.load, seeding). It stays the W0029 lint (not the E0228 selector ban), so a plain build with
+// the lint allowed still compiles and runs.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "x0=7"
+#import { fmt }
+x :: int;
+P :: arche { x }
+[4]P(4);
+load :: system { P.x[0] = 7; }
+show :: system eff { fmt.printf("x0=%d\n", P.x[0]); }
+#run seq({ load, show })

@@ -64,8 +64,8 @@ Projectile :: arche { speed };
 [5000]Enemy(5000);
 [1000]Projectile(1000);
 
-initialize  :: map (query { active }) { active = 1; }
-update_loop :: map (query { speed })  { speed = speed + 1; }
+initialize  :: map (query { active }) (active) { active = 1; }
+update_loop :: map (query { speed }) (speed)  { speed = speed + 1; }
 
 #run seq({ initialize, update_loop }) // the schedule names the work; the runtime owns the loop
 ```
@@ -261,7 +261,7 @@ This iterates all elements, updating each position by its velocity. Inside a map
 component type names are available directly:
 
 ```arche
-step :: map (query { pos_x, vel_x }) {
+step :: map (query { pos_x, vel_x }) (pos_x) {
   pos_x = pos_x + vel_x;
 }
 ```
@@ -412,7 +412,7 @@ Particle :: arche { pos_x, vel_x };
 
 [1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 };
 
-step :: map (query { pos_x, vel_x }) {
+step :: map (query { pos_x, vel_x }) (pos_x) {
   pos_x = pos_x + vel_x;
 }
 ```
@@ -448,7 +448,7 @@ pos :: float;
 Body :: arche { vel, pos };
 [8]Body(8);
 
-dampen :: map (query { vel, pos }) {
+dampen :: map (query { vel, pos }) (vel) {
   // kill velocity below a threshold (mask), and clamp with a branch-free select
   vel = vel * (pos > 10);
   vel = select(pos > 100.0, 0.0, vel);
@@ -501,7 +501,7 @@ drag_factor :: func(x: float) -> float {
 | ----------------- | ------------------------------------------ | -------------- | -------------------------------------- |
 | `func`            | `name :: func(in) -> T` or `func(in)(out)` | yes (`-> T`)   | pure computation; results via return **or** out-params |
 | `system`          | `name :: system { … }`                     | no             | effects; scheduled by `#run` (`map (Q) eff` = the effectful per-row fan) |
-| `map`             | `name :: map (query {components})`         | no             | data transform over archetypes         |
+| `map`             | `name :: map (query {components}) (writes)` | no            | data transform over archetypes; declares the columns it writes |
 | `proc`            | `name :: proc(in)(out)` *(in `#foreign`)*  | no             | foreign/`@syscall`/`@intrinsic` primitive **only** |
 
 - `func`: "compute a value" - `r := area(w, h)`, or `divmod(17, 5)(q:, r:)` for multiple results
@@ -523,7 +523,7 @@ Mover :: arche { pos, vel };
 [256]Mover(256);
 
 @gpu
-integrate :: map (query { pos, vel }) {
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }
 

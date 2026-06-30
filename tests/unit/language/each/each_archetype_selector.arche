@@ -10,7 +10,7 @@ seed :: system {
   Ball.color = { 1, 2 };
 }
 
-shift :: map (Ball) eff {
+shift :: map (Ball) (pos) eff {
   pos.x = pos.x + color; // per-element: add this ball's color to its x
 }
 

@@ -6,7 +6,7 @@ Task :: arche { val :: int }
   val: 5,
 }
 
-double_val :: map (query { val }) {
+double_val :: map (query { val }) (val) {
   val = val * 2;
 }
 

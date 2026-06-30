@@ -3,6 +3,6 @@
 // RUN: true
 Particle :: arche { pos :: float, vel :: float }
 
-integrate :: map (query { pos, vel }) {
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }

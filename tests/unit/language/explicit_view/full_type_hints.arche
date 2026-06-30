@@ -22,7 +22,7 @@ pos      :: float;
 vel      :: float;
 Particle :: arche { pos, vel }
 [2]Particle(2);
-step :: map (query { pos, vel }) {
+step :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }
 main :: proc() {

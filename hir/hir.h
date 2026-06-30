@@ -160,6 +160,8 @@ typedef struct {
 	int stmt_count;
 	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
 	int eff;    /* 1 if the `eff` permission was declared: the kernel may run effects */
+	char **writes;    /* the declared `(writes)` permission list: bound columns the body may assign */
+	int write_count;  /* 0 ⇒ no `(writes)` declared (a read-only kernel) */
 	SourceLoc loc;
 } HirMapDecl;
 
@@ -172,6 +174,8 @@ typedef struct {
 	HirStmt **stmts;
 	int stmt_count;
 	int eff; /* 1 if the `eff` permission was declared: the system may run effects */
+	char **writes;   /* the declared `(writes)` permission list: bound columns the body may assign */
+	int write_count; /* 0 ⇒ no `(writes)` declared */
 	SourceLoc loc;
 } HirSystemDecl;
 
@@ -188,6 +192,8 @@ typedef struct {
 	HirStmt **stmts;
 	int stmt_count;
 	int eff; /* 1 if the `eff` permission was declared (always set for `map (Q) eff` lowered to each) */
+	char **writes;   /* the declared `(writes)` permission list: bound columns the body may assign */
+	int write_count; /* 0 ⇒ no `(writes)` declared */
 	SourceLoc loc;
 } HirEachDecl;
 

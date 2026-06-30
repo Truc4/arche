@@ -10,7 +10,7 @@ Mover     :: arche { pos, vel }
 
 Movers :: query { pos, vel }
 
-step :: map (Movers) {
+step :: map (Movers) (pos) {
   pos = pos + vel;
 }
 

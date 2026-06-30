@@ -8,7 +8,7 @@ P :: arche { x }
 
 @gpu
 
-scale :: map (query { x }) {
+scale :: map (query { x }) (x) {
   x = x * 10.0;
 }
 

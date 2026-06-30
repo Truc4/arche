@@ -1,0 +1,9 @@
+// Hand-indexing the kernel's OWN selector pool to write it (`R.v[i] = …`) inside a selector kernel is a
+// hard error (E0228) — the column is bound by name, so write the bare `v`. (Loaders / run-once systems, with
+// no selector, may still hand-index; that stays the W0029 lint — see indexed_write_loader_ok.)
+// RUN: not %arche build -o %t %s 2>&1 | grep -qF "inside a selector kernel"
+v :: float;
+R :: arche { v }
+[4]R(4);
+bad :: map (query { v }) (v) { R.v[0] = 9.0; }
+#run seq({ bad })

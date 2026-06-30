@@ -9,7 +9,7 @@ pos(x, y) :: int;
 vel(x, y) :: int;
 Mover     :: arche { pos, vel }
 [2]Mover ?abort;
-step :: map (query { pos, vel }) {
+step :: map (query { pos, vel }) (pos) {
   pos += vel; // whole-group compound:  (10,20)->(11,22) ; (100,200)->(103,204)
   pos = pos + vel; // whole-group plain add: (11,22)->(12,24) ; (103,204)->(106,208)
 }

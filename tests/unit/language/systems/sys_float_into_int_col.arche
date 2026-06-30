@@ -9,7 +9,7 @@
 v(x, y) :: int;
 M       :: arche { v }
 [1]M;
-s :: map (query { v }) {
+s :: map (query { v }) (v) {
   v *= 2.0; // float into an int column → rejected
 }
 seed :: system eff {

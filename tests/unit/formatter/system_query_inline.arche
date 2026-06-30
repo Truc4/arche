@@ -4,7 +4,7 @@
 Mob :: arche { pos, color }
 [1]Mob;
 
-draw :: system (query { pos, color }) {
+draw :: system (query { pos, color }) (pos) {
   pos.x += color;
 }
 

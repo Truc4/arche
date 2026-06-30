@@ -8,11 +8,11 @@ Body :: arche { pos, vel, mass :: float }
 
 [50]Body ?abort;
 
-step :: map (query { pos, vel }) {
+step :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }
 
-dampen :: map (query { vel }) {
+dampen :: map (query { vel }) (vel) {
   vel = vel * 0.99;
 }
 

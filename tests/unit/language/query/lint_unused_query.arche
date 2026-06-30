@@ -10,7 +10,7 @@ P   :: arche { pos, vel }
 Used   :: query { pos, vel }
 Unused :: query { pos }
 
-step :: map (Used) {
+step :: map (Used) (pos) {
   pos = pos + vel;
 }
 

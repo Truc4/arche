@@ -10,7 +10,7 @@ Rich  :: arche { hp, armor, speed }
 
 Wounded :: query { hp }
 
-decay :: map (Wounded) {
+decay :: map (Wounded) (hp) {
   hp = hp - 1;
 }
 

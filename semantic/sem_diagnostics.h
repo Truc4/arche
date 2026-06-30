@@ -194,6 +194,10 @@ typedef enum {
 	SEM_DIAG_effect_without_eff,    /* a `map`/`system` runs an effect (insert/delete, extern/proc call, an
 	                                   Eff run) without the `eff` permission — kernels are pure by default;
 	                                   declare `eff` (or `map (Q) eff`) to run effects. E0226. */
+	SEM_DIAG_write_set_mismatch,    /* a kernel writes a bound selector column not covered by its `(writes)`
+	                                   permission list (or omits the list entirely). E0227. */
+	SEM_DIAG_indexed_write_in_selector, /* an indexed pool-column write `Pool.col[i] = …` inside a selector
+	                                   kernel — write the bound bare column instead. E0228. */
 
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
@@ -391,6 +395,9 @@ SemDiag *sem_emit_const_rhs_invalid(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason);
 SemDiag *sem_emit_effect_without_eff(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
                                      const char *reason);
+SemDiag *sem_emit_write_set_mismatch(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *actual_list, int has_declared);
+SemDiag *sem_emit_indexed_write_in_selector(SemanticContext *ctx, SourceLoc loc, const char *pool);
 SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form);
 
 SemDiag *sem_emit_policy_provable_oob(SemanticContext *ctx, SourceLoc loc, const char *base, int idx, int len);

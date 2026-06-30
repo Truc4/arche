@@ -4,7 +4,7 @@ Body :: arche { position :: float, velocity :: float }
 
 [500]Body ?abort;
 
-step :: map (query { position, velocity }) {
+step :: map (query { position, velocity }) (position) {
   position = position + velocity;
 }
 

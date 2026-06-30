@@ -13,7 +13,7 @@ seed :: system {
 
 run :: system {
   bump := 100; // an enclosing local…
-  map (query { v }) eff { // …captured by the inline fan; per-element write-back
+  map (query { v }) (v) eff { // …captured by the inline fan; per-element write-back
     v = v + bump;
   };
 }

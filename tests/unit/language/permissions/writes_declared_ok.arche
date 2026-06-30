@@ -1,0 +1,11 @@
+// The `(writes)` permission (slice 2): a selector kernel declares the bound columns it assigns. When the
+// declared set matches what the body writes, it compiles and runs.
+// RUN: %arche build -o %t %s && %t | grep -qF "v0=2"
+#import { fmt }
+v :: float;
+R :: arche { v }
+[4]R(4);
+seed :: system { R.v = { 1.0, 2.0, 3.0, 4.0 }; }
+bump :: map (query { v }) (v) { v = v + 1.0; }
+show :: system eff { fmt.printf("v0=%.0f\n", R.v[0] * 1.0); }
+#run seq({ seed, bump, show })

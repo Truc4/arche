@@ -1487,6 +1487,31 @@ static int parse_opt_row_bind(Parser *parser) {
 	return 0;
 }
 
+/* Optional `(writes)` permission list after a kernel selector — the bound columns the body may assign:
+ * `map (Movers) (pos, vel) { … }`. A comma list of bare column names, each wrapped SN_WRITE_PARAM. It sits
+ * between the selector `)` and the optional `eff`. Returns 1 if a list was parsed. */
+static int parse_opt_writes(Parser *parser) {
+	if (!check(parser, TOK_LPAREN))
+		return 0;
+	advance(parser); /* consume '(' */
+	if (!check(parser, TOK_RPAREN)) {
+		do {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a column name in the `(writes)` list — `map (Movers) (pos, vel) { … }`");
+				return 0;
+			}
+			int w_cp = syntax_cp(parser);
+			advance(parser); /* the column name */
+			syntax_wrap(parser, w_cp, SN_WRITE_PARAM);
+		} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
+	}
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' to close the `(writes)` list");
+		return 0;
+	}
+	return 1;
+}
+
 /* `out_kind` receives the SyntaxNodeKind for the primary expression form parsed,
  * derived from parse context (not from a built AST node). The caller wraps the
  * syntax tree node with it. Left untouched when the primary already wrapped itself (paren). */
@@ -1600,6 +1625,8 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected ')'");
 			return 0;
 		}
+		/* optional `(writes)` permission list — the bound columns this map assigns. */
+		parse_opt_writes(parser);
 		/* `map (Q) eff` is the EFFECTFUL per-entity fan — it routes to the SN_EACH_EXPR machinery (per-row
 		 * body with control flow + effects), the same kernel the removed `each` keyword produced. A plain
 		 * `map` stays the pure branch-free column transform (SN_MAP_EXPR, E0046-restricted). */
@@ -1640,6 +1667,8 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				error(parser, "Expected ')'");
 				return 0;
 			}
+			/* optional `(writes)` permission list — the bound columns this system assigns. */
+			parse_opt_writes(parser);
 		}
 		parse_opt_eff(parser);
 		return parse_block_body(parser);

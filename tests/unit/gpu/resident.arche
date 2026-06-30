@@ -13,7 +13,7 @@ R :: arche { v }
 [8]R(8);
 
 @gpu
-bump :: map (query { v }) {
+bump :: map (query { v }) (v) {
   v = v + 1.0;
 }
 

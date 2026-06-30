@@ -13,7 +13,7 @@ Config       :: arche { k, center }
 
 Movers :: query { pos, vel }
 
-step :: map (Movers) {
+step :: map (Movers) (vel, pos) {
   vel -= (pos - Config.center[0]) / Config.k[0];
   vel *= 2.0;
   pos += vel;

@@ -20,7 +20,7 @@ seedp :: system {
 run :: system {
   map (query { wid }) eff { // outer: per window
     base := wid; // per-window context
-    map (query { v }) eff { // inner: per ball — captures `base`
+    map (query { v }) (v) eff { // inner: per ball — captures `base`
       v = v + base;
     };
   };

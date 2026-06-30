@@ -10,7 +10,7 @@ Body :: arche { pos, vel }
 
 @gpu
 
-step :: map (query { pos, vel }) {
+step :: map (query { pos, vel }) (pos, vel) {
   pos = pos + vel;
   vel = select(pos > 1000.0, 0.0 - vel, vel);
 }

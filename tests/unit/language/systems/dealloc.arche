@@ -5,7 +5,7 @@ Particle :: arche { pos :: float, vel :: float }
 
 [10]Particle ?abort;
 
-advance :: map (query { pos, vel }) {
+advance :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }
 

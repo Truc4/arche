@@ -14,7 +14,7 @@ seed :: system eff {
   insert(Win { id: 99 })(_:, _:);
 }
 
-addwin :: system (query { n }, query { id }) {
+addwin :: system (query { n }, query { id }) (n) {
   n = n + id;
 }
 

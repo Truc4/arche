@@ -78,7 +78,7 @@ blur them. The shape of a declaration *tells you what it does*.
 | ----------------- | --------------------------------------- | ----------- | --- |
 | `func`            | `name :: func(in) -> T` or `func(in)(out)` | **yes** (`-> T`) | pure computation — results via one return **or** an out-param list, no side effects, **total by default** (unannotated ops clamp) |
 | `system`          | `name :: system { … }`                  | no          | an effect — runs actions (I/O, `insert`/`delete`, running an `Eff`); `map (query{…}) eff` fans one per matching row |
-| `map`             | `name :: map (query {components})`      | no          | a data transform — runs over **every** archetype carrying those components |
+| `map`             | `name :: map (query {components}) (writes)` | no      | a data transform — runs over **every** archetype carrying those components; declares the columns it writes |
 | `policy`          | `name :: policy(len, i)`                | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
 
 `proc` is **reserved for the foreign boundary** — `#foreign`/`@syscall`/`@intrinsic` primitive
@@ -89,7 +89,7 @@ are a `system`/`map`. A program's entry point is a `#run` schedule, not a decl n
 area   :: func(w: int, h: int) -> int                    // value:     r := area(w, h)
 divmod :: func(a: int, b: int)(q:, r:)                   // results:   divmod(17, 5)(q:, r:)
 greet  :: system eff { fmt.printf("hi\n"); }                 // effect:    scheduled by #run
-step   :: map (query { pos, vel }) { pos = pos + vel; }  // transform: #run step
+step   :: map (query { pos, vel }) (pos) { pos = pos + vel; }  // transform: #run step
 clamp  :: policy(len: int, i: int) { … }                 // failure:   v := xs[k] !clamp
 ```
 
@@ -122,7 +122,7 @@ Particle :: arche {
 
 [100]Particle(100) { vel: 0.1 }; // 100 live particles; pos starts at 0, vel at 0.1
 
-integrate :: map (query { pos, vel }) {
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel; // whole-column update — no explicit loop
 }
 

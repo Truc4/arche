@@ -72,7 +72,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "/// }\n"
 		    "/// #run seq({ seed, integrate, check })\n"
 		    "/// ```\n"
-		    "integrate :: map(Movers) {\n"
+		    "integrate :: map(Movers) (pos) {\n"
 		    "  pos = pos + vel;\n"
 		    "}\n";
 		return write_new_file(path, impl);

@@ -6,6 +6,6 @@
 
 Hidden :: arche { z }
 
-advance :: map (query { z }) {
+advance :: map (query { z }) (z) {
   z = z + 1.0;
 }

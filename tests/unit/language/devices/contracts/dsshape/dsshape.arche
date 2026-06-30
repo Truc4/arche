@@ -1,5 +1,5 @@
 // dsshape's behavior. Support file for datasheet_defines_shape.arche.
 // RUN: true
-poke :: map (query { v }) {
+poke :: map (query { v }) (v) {
   v = v + 1.0;
 }

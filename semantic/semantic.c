@@ -172,6 +172,13 @@ struct SemanticContext {
 	/* 1 while analyzing a `map` body. A `map` supports no `return` at all (naked or valued). */
 	int in_map;
 
+	/* Per-kernel collection of the bound selector columns the body assigns (for the `(writes)` permission
+	 * check). Active (`k_collect`) only inside a kernel body; saved/restored across nested inline fans so a
+	 * fan's writes don't leak to its enclosing system. Each entry is an owned column-name string. */
+	int k_collect;
+	char **k_writes;
+	int k_write_count;
+
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
 	 * only there — never nested inside another expression. Set by STMT_EXPR / STMT_BIND /
@@ -415,6 +422,7 @@ static TypeId callable_type_alias_id(SemanticContext *ctx, const char *name) {
 }
 
 static char *sem_dupz(const char *s);
+static void kernel_record_write(SemanticContext *ctx, const char *col); /* Slice 2 (writes) collector */
 
 /* Record an enum's type name + its (variant → value) entries. The type-alias-to-int registration
  * is done by the caller (register_type_alias is defined later). */
@@ -3192,6 +3200,27 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		analyze_expression(ctx, value);
 		ctx->stmt_call_ok = 0;
 		implicit_move_consume(ctx, value);
+		/* Slice 2 — the `(writes)` permission. Inside a selector kernel, ban an indexed pool-column write
+		 * (`Pool.col[i] = …`); collect a write to a bound selector column for the declared-write-set check. */
+		if (ctx->current_map_archetype && sv_kind(target) == SN_INDEX_EXPR && sv_count(target, SN_FIELD_NAME) > 0) {
+			char *root = sv_resolved_name(ctx, target);
+			/* Only ban hand-indexing the kernel's OWN selector pool — that column is bound by name, so the
+			 * index is the smell. A FOREIGN pool isn't bound here (indexing is its only access), and writing
+			 * it is W0024's domain (map_writes_foreign_pool), so leave that case alone. */
+			if (root && find_archetype(ctx, root) &&
+			    find_archetype(ctx, root) == find_archetype(ctx, ctx->current_map_archetype))
+				sem_emit_indexed_write_in_selector(ctx, sem_node_loc(target.node), root);
+			free(root);
+		}
+		if (ctx->k_collect) {
+			char *wbase = sv_name_expr_dup(target);
+			if (wbase) {
+				VariableInfo *wv = find_variable(ctx, wbase);
+				if (wv && wv->is_param) /* a bound selector column (not a local / pool / singleton) */
+					kernel_record_write(ctx, wbase);
+			}
+			free(wbase);
+		}
 		if (sv_kind(target) == SN_NAME_EXPR) {
 			char *tn = sv_resolved_name(ctx, target);
 			VariableInfo *t = find_variable(ctx, tn);
@@ -6681,6 +6710,78 @@ static const char *bind_query_archetype(SemanticContext *ctx, DeclSummary *d) {
 	return chosen ? archetype_any_alias(ctx, chosen) : NULL;
 }
 
+/* ===== Slice 2: the `(writes)` permission ===== */
+
+/* Record a bound-column write (deduped) into the active per-kernel collector. */
+static void kernel_record_write(SemanticContext *ctx, const char *col) {
+	if (!col)
+		return;
+	for (int i = 0; i < ctx->k_write_count; i++)
+		if (strcmp(ctx->k_writes[i], col) == 0)
+			return; /* dedup */
+	ctx->k_writes = realloc(ctx->k_writes, (size_t)(ctx->k_write_count + 1) * sizeof(char *));
+	ctx->k_writes[ctx->k_write_count++] = sem_dupz(col);
+}
+
+/* Begin collecting bound-column writes for a kernel body. Saves the parent collector (so a nested inline
+ * fan's writes don't leak to its enclosing system) and starts fresh. */
+static void kernel_writes_begin(SemanticContext *ctx, int *sv_collect, char ***sv_w, int *sv_n) {
+	*sv_collect = ctx->k_collect;
+	*sv_w = ctx->k_writes;
+	*sv_n = ctx->k_write_count;
+	ctx->k_collect = 1;
+	ctx->k_writes = NULL;
+	ctx->k_write_count = 0;
+}
+
+/* Check the collected actual write-set against the kernel's declared `(writes)` (SN_WRITE_PARAM children of
+ * `knode`); emit E0227 if any actual bound-column write is undeclared (or the list is absent). Over-declaring
+ * is permitted (forward-compatible; avoids false positives on any write form the collector misses). Then free
+ * this kernel's collector and restore the parent's. */
+static void kernel_writes_end(SemanticContext *ctx, SyntaxView knode, const char *kind, const char *name,
+                              SourceLoc loc, int sv_collect, char **sv_w, int sv_n) {
+	int nd = sv_count(knode, SN_WRITE_PARAM);
+	int missing = 0;
+	for (int i = 0; i < ctx->k_write_count && !missing; i++) {
+		int found = 0;
+		for (int j = 0; j < nd && !found; j++) {
+			char *dn = sem_txt_dup(sv_token(sv_child_at(knode, SN_WRITE_PARAM, j), TOK_IDENT));
+			if (dn && strcmp(dn, ctx->k_writes[i]) == 0)
+				found = 1;
+			free(dn);
+		}
+		if (!found)
+			missing = 1;
+	}
+	if (missing) {
+		size_t cap = 4;
+		for (int i = 0; i < ctx->k_write_count; i++)
+			cap += strlen(ctx->k_writes[i]) + 2;
+		char *list = malloc(cap);
+		size_t p = 0;
+		list[p++] = '(';
+		for (int i = 0; i < ctx->k_write_count; i++) {
+			if (i) {
+				list[p++] = ',';
+				list[p++] = ' ';
+			}
+			size_t l = strlen(ctx->k_writes[i]);
+			memcpy(list + p, ctx->k_writes[i], l);
+			p += l;
+		}
+		list[p++] = ')';
+		list[p] = '\0';
+		sem_emit_write_set_mismatch(ctx, loc, kind, name, list, nd > 0);
+		free(list);
+	}
+	for (int i = 0; i < ctx->k_write_count; i++)
+		free(ctx->k_writes[i]);
+	free(ctx->k_writes);
+	ctx->k_collect = sv_collect;
+	ctx->k_writes = sv_w;
+	ctx->k_write_count = sv_n;
+}
+
 static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 	if (!sys)
 		return;
@@ -6694,6 +6795,9 @@ static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 	const char *old_arch = ctx->current_map_archetype;
 	if (sys->param_count > 0)
 		ctx->current_map_archetype = bind_query_archetype(ctx, sys);
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(sys->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(sys->body_node, i));
@@ -6705,6 +6809,7 @@ static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 		if (reason)
 			sem_emit_effect_without_eff(ctx, sys->loc, "system", sys->name, reason);
 	}
+	kernel_writes_end(ctx, sys->body_node, "system", sys->name, sys->loc, sv_collect, sv_w, sv_n);
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
 	ctx->current_proc = prev_proc;
@@ -6731,10 +6836,14 @@ static void analyze_each_decl(SemanticContext *ctx, DeclSummary *each) {
 		add_variable_with_archetype(ctx, rv, tyid_of_handle(ctx->ty_arena, ctx->current_map_archetype),
 		                            ctx->current_map_archetype);
 	}
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(each->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(each->body_node, i));
 	ctx->in_body = 0;
+	kernel_writes_end(ctx, each->body_node, "map", each->name, each->loc, sv_collect, sv_w, sv_n);
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
 	ctx->current_proc = prev_proc;
@@ -6761,11 +6870,15 @@ static void analyze_inline_each(SemanticContext *ctx, SyntaxView f) {
 	push_scope(ctx);
 	const char *old_arch = ctx->current_map_archetype;
 	ctx->current_map_archetype = bind_query_archetype(ctx, &ds);
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
 	int old_in_body = ctx->in_body;
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(f); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(f, i));
 	ctx->in_body = old_in_body;
+	kernel_writes_end(ctx, f, "map", NULL, sem_node_loc(f.node), sv_collect, sv_w, sv_n);
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
 	free(ds.params);
@@ -6782,10 +6895,14 @@ static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
 	/* `map` is the pure per-element kernel: E0046 (transform-only) active. The effectful per-entity fan is
 	 * `map (Q) eff`, which parses to SN_EACH_EXPR (analyze_each_decl), so it never reaches here. */
 	ctx->in_map = 1;
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(map->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(map->body_node, i));
 	ctx->in_body = 0;
+	kernel_writes_end(ctx, map->body_node, "map", map->name, map->loc, sv_collect, sv_w, sv_n);
 	ctx->in_map = prev_in_map;
 	ctx->current_map_archetype = old_map_archetype;
 	pop_scope(ctx);
@@ -9498,6 +9615,9 @@ static void analyze_program_core(SemanticContext *ctx) {
  * entry points. */
 static SemanticContext *make_context(void) {
 	SemanticContext *ctx = malloc(sizeof(SemanticContext));
+	ctx->k_collect = 0; /* Slice 2 (writes) collector — inactive outside a kernel body */
+	ctx->k_writes = NULL;
+	ctx->k_write_count = 0;
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
 	ctx->default_pool_policy = NULL;

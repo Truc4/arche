@@ -63,7 +63,7 @@ Timer :: arche { start, map_ms, each_ms, sys_ms, loop_ms, gpu_ms }
 [1]Timer(1) { start: 0, map_ms: 0, each_ms: 0, sys_ms: 0, loop_ms: 0, gpu_ms: 0 }
 
 // (1) map: pure branchless data-parallel kernel
-step_map :: map (query { ax, ay, avx, avy }) {
+step_map :: map (query { ax, ay, avx, avy }) (avx, avy, ax, ay) {
   avx = avx - (ax - 400.0) * 0.05;
   avy = avy - (ay - 300.0) * 0.05;
   avx = avx * 0.99;
@@ -73,7 +73,7 @@ step_map :: map (query { ax, ay, avx, avy }) {
 }
 
 // (2) each: identical body as a per-row fan
-step_each :: map (query { bx, by, bvx, bvy }) eff {
+step_each :: map (query { bx, by, bvx, bvy }) (bvx, bvy, bx, by) eff {
   bvx = bvx - (bx - 400.0) * 0.05;
   bvy = bvy - (by - 300.0) * 0.05;
   bvx = bvx * 0.99;
@@ -106,7 +106,7 @@ step_loop :: system {
 
 // (5) @gpu map: identical body, dispatched on the GPU when built with --gpu
 @gpu
-step_gpu :: map (query { gx, gy, gvx, gvy }) {
+step_gpu :: map (query { gx, gy, gvx, gvy }) (gvx, gvy, gx, gy) {
   gvx = gvx - (gx - 400.0) * 0.05;
   gvy = gvy - (gy - 300.0) * 0.05;
   gvx = gvx * 0.99;

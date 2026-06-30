@@ -19,6 +19,6 @@ Particle :: arche { pos, vel }
 /// }
 /// #run seq({ seed, integrate, check })
 /// ```
-integrate :: map (query { pos, vel }) {
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }

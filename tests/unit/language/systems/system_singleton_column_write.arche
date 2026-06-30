@@ -10,7 +10,7 @@ seed :: system eff {
   insert(S { v: 10 })(_:, _:);
 }
 
-bump :: system (query { v }) {
+bump :: system (query { v }) (v) {
   v = v + 5;
 }
 

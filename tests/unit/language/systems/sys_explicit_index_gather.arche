@@ -14,7 +14,7 @@ Ent   :: arche { v, out }
 [4]Table ?abort;
 [3]Ent ?abort;
 
-gather :: map (query { v, out }) {
+gather :: map (query { v, out }) (out) {
   out = out(Table.val[v]); // base suppressed → column ptr; index v auto-indexed per row → Table.val[v_i]
 }
 

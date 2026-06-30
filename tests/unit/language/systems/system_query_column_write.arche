@@ -10,7 +10,7 @@ seed :: system {
   Acc.n = { 10, 20, 30 };
 }
 
-bump :: system (query { n }) {
+bump :: system (query { n }) (n) {
   n = n + 5;
 }
 

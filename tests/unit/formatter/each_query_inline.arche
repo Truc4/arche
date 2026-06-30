@@ -1,11 +1,11 @@
 // A `map (query {…}) eff` selector must format on one line like `map`/`system` — the closing `)` must
 // NOT break onto its own line (regression guard for SN_EACH_EXPR in is_list_paren_parent).
-// RUN: %arche fmt %s | grep -qF "draw :: map (query { pos, color }) eff {"
+// RUN: %arche fmt %s | grep -qF "draw :: map (query { pos, color }) (pos) eff {"
 #import { fmt }
 [8]Mob(1);
 Mob :: arche { pos(x, y) :: int color :: int }
 
-draw :: map (query { pos, color }) eff {
+draw :: map (query { pos, color }) (pos) eff {
   pos.x = pos.x + color;
 }
 

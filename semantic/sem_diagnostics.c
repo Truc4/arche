@@ -141,6 +141,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_slice_repoint]                 = { "E0224", "slice_repoint",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_main_reserved]                 = { "E0225", "main_reserved",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_effect_without_eff]            = { "E0226", "effect_without_eff",            CLASS_ERROR, 1 },
+	[SEM_DIAG_write_set_mismatch]            = { "E0227", "write_set_mismatch",            CLASS_ERROR, 1 },
+	[SEM_DIAG_indexed_write_in_selector]     = { "E0228", "indexed_write_in_selector",     CLASS_ERROR, 1 },
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
@@ -889,6 +891,24 @@ SemDiag *sem_emit_effect_without_eff(SemanticContext *ctx, SourceLoc loc, const 
 	                 "%s '%s' is pure by default but %s — declare the `eff` permission to run effects: "
 	                 "`%s … eff { … }`",
 	                 kind, name ? name : "<kernel>", reason, kind);
+}
+SemDiag *sem_emit_write_set_mismatch(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *actual_list, int has_declared) {
+	/* `actual_list` is the full bound-column write-set the body actually assigns, formatted `(pos, vel)` —
+	 * the migration codemod reads it from after the word `declare`. */
+	return sem_emit_(ctx, SEM_DIAG_write_set_mismatch, loc,
+	                 has_declared
+	                     ? "%s '%s' writes a bound column its `(writes)` permission omits — declare `%s` "
+	                       "after the selector"
+	                     : "%s '%s' writes bound columns but declares no `(writes)` permission — declare `%s` "
+	                       "after the selector",
+	                 kind, name ? name : "<kernel>", actual_list);
+}
+SemDiag *sem_emit_indexed_write_in_selector(SemanticContext *ctx, SourceLoc loc, const char *pool) {
+	return sem_emit_(ctx, SEM_DIAG_indexed_write_in_selector, loc,
+	                 "indexed pool-column write `%s.…[i] = …` inside a selector kernel — write the bound bare "
+	                 "column instead (hand-indexing a pool is for loaders / run-once systems, not selector bodies)",
+	                 pool);
 }
 SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form) {
 	return sem_emit_(ctx, SEM_DIAG_insert_delete_outlist, loc,

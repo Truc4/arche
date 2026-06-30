@@ -530,7 +530,7 @@ void test_run_schedule_ok(void) {
 	AnalysisResult result = analyze_string("v :: int;\n"
 	                                       "C :: arche { v }\n"
 	                                       "[1]C;\n"
-	                                       "step :: map (query { v }) { v = v + 1; }\n"
+	                                       "step :: map (query { v }) (v) { v = v + 1; }\n"
 	                                       "frame :: system { C.v = { 0 }; }\n"
 	                                       "#run seq({ frame, step })\n");
 	ASSERT_TRUE(result.ctx != NULL, "context is null");

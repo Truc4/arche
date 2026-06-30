@@ -15,7 +15,7 @@ seed :: system eff {
 }
 
 // word[1]: row 0 -> 'b' (98), row 1 -> 'x' (120). Reads must respect the per-row offset.
-pick :: map (query { word, c }) eff {
+pick :: map (query { word, c }) (c) eff {
   c = word[1];
 }
 

@@ -60,7 +60,7 @@ seed :: system eff {
 
 // The test's `raw` is a NUL-terminated literal, so its received length is `strlen` (a live server gets the
 // byte count from `net.recv`'s out-slot instead).
-measure :: map (query { raw, raw_len }) eff {
+measure :: map (query { raw, raw_len }) (raw_len) eff {
   raw_len = str.strlen(raw);
 }
 
