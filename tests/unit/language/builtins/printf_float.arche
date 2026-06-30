@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "Float: 3.14"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   f := 3.14;
   fmt.printf("Float: %g\n", f);
   fmt.printf("Literal: %g\n", 2.71);

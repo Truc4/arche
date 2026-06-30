@@ -7,7 +7,7 @@ v :: int;
 B :: arche { v }
 [8]B ?abort;
 
-entry :: system {
+entry :: system eff {
   e := B { v: 7 };
   insert(e)(_:, _:); // reuse the same entity twice
   insert(e)(_:, _:);

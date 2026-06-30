@@ -9,7 +9,7 @@
   twovals :: proc(x: int)(a: int, b: int);
 }
 
-entry :: system {
+entry :: system eff {
   twovals(5)(a:, b:);
 }
 

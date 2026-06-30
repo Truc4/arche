@@ -18,7 +18,7 @@ close_res :: proc(own r: res) {
   fmt.printf("dropped fd=%d\n", i64(r)); // a real io dtor would `os.close(i64(r))(_:)` here
 }
 
-entry :: system {
+entry :: system eff {
   insert(Thing { r: res(7) })(h:, _:);
   delete(h)(_:); // fires close_res on the deleted row's `res` column → "dropped fd=7"
 }

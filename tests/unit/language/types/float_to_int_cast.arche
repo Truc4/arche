@@ -3,7 +3,7 @@
 // toward zero. RED (bad IR) before the fix; GREEN after.
 // RUN: %arche build -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   f := 3.7;
   g := 0.0 - 2.9;
   a := i64(f);

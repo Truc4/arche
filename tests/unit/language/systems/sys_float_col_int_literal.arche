@@ -12,11 +12,11 @@ step :: map (query { pos, vel }) {
   vel *= 2; // int literal 2 → 2.0 : (3,5) -> (6,10)
   pos = pos + vel; // (80,80) + (6,10) -> (86,90)
 }
-seed :: system {
+seed :: system eff {
   insert(Mover { pos_x: 80.0, pos_y: 80.0, vel_x: 3.0, vel_y: 5.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf(
     "v=%.0f %.0f p=%.0f %.0f\n",
     Mover.vel.x[0] * 1.0,

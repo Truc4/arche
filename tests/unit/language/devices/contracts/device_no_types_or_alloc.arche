@@ -9,7 +9,7 @@ Thing :: arche { val } // references the datasheet's global `val`
 
 [2]Thing;
 
-seed :: system {
+seed :: system eff {
   insert(Thing { val: 1.0 })(_:, _:);
 }
 

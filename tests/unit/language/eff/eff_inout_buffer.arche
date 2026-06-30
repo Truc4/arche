@@ -14,7 +14,7 @@ recv :: func(s: i64, n: int) -> Eff([]char, int) {
   return eff_fill(s, _, n); // `_` is the C-ABI in-slot; the buffer is the OUT
 }
 
-entry :: system {
+entry :: system eff {
   recv(0, 8)(filled: [8]char, r:); // `:` allocates the OUT here; the kernel fills it
   fmt.printf("r=%d filled=%c%c%c\n", r, filled[0], filled[1], filled[2]);
 }

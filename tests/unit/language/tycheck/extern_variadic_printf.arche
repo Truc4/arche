@@ -3,7 +3,7 @@
 // `printf("%d %d %d\n", 1, 2, 3)` is accepted with three extras.
 // RUN: %arche build -o %t %s && %t | grep "1 2 3"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("%d %d %d\n", 1, 2, 3);
 }
 

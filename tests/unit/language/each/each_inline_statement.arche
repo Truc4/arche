@@ -13,12 +13,12 @@ seed :: system {
 
 run :: system {
   bump := 100; // an enclosing local…
-  each (query { v }) { // …captured by the inline fan; per-element write-back
+  map (query { v }) eff { // …captured by the inline fan; per-element write-back
     v = v + bump;
   };
 }
 
-check :: system {
+check :: system eff {
   fmt.assert(P.v[0] == 101, "row 0\n")();
   fmt.assert(P.v[1] == 102, "row 1\n")();
   fmt.assert(P.v[2] == 103, "row 2\n")();

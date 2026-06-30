@@ -16,7 +16,7 @@ find_byte :: func(data: []char, start: int, end: int, ch: int) -> int {
   return end;
 }
 
-entry :: system {
+entry :: system eff {
   buf: [8]char;
   buf[0] = 'a';
   buf[1] = ',';

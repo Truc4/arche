@@ -33,7 +33,7 @@ runtime mapper do not hold in arche:
 | a runtime task graph | `#run` is compile-time-folded to a constant schedule |
 
 So the inputs the mapper consults at runtime are all known at compile time ⇒ **arche can fold the mapper into
-the compiler.** It splits on the legality/profitability line (`migration-derived-placement.md` §5):
+the compiler.** It splits on the legality/profitability line (`../migration-derived-placement.md` §5):
 
 - **Residency-class (which tier is *legal*)** — replicate read-only; VRAM for GPU-exclusive columns; coherent
   (with a `gpu.sync` edge) for columns read by both CPU and GPU. This is Legion's coherence rules lifted to
@@ -43,4 +43,4 @@ the compiler.** It splits on the legality/profitability line (`migration-derived
   it at runtime, and the `map_vs_each_step` benchmark shows static profitability is genuinely hard (an
   ideal-parallel kernel still lost on the GPU — it hinges on arithmetic intensity + tier + hardware).
 
-See also `notes.md` #6 (prior-art kill pass) and `migration-derived-placement.md` §5 (legality vs profitability).
+See also `../notes.md` #6 (prior-art kill pass) and `../migration-derived-placement.md` §5 (legality vs profitability).

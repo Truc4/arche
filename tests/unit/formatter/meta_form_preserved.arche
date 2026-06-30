@@ -10,7 +10,7 @@ alias_top: type: int;
 short_top :: int;
 Body      :: arche { mass: type: int }
 
-entry :: system {
+entry :: system eff {
   loc: type: int;
   p : loc       = 1;
   q : alias_top = 2;

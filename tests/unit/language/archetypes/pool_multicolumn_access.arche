@@ -6,7 +6,7 @@
 // `#module`. A 2-column pool used before its declaration is the minimal repro.
 // RUN: %arche build -o %t %s && %t | grep -q "ab=5,7"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   T.a[0] = 5;
   T.b[0] = 7;
   fmt.printf("ab=%d,%d\n", T.a[0], T.b[0]);

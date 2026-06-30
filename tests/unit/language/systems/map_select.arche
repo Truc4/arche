@@ -19,7 +19,7 @@ seed :: system {
   N.c = { 5, -1, 99 };
 }
 
-verify :: system {
+verify :: system eff {
   // v: 5>0->6, -3>0?no->-4, 20>0->21 ; w: 1->2, -1->0, 2->4 ; c: 5>0&5>10?no->1, -1->0, 99>10->2
   fmt.printf(
     "v=%d %d %d w=%.0f %.0f %.0f c=%d %d %d\n",

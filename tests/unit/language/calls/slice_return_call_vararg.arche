@@ -14,11 +14,11 @@ pick :: func(n: int) -> []char {
 S :: arche { out :: [16]char }
 [1]S(1);
 
-go :: each (query { out }) {
+go :: map (query { out }) eff {
   fmt.sprintf(_, "<%s>", pick(1))(out, _:);
 }
 
-show :: each (query { out }) {
+show :: map (query { out }) eff {
   fmt.printf("%s\n", out);
 }
 

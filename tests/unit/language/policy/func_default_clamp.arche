@@ -12,7 +12,7 @@ fdef :: func() -> int {
   return a[i];
 }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("fdef=%d\n", fdef());
 }
 

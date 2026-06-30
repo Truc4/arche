@@ -2,7 +2,7 @@
 // sets a=0,b=1 when b==0, so n/0 yields 0 (no UB/trap). In range, normal arithmetic.
 // RUN: %arche build -o %t %s && %t | grep -qF "z=0 ok=3 m=0 mok=1"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   n  := 10;
   d  := 0;
   d2 := 3;

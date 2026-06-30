@@ -14,11 +14,11 @@ decay :: map (Wounded) {
   hp = hp - 1;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Rich { hp: 100, armor: 7, speed: 3 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.assert(Rich.hp[0] == 99, "hp should be 99\n")();
   fmt.assert(Rich.armor[0] == 7, "armor untouched\n")();
   fmt.assert(Rich.speed[0] == 3, "speed untouched\n")();

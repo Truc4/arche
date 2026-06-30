@@ -42,16 +42,16 @@ task4_aggregate_revenue :: map (query { price, qty, total }) {
 }
 // Top-level allocations with init
 
-check1 :: system {
+check1 :: system eff {
   fmt.assert(Task1.revenue[0] == 6.0, "task1 revenue not 6.0\n")();
 }
-check2 :: system {
+check2 :: system eff {
   fmt.assert(Task2.valid[0] == 1, "task2 valid not 1\n")();
 }
-check3 :: system {
+check3 :: system eff {
   fmt.assert(Task3.hour_bucket[0] == 7200, "task3 hour_bucket not 7200\n")();
 }
-check4 :: system {
+check4 :: system eff {
   fmt.assert(Task4.total[0] == 4.0, "task4 total not 4.0\n")();
   fmt.printf("design_analysis etl ok\n");
 }

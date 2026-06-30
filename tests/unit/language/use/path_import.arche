@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "path_import_ok"
 #import { "./pathmod" fmt }
 
-entry :: system {
+entry :: system eff {
   fmt.assert(pathmod.greet() == 42, "path-imported module did not resolve\n")();
   fmt.printf("path_import_ok\n");
 }

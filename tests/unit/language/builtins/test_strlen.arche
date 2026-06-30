@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { str fmt }
-entry :: system {
+entry :: system eff {
   len := str.strlen("hello");
   fmt.assert(len == 5, "str.strlen(hello) should be 5\n")();
   fmt.printf("strlen ok\n");

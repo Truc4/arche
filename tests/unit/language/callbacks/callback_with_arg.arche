@@ -17,7 +17,7 @@ outer :: proc(cb: h)() {
   inner(cb)();
 }
 
-entry :: system {
+entry :: system eff {
   outer(hello)();
 }
 

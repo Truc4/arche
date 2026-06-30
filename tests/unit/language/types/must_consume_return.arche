@@ -11,7 +11,7 @@ resource :: opaque;
 make_resource :: func(v: int) -> Eff(resource) {
   return resource_open(v);
 }
-entry :: system {
+entry :: system eff {
   make_resource(7)(r:);
   resource_get(r)(v:);
   fmt.printf("value=%d\n", v);

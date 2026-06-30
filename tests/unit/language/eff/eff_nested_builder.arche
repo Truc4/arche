@@ -15,7 +15,7 @@ outer :: func(x: int) -> Eff(int) {
   return inner(x); // wraps a func→Eff, not a direct extern
 }
 
-entry :: system {
+entry :: system eff {
   outer(41)(r:);
   fmt.printf("r=%d\n", r);
 }

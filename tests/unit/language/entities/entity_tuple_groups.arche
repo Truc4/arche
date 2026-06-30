@@ -7,7 +7,7 @@ vel(x, y) :: float;
 Mover     :: arche { pos, vel }
 [2]Mover ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(Mover { pos: (1.0, 2.0), vel: (3.0, 4.0) })(_:, _:);
   fmt.printf(
     "p=%.0f %.0f v=%.0f %.0f\n",

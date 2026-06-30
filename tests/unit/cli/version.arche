@@ -2,7 +2,7 @@
 // RUN: %arche version | grep -q "^arche "
 // RUN: %arche --version | grep -q "^arche "
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("x\n");
 }
 

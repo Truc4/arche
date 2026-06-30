@@ -10,12 +10,12 @@ step :: map (query { pos, vel }) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;
 }
-seed :: system {
+seed :: system eff {
   insert(Body { pos: (0, 0), vel: (1, 2) })(_:, _:);
   insert(Body { pos: (10, 10), vel: (-1, -1) })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
 }
 

@@ -6,7 +6,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "write through borrowed slice" %t.out
 #import { fmt }
 
-poke :: system {
+poke :: system eff {
   buf: [8]int;
   s := buf[0: 4]; // a read-only borrow of the live `buf`
   s[0] = 42; // writing THROUGH the borrow — rejected (mutate `buf` directly instead)

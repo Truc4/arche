@@ -7,7 +7,7 @@
 x: int;
 y: int = 5;
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%d %d\n", x, y);
 }
 

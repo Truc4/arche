@@ -13,7 +13,7 @@ both :: func(a: int, b: int) -> Eff(int) {
   return seq(eff_acc(a), eff_acc(b));
 }
 
-entry :: system {
+entry :: system eff {
   both(10, 20)(t:);
   fmt.printf("t=%d\n", t);
 }

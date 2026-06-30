@@ -3,7 +3,7 @@
 ### effects as values, system leaves — side effects in arche without monads or algebraic-effect machinery
 
 > **Status:** the core is landed law. The non-foreign world is `func` (pure value / effect-builder) +
-> `system`/`each` (effect leaves & composer) + `map` (kernel); **`proc` is the foreign/primitive boundary
+> `system`/`map (Q) eff` (effect leaves & composer) + `map` (kernel); **`proc` is the foreign/primitive boundary
 > only** — a non-foreign `proc` is **W0030 `proc_not_primitive`** (error-by-default). There is no `main`
 > (**E0225**); the entry is a `#run` schedule. The genuinely-open parts (a schedule loop-end hook, true
 > concurrency, result-dependent stdlib convenience) are marked as such.
@@ -12,7 +12,7 @@
 
 Most languages model side effects with heavy machinery: monad transformers, or algebraic effects
 with a runtime handler stack and first-class continuations. arche needs neither. It models effects
-with a small set of kinds — `func` (the pure value world), `system`/`each` (the effect leaves and the
+with a small set of kinds — `func` (the pure value world), `system`/`map (Q) eff` (the effect leaves and the
 composer), and `map` (the data-parallel kernel) — and **one primitive**: an effect is a *bounded value*
 that a pure function builds and an impure **system** runs. (`proc` survives only as the foreign/primitive
 boundary — `#foreign`/`@syscall`/`@intrinsic`/`@drop`.) Flatness isn't even a rule you enforce — a system
@@ -80,13 +80,13 @@ them mysterious.
 |---|---|---|---|---|
 | `func` | pure value-world; produces results via `-> T` **or** an out-param list `func(in)(out,…)` | funcs; **wraps an extern into a value** | run an effect; read pool/global state | called freely (nests, recurses) |
 | `map` | a pure, branch-free data-parallel kernel | funcs | run an effect; control flow (E0046) | scheduled by name |
-| `system` / `each` | the effect **leaf** *and* composer: runs `Eff`s, calls terminal externs/`#foreign` procs, `insert`/`delete`; full control flow | funcs, maps, terminal externs/`#foreign` procs | **call a `system`** | dispatched by the runtime (via the `Schedule`) — never called |
-| `proc` | the foreign/primitive boundary **only** | — | exist outside `#foreign`/`@syscall`/`@intrinsic`/`@drop` (**W0030**) | run by a `system`/`each` |
+| `system` / `map (Q) eff` | the effect **leaf** *and* composer: runs `Eff`s, calls terminal externs/`#foreign` procs, `insert`/`delete`; full control flow | funcs, maps, terminal externs/`#foreign` procs | **call a `system`** | dispatched by the runtime (via the `Schedule`) — never called |
+| `proc` | the foreign/primitive boundary **only** | — | exist outside `#foreign`/`@syscall`/`@intrinsic`/`@drop` (**W0030**) | run by a `system`/`map (Q) eff` |
 
 The `func`/`proc` split of old is gone in the non-foreign world: a pure callable that fills a buffer or
 returns several values is now a **`func`** with an out-param list (`sum_diff :: func(a,b)(s,d){ s=a+b; d=a-b }`,
 called `sum_diff(10,3)(s:,d:)`) — the form `proc` used to own, but pure. An effectful unit is a **`system`**
-(or `each`). `proc` is reserved for the irreducible primitives.
+(or a `map (Q) eff` fan). `proc` is reserved for the irreducible primitives.
 
 And the keystone — the thing that makes the whole shape work:
 
@@ -112,7 +112,7 @@ That two-line split is the entire model in miniature:
 
 - **the `func` world** is the *value* world. Effects-as-data live here. They nest, compose, get passed
   around, get chosen conditionally, get stored — all pure.
-- **`eff(out:)`** is the single impure act, and it happens in a **`system`/`each`**: calling an `Eff` with
+- **`eff(out:)`** is the single impure act, and it happens in a **`system`/`map (Q) eff`**: calling an `Eff` with
   out-slots turns the inert value into a real call and binds its results. *Running* an effect is the system's
   privilege, never a func's — which is also why a pure func, even one with an out-param list, can never
   *run* an effect; out-params on a func are pure results, an `Eff` return is a built-not-run effect.
@@ -129,12 +129,12 @@ refuses to contain, and it cannot be under-applied at all. So there is no expres
 runnable unit into an `Eff`. (An optional `wrap` keyword may mark a build site for emphasis —
 `return wrap fwrite(…)` ≡ `return fwrite(…)` — but it is never required and never changes what's wrappable.)
 
-The **`system`/`each`** is both the effect leaf *and* the composer: it runs what funcs built (calls each
+The **`system`/`map (Q) eff`** is both the effect leaf *and* the composer: it runs what funcs built (calls each
 `Eff` with out-slots), threads their out-slots between steps, branches on results, and `insert`/`delete`s —
 all reading ambient pool state. The terminal extern/`#foreign` proc the `Eff` wraps is the floor.
 
 ```
-// the effect leaf + composer is a `system` (reads ambient state) or an `each` (per-row fan).
+// the effect leaf + composer is a `system` (reads ambient state) or a `map (Q) eff` (per-row fan).
 // it runs what funcs built, threads out-slots, branches.
 serve :: system {
   open_conn(8080)(fd:, ok:);          // run a leaf, capture its out-slots
@@ -145,18 +145,18 @@ serve :: system {
 }
 ```
 
-The kinds don't overlap: **func builds, system/each runs-and-composes, map computes in parallel.** A
+The kinds don't overlap: **func builds, system/`map (Q) eff` runs-and-composes, map computes in parallel.** A
 system is a flat leaf because nothing inside it can invoke a system; what *orders* systems — without
 threading the stack — is the **schedule** (§9). That asymmetry (leaf vs. schedule) is the whole shape, and
 it falls out of the syntax, not a rule.
 
-(The effect color is **written, not inferred**: a body that runs an `eff` is a `system`/`each`, declared as
+(The effect color is **written, not inferred**: a body that runs an `eff` is a `system`/`map (Q) eff`, declared as
 such — matching arche's explicit-coloring ethos (an inferred color is a hidden color). Either way, the
 no-nesting property is structural, not a checked ban.)
 
 ## 4. The primitive boundary: where effects come from
 
-A careful reader asks: if a `func` only ever *builds* effects and a `system`/`each` only *runs* them, **who
+A careful reader asks: if a `func` only ever *builds* effects and a `system`/`map (Q) eff` only *runs* them, **who
 makes the atom?** Where does the very first `Eff` come from? The answer is a hard rule with a soft surface:
 
 > **No arche code can create an atomic effect. Pure code can transform, compose, and choose effects —
@@ -238,7 +238,7 @@ until it lands, those wrappers carry the foreign-boundary forms they need.)
 
 This needs no `Result` type and no generic sum: **the result/status is just an out-slot.** A read returns
 its byte count (or negative errno) as the `Eff`'s out-slot; the caller branches on it. Fallibility is *data
-in an out-slot*, reacted to in the system/each — the model's failure-as-data (§7).
+in an out-slot*, reacted to in the system/`map (Q) eff` — the model's failure-as-data (§7).
 
 ### The buffer model — a kernel-written buffer is the caller-allocated OUT param
 
@@ -291,13 +291,13 @@ always the genuine primitive, so the spine stays depth-1 and no ban is touched.
 3. **Caller-built input buffer** → build it element-by-element in the func, pass it (`os.sleep_ms` builds a
    timespec, then `nanosleep(req)`). Input builds are free funcs — the buffer is live *before* the run.
 4. **Result-dependent (monadic) sequencing** → not a func/`Eff` and not a non-foreign `proc`; the monadic
-   loop lives in the consuming **`system`/`each`**, or decomposes across systems (below).
+   loop lives in the consuming **`system`/`map (Q) eff`**, or decomposes across systems (below).
 
 **The one genuine exception is result-dependent convenience.** A wrapper whose *internal* sequencing is
 monadic — `io.fread_line` (read char-by-char until `\n`), a retry loop, a framed "read a length then read
 that many bytes" — cannot be a func/`Eff` (that needs a free monad: continuations, allocation, unbounded).
 The lib exposes the *leaf* as a func→`Eff` (`read1 -> Eff(char,int)`) and the monadic loop lives in the
-consuming **`system`/`each`** — the cost is the loop isn't shared. Sharing it is **ECS decomposition**, not a
+consuming **`system`/`map (Q) eff`** — the cost is the loop isn't shared. Sharing it is **ECS decomposition**, not a
 new kind: a producer system writes a column (the assembled line), a consumer system reads it. (The single
 sanctioned program-wide holdout is `stdlib/csv/csv.arche`'s archetype-generic `#each_field` reflective
 `load`, which carries `@allow(proc_not_primitive)` pending a first-class "archetype-targeted load system"
@@ -331,15 +331,15 @@ argv :: func(i: int) -> Eff([]char) { return zip(os_argv(i), os_argv_len(i)) |> 
 length recombine like `os.argv`'s `raw[0:n]` — fights checked-slice safety and is not yet supported, so
 `os.argv`'s recombine stays imperative (in a system) for now. See "Deferred" below.)
 
-**Result-dependent sequencing → the system/each.** When the *next* effect's shape depends on the *previous*
+**Result-dependent sequencing → the system/`map (Q) eff`.** When the *next* effect's shape depends on the *previous*
 one's runtime result — "read a length header, then read *that many* bytes" — you cannot pre-build it.
 You must run the first, look at what came back, then run the second. That's the **monadic** rung, and
-it lives in a `system`/`each`, where running an effect (supplying its out-slots) executes inline and binds
+it lives in a `system`/`map (Q) eff`, where running an effect (supplying its out-slots) executes inline and binds
 the result:
 
 ```
-// per-connection result-dependent read: an `each` fan over the Conn pool, writing the `ok` column
-handle_msg :: each (query { fd, ok }) {
+// per-connection result-dependent read: a `map (Q) eff` fan over the Conn pool, writing the `ok` column
+handle_msg :: map (query { fd, ok }) eff {
   hdr: [1]char;
   read(fd, hdr, 1)(got:, err:);             // run (call with out-slots); non-deterministic — peer decides
   if err != 0 || got == 0 { ok = 0; return; }   // react
@@ -350,7 +350,7 @@ handle_msg :: each (query { fd, ok }) {
 }
 ```
 
-The slogan: **funcs compose the known part of the effect graph as a value; the system/each is the imperative
+The slogan: **funcs compose the known part of the effect graph as a value; the system/`map (Q) eff` is the imperative
 shell that runs it, branches on what actually came back, and writes results to pool columns.** That's the
 func/system split done honestly — value vs. computation, à la call-by-push-value, with the monadic tail
 confined to one flat leaf instead of smeared across a call stack.
@@ -363,7 +363,7 @@ applicative/imperative line restated as a rule, and it has three cases:
 | a series of… | composed by | the result is | which ordering |
 |---|---|---|---|
 | effects (externs) | a **func** | one `Eff` value | **static only** (applicative) |
-| effects, result-dependent | a **`system`/`each`** body | nothing — imperative steps | dynamic, but not a value, not reusable |
+| effects, result-dependent | a **`system`/`map (Q) eff`** body | nothing — imperative steps | dynamic, but not a value, not reusable |
 | **systems** | the **schedule** (`#run`) | a schedule step | dynamic order, data-coupled |
 
 - **Yes — a static series of effects collapses into one `Eff`.** This is the intended way two systems
@@ -378,7 +378,7 @@ applicative/imperative line restated as a rule, and it has three cases:
 - **No — a result-dependent series cannot be an `Eff`.** The moment a later effect's *input* is an
   earlier effect's *output* (`read` a length, then `read` that many bytes), you'd need a free *monad*
   carrying runtime continuations — allocation, unbounded depth, exactly what arche refuses. So it stays
-  imperative, inside one system/each (the `handle_msg` example above).
+  imperative, inside one `system`/`map … eff` (the `handle_msg` example above).
 
 - **No — a series of *systems* never collapses into a value at all.** A system isn't a value (it has no
   params and can't be under-applied), so nothing ingests several systems and emits one `Eff`. What
@@ -389,7 +389,7 @@ applicative/imperative line restated as a rule, and it has three cases:
 ### Diagnostics the model enforces
 
 - **W0030 `proc_not_primitive`** — a `proc` outside `#foreign`/`@syscall`/`@intrinsic`/`@drop` (error-by-default).
-  Pure logic → a `func`; effects or pool access → a `system`/`each`/`map`; a result-dependent sequence →
+  Pure logic → a `func`; effects or pool access → a `system`/`map`; a result-dependent sequence →
   decompose across systems. The single sanctioned opt-out is `@allow(proc_not_primitive)` on `csv.load`.
 - **E0225** — a decl named `main` (the entry is a `#run` schedule, never a `main`).
 - **E0223 `extern_multi_out`** — a `#foreign` proc may declare at most ONE out-*only* out-param (it maps to
@@ -407,11 +407,11 @@ applicative/imperative line restated as a rule, and it has three cases:
   (`os.argv`: `raw[0:n]`) has no sound length to hand the cook's slice param, and fights checked-slice
   safety (`!undefined` is forbidden). Scalar slots/returns work; `os.argv`'s recombine therefore stays
   imperative (in a system) for now.
-- **Result-dependent (monadic) sequencing** stays in a `system`/`each` — the applicative/imperative line
+- **Result-dependent (monadic) sequencing** stays in a `system`/`map (Q) eff` — the applicative/imperative line
   above; sharing it is **ECS decomposition** (a producer system writes a column, a consumer reads it), not a
   new kind.
 - **Higher-order systems** (a system parameterized by a body) are deliberately absent: that would hoist
-  iteration into a value and reintroduce the depth the model exists to forbid. Repeated `each (query {…})`
+  iteration into a value and reintroduce the depth the model exists to forbid. Repeated `map (query {…}) eff`
   fan headers across draw systems are structural skeleton, not duplication to abstract away.
 
 ### The free selective, fully compile-time — what it buys, what it costs
@@ -442,14 +442,14 @@ not a law.)
 
 **What it costs:**
 - **No value-level `bind`** — the one real limit. Result-dependent sequencing (a later effect's *shape*
-  from an earlier's *result*) can't be a value; it runs imperatively in a system/each (§5). The selective rung
+  from an earlier's *result*) can't be a value; it runs imperatively in a `system`/`map … eff` (§5). The selective rung
   buys conditional *execution* of a static set; `bind` would make the set itself depend on runtime
   values — unbounded, heap-needing — the line arche won't cross. (A self-recursive selective builder is
   rejected for exactly this reason: it would be a free monad.)
 
 The through-line: **the `Eff` stays a fully static, compile-time-foldable value with a statically-known
 effect set.** Conditional *execution* (selective) is in; making the effect *set* depend on a runtime
-value (`bind`) is out — pushed to the system/each, or left unbuilt until a concrete case forces a
+value (`bind`) is out — pushed to the system/`map (Q) eff`, or left unbuilt until a concrete case forces a
 stronger algebra. That discipline is what makes "effects as values" cost zero runtime machinery.
 
 (`assert` rides on this: `assert(c, m) = whenS(c == 0, fail(m))` — a pure `func -> Eff()`, run with `()`.
@@ -466,13 +466,13 @@ something arche already has:
    That's not a limitation bolted on; it's the same discipline as every other arche value.
 
 2. **Columns, so effects compose into a command buffer.** This is the payoff. Because an `Eff` is a
-   value, a pure `func`/`map` can build a *column* of them, and one fanned `each` can drain it:
+   value, a pure `func`/`map` can build a *column* of them, and one fanned `map (Q) eff` can drain it:
 
    ```
    ops: [N]Eff(int, int);
    ops[i] = write_b(fd, fmt_row(...));   // pure: build effect values into a column (no I/O yet)
 
-   drain :: each query { op } { op(n:, err:); }   // impure: run each (call with out-slots), flat, one kernel
+   drain :: map (query { op }) eff { op(n:, err:); }   // impure: run each (call with out-slots), flat, one kernel
    ```
 
    arche *already* does exactly this for structural `insert`/`delete` — the deferred "Commands"
@@ -497,7 +497,7 @@ something arche already has:
    ```
 
 5. **Data-oriented by construction.** The pure compute (`map`), the effect-builders (`func`), and the
-   thin effect leaves (`each`/`system`) all speak the same column language. Effects don't sit *outside*
+   thin effect leaves (`map (Q) eff`/`system`) all speak the same column language. Effects don't sit *outside*
    the DOD model in some monadic side-channel; they *are* rows and kernels.
 
 ## 7. Worked example: an ETL pipeline, top to bottom
@@ -512,7 +512,7 @@ write_b :: func(fd: int, buf: []char) -> Eff(int, int) { return fwrite(fd, buf);
 write_out :: system {                       // leaf + composer: open, fan, close; fd is a captured local
   open_csv("…/out.csv")(fd:, ok:);
   if ok {
-    each (query { price, quantity, price_bucket, ok }) {   // inline fan, captures fd from this scope
+    map (query { price, quantity, price_bucket, ok }) eff {   // inline fan, captures fd from this scope
       eff := write_b(fd, fmt_row(price, quantity, price_bucket));
       eff(n:, err:);
       ok = (err == 0);                                     // per-row failure as data
@@ -525,7 +525,7 @@ write_out :: system {                       // leaf + composer: open, fan, close
 ```
 
 The shape to notice: *all* the logic is pure (`bucket`, `fmt_row`), the effect intent is a value
-(`write_b` → `Eff`), the inline `each` runs the effect and records failure as a column (`ok`), and the
+(`write_b` → `Eff`), the inline `map (Q) eff` runs the effect and records failure as a column (`ok`), and the
 schedule just sequences. There is no `main`, no nesting, no system calling a system. Failure
 is **data**, not a thrown exception clawing up a stack that doesn't exist.
 
@@ -541,7 +541,7 @@ No free lunches; here are the bills.
   either duplicated across systems or **decomposed across systems** (a producer writes a column, a
   consumer reads it). Not "DRY shrinks for all effects" — only for the monadic tail.
 - **Result-dependent sequencing can't be a value.** You can't pre-build `eff2` from `eff1`'s runtime
-  result; that case runs the effects inline in a system/each and branches (§5). The model is honest that
+  result; that case runs the effects inline in a system/`map (Q) eff` and branches (§5). The model is honest that
   this is the applicative→monadic boundary, not a bug.
 - **Varargs/formatting is the hard descriptor.** A `printf`-style effect with heterogeneous args
   strains "bounded value." The fix is a bounded *builder* (associative bounded-append, identity =
@@ -598,7 +598,7 @@ plane: `func` builds `Eff` and `Schedule` values, `map` is the data-parallel ker
 
 **The core is small — the runtime's ABI.** The runtime natively interprets a fixed set of `Schedule`
 constructors — `seq([]Schedule)`, `par([]Schedule)`, `loop(Schedule)`, `when(func()->bool, Schedule)`,
-`halt` — and a **leaf is a bare system/map/each name** (`#run seq({ boot, render })`). The earlier `run(s)`
+`halt` — and a **leaf is a bare system/map name** (`#run seq({ boot, render })`). The earlier `run(s)`
 leaf constructor is **retired**: a system/map is scheduled by name, never wrapped. The whole `Schedule` is a
 compile-time-constant, heap-free tree the runtime walks, allocating nothing. (Full constructor semantics,
 the compile-time fold, and the `#run`-collection rule are in [scheduling.md](scheduling.md).)
@@ -620,7 +620,7 @@ second language.
 
 **A leaf is a bare system name.** `#run seq({ draw, present })` dispatches `draw` then `present` by their
 compile-time identities — there is **no `run(…)` wrapper** (the earlier explicit-`run` leaf was retired in
-favor of this bare-name lift; `map`/`each` are kinds of systems, scheduled the same way).
+favor of this bare-name lift; `map` are kinds of systems, scheduled the same way).
 Sub-schedules don't need lifting either — they already are `Schedule`s — which is what lets schedules nest
 for free.
 
@@ -767,7 +767,7 @@ wrappers whose own body is monadic — `io.fread_line`, a retry loop, a framed r
 not an `Eff` (a free monad — allocating, unbounded), not a value at all. An earlier draft proposed a fourth
 construct (a compiler-spliced `routine`) to make these reusable *and* result-dependent. **That construct was
 rejected.** Result-dependent reusable convenience is handled by **ECS decomposition**, not a new kind: a
-producer `system`/`each` writes the assembled result to a column, a consumer reads it — the monadic loop
+producer `system`/`map (Q) eff` writes the assembled result to a column, a consumer reads it — the monadic loop
 lives in one leaf, the *sharing* is a data edge in the schedule. (The single sanctioned program-wide
 exception is `csv.load`, under `@allow(proc_not_primitive)`, pending a first-class archetype-targeted load
 system.)
@@ -780,7 +780,7 @@ Worth saying plainly, because a careful reader sees it immediately: **`Eff(T…)
 sides: a `func … -> Eff(…)` is a *colored* function — its signature announces it traffics in effects,
 exactly like `Int -> IO a` in Haskell — even though running it is pure. So there are really three
 shades: a pure `func … -> T`, an effect-building `func … -> Eff`, and an effect-running
-`system`/`each`, with `Eff` the color threading through all of them. The need to *run* an effect then
+`system`/`map (Q) eff`, with `Eff` the color threading through all of them. The need to *run* an effect then
 infects outward to the nearest impure leaf, exactly as `IO` infects up to `main` (here, up to a scheduled
 system). Same coloring, same infection, same effects-as-values. We are not escaping the IO monad; we are
 constraining it.
@@ -800,7 +800,7 @@ earns its keep only in a no-GC systems language:
    `eff1 >>= \x -> eff2 x` as a value, anywhere. In arche you cannot: `Eff`'s effect *set* is fixed
    statically — `whenS`/`ifS` can conditionally *execute* a known effect (gate it on a pure value), but
    no runtime result can change *which* effects exist. Result-dependent sequencing exists only
-   imperatively, inside one flat system/each. So arche's coloring is in fact *stricter* than `IO`'s — a
+   imperatively, inside one flat system/`map (Q) eff`. So arche's coloring is in fact *stricter* than `IO`'s — a
    pure func can gate effects but can't *consume* an effect's result to choose the next; it builds the
    `Eff` and hands it up.
 
@@ -823,14 +823,14 @@ what it buys.
   `Eff` values built by pure code and drained by one interpreter *is* a free applicative; `whenS`/`ifS`
   lift it to the **selective** rung (conditional execution of a static effect set); the
   run-it-inline-in-a-system tail is the controlled climb to the monadic rung for result-dependent cases.
-- **Call-by-push-value:** `func` (value) vs `system`/`each` (computation) is the CBPV distinction, drawn
+- **Call-by-push-value:** `func` (value) vs `system`/`map (Q) eff` (computation) is the CBPV distinction, drawn
   as kinds.
 - **Bevy `Commands`:** the deferred structural command buffer flushed at a barrier — which arche ships
   — generalized here from structural ops to all effects.
 
 ## 12. The one-paragraph version
 
-Make effects *values* that pure functions build and one impure leaf — a `system`/`each` — runs; give a
+Make effects *values* that pure functions build and one impure leaf — a `system`/`map (Q) eff` — runs; give a
 system no way to call a system so the effect graph is flat by construction; let the schedule thread systems
 through pool data; run it all on one deterministic timeline. You get flat, explicit, heap-free, testable, data-oriented
 effects with a stack bound you can prove — not by inventing machinery, but by noticing that arche's

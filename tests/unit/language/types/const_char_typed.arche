@@ -4,7 +4,7 @@
 #import { fmt }
 A :: 'A';
 B: char: 'B';
-entry :: system {
+entry :: system eff {
   fmt.printf("a=%c b=%c\n", A, B);
 }
 

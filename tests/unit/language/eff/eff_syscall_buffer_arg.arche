@@ -15,7 +15,7 @@ write_line :: func(buf: []char, n: int) -> Eff(i64) {
   return sys_write(1, buf, n);
 }
 
-entry :: system {
+entry :: system eff {
   write_line("hi\n", 3)(_:); // run the Eff: ptrtoint the literal, not sext
 }
 

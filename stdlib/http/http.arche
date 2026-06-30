@@ -4,9 +4,9 @@
 /// copies; `raw_len` is the received byte count, never a NUL-terminated length): method/target as
 /// `start`+`len` with the target's `?query` trimmed, and `ok` = 0 on a malformed line. The app owns the
 /// request pool and runs this `each` over it.
-parse_request_line :: each (
+parse_request_line :: map (
   query { raw, raw_len, method_start, method_len, target_start, target_len, ok }
-) {
+) eff {
   ok           = 0;
   method_start = 0;
   method_len   = 0;
@@ -89,8 +89,8 @@ reason :: func(status: int) -> []char {
 /// Send each prepared response row: build the status line + headers into `hdr`, send them over `sock`,
 /// then the body iff `send_body` (0 for HEAD). The socket is a create-once resource on a separate
 /// connection pool, reached by NESTING a `sock` fan inside.
-respond :: each (query { sock }) {
-  each (query { status, ctype, body, body_len, send_body, hdr }) {
+respond :: map (query { sock }) eff {
+  map (query { status, ctype, body, body_len, send_body, hdr }) eff {
     rs := reason(status);
     fmt.sprintf(
       _,

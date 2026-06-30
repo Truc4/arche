@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { str fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("string: '%s'\n", "hello");
   fmt.printf("length: %d\n", str.strlen("hello"));
 }

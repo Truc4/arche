@@ -1,7 +1,7 @@
 // getuid (102) == geteuid (107) for a normally-launched process.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt os }
-entry :: system {
+entry :: system eff {
   os.syscall(102, 0, 0, 0, 0, 0, 0)(uid:);
   os.syscall(107, 0, 0, 0, 0, 0, 0)(euid:);
   if (uid == euid) {

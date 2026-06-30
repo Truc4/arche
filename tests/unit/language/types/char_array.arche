@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 // Step 2: Stack-allocated char arrays
 #import { fmt }
-entry :: system {
+entry :: system eff {
   buf: [3]char;
   buf[0] = 104;
   buf[1] = 105;

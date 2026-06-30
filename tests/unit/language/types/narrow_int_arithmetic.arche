@@ -20,7 +20,7 @@ neg :: map (query { k8, k16 }) {
   k16 = 0 - k16;
 }
 
-verify :: system {
+verify :: system eff {
   // each: 5 -> -5
   e := -5;
   fmt.assert(N.k8[0] == e, "i8 negate wrong\n")();

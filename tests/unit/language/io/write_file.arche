@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t && test -f /tmp/test_output.txt && grep "hello" /tmp/test_output.txt
 #import { io }
-entry :: system {
+entry :: system eff {
   io.fopen_write("/tmp/test_output.txt")(fd:);
   io.fwrite(fd, "hello world\n", 12)(_:);
   io.fclose(move fd)(_:);

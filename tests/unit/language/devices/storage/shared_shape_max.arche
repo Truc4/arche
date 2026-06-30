@@ -8,11 +8,11 @@
 
 [16]Node; // one pool (the shape comes from the devices), sized to the max of store's 4 and cache's 16
 
-seed :: system {
+seed :: system eff {
   insert(Node { key: 2.0, val: 3.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.assert(Node.val[0] == 4.0, "store.bump did not run\n")();
   fmt.assert(Node.key[0] == 3.0, "cache.touch did not run\n")();
   fmt.printf("shared_ok\n");

@@ -14,11 +14,11 @@ step :: map (Movers) {
   pos = pos + vel;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Mover { pos_x: 1.0, pos_y: 2.0, vel_x: 3.0, vel_y: 4.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   px := Mover.pos.x[0] * 1.0;
   py := Mover.pos.y[0] * 1.0;
   fmt.assert(px == 4.0, "pos.x should be 1+3=4\n")();

@@ -42,7 +42,7 @@ d_only :: func(a: int) -> int {
   return c_only(a);
 }
 
-entry :: system {
+entry :: system eff {
   r := reached_func(2);
   fmt.printf("%d\n", r);
 }

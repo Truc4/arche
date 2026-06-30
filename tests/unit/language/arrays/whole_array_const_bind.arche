@@ -7,7 +7,7 @@
 #import { fmt }
 XS    :: { 10, 20, 30 }
 FS    :: { 1.5, 2.5 }
-entry :: system {
+entry :: system eff {
   whole := XS;
   typed: [3]i32 = XS;
   fs := FS;

@@ -7,7 +7,7 @@ passthru :: func(buf: []char) -> []char {
   return buf;
 }
 
-entry :: system {
+entry :: system eff {
   b: [8]char;
   b[0] = 72;
   b[1] = 105;

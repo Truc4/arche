@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "done 1000"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   i := 0;
   for (; i < 1000; i += 1) {
     price_str : [32]char;

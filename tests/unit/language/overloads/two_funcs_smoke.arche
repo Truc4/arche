@@ -9,7 +9,7 @@ pick_float :: func(x: float) -> float {
 
 pick :: func { pick_int, pick_float }
 
-entry :: system {
+entry :: system eff {
   a := pick(2);
   b := pick(1.0);
   fmt.printf("INT=%d FLOAT=%g\n", a, b);

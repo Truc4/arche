@@ -8,13 +8,13 @@
 #import { fmt }
 
 @allow(large_stack_array)
-allowed :: system {
+allowed :: system eff {
   ok: [2000]float; // 8000 bytes, but @allow'd → silent
   ok[0] = 1.0;
   fmt.printf("%f\n", ok[0]);
 }
 
-entry :: system {
+entry :: system eff {
   big   : [2000]float; // 8000 bytes → W0026
   small : [200]char; // 200 bytes → under the 1 KB threshold, silent
   big[0]   = 1.0;

@@ -4,7 +4,7 @@
 // 'arche.abort'", because core's failure policies were wrongly emitted as cross-unit declares.
 // RUN: env ARCHE_PER_UNIT=1 %arche build -o %t %s && %t | grep -qF "pu hello"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.print("pu hello\n")(_:);
 }
 

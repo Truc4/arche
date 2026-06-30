@@ -20,7 +20,7 @@ both :: func(x: int) -> Eff(int) {
     |> combine;
 }
 
-entry :: system {
+entry :: system eff {
   both(5)(r:); // geta(5)=6, getb(5)=7 -> combine -> 607
   fmt.printf("r=%d\n", r);
 }

@@ -17,7 +17,7 @@ step :: map (query { a, b }) {
   a = a + b;
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("a0=%.0f b0=%.0f\n", P.a[0] * 1.0, P.b[0] * 1.0);
 }
 

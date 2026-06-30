@@ -3,7 +3,7 @@
 #import { fmt }
 sbuf: [16]char;
 
-entry :: system {
+entry :: system eff {
   sbuf[0] = 88;
   sbuf[1] = 89;
   n := 2;

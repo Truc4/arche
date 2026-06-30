@@ -9,11 +9,11 @@ dummy :: map (query { pos }) {
   pos = pos;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Particle { pos: 1.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("system_ran\n");
   // marker lives in the driver, not the kernel;
 }

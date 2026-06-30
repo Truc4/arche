@@ -17,12 +17,12 @@ slot :: H;
 Slot :: arche { slot }
 [1]Slot(1);
 
-boot :: system {
+boot :: system eff {
   obj_open()(h:);
   Slot.slot = { h };
 }
 
-check :: system {
+check :: system eff {
   obj_live()(n:);
   fmt.printf("live=%d\n", n);
 }

@@ -5,7 +5,7 @@
 // RUN: %arche build --emit=llvm-ir -o %t.ll %s
 // RUN: ! grep -q arche_hot_resolve %t.ll
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.print("ok\n")(_:);
 }
 

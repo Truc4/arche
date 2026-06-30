@@ -1,7 +1,7 @@
 // float[] local — write/read + arithmetic at double width (element type propagated, not i32).
 // RUN: %arche build -o %t %s && %t | grep -q "fsum=7.5"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   b: [4]float;
   b[0] = 2.5;
   b[1] = 5.0;

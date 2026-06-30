@@ -9,7 +9,7 @@ Resource :: arche { cell }
 }
 [8]Resource ?abort;
 
-entry :: system {
+entry :: system eff {
   resource_open(10)(r1:);
   insert(Resource { cell: r1 })(h:, _:);
   dup := h;

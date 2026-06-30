@@ -12,7 +12,7 @@ repoint :: func() -> int {
   return s[0];
 }
 
-show :: system {
+show :: system eff {
   fmt.printf("%d\n", repoint());
 }
 

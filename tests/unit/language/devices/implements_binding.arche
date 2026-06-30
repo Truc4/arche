@@ -13,11 +13,11 @@ Thing :: arche { bar }
 
 [4]Thing ?abort;
 
-seed :: system {
+seed :: system eff {
   insert(Thing { bar: 10.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   // bump reads `foo` == bound `bar`: 10 + 1 = 11
   fmt.assert(Thing.bar[0] == 11.0, "@implements binding did not rebind foo -> bar\n")();
   fmt.printf("implements_ok\n");

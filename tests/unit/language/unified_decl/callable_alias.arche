@@ -9,7 +9,7 @@ add :: func(a: int, b: int) -> int {
 }
 handler :: not_found;
 plus    :: add;
-entry   :: system {
+entry   :: system eff {
   c := handler();
   s := plus(3, 4);
   fmt.printf("code=%d sum=%d\n", c, s);

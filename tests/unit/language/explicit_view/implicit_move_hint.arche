@@ -7,7 +7,7 @@ sink :: func(own b: [3]int) -> int {
   return b[0];
 }
 
-entry :: system {
+entry :: system eff {
   a: [3]int;
   n := sink(a);
   fmt.printf("%d\n", n);

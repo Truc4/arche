@@ -7,11 +7,11 @@
 
 [8]Cell; // driver pool (the shape comes from vstore), >= the datasheet minimum of 4
 
-seed :: system {
+seed :: system eff {
   insert(Cell { a: 1.0, b: 2.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   // b: 2 -> 3
   fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n")();
   fmt.printf("predef_ok\n");

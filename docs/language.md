@@ -14,7 +14,7 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 - [Array-oriented operations](#array-oriented-operations)
 - [Indexing](#indexing)
 - [Arrays and slices: `[N]T` values, `[]T` slices](#arrays-and-slices-nt-values-t-slices)
-- [Effects: systems (`system`, `each`)](#effects-systems-system-each)
+- [Effects: systems and effectful fans (`system`, `map … eff`)](#effects-systems-and-effectful-fans-system-map--eff)
 - [Maps (`map`)](#maps-map)
 - [Functions (`func`)](#functions-func)
 - [`func` vs `map` vs `system`](#func-vs-map-vs-system)
@@ -362,23 +362,24 @@ dangle) — a returned slice must trace back to a buffer passed *in*.
 There is no `for x in array`. Iterate a buffer with a C-style `for (i := 0; i < xs.length; i = i + 1)`,
 and process archetype columns with a `map`.
 
-## Effects: systems (`system`, `each`)
+## Effects: systems and effectful fans (`system`, `map … eff`)
 
 **Effects DO things; functions ARE things.** A `func` is *pure* — it can't call a `#foreign`
 extern, run an `Eff`, or `insert`/`delete`. Anything that performs an effect is a **system**: an
 action the schedule runs, never a value you call.
 
 ```
-greet :: system { fmt.printf("hi\n"); }   // an action — scheduled, not called
+greet :: system eff { fmt.printf("hi\n"); }   // an action — scheduled, not called
 ```
 
 A `system` takes **no parameters and returns nothing**. It is named in a `#run` schedule and the
 runtime runs it; a program's **entry point is a `#run` schedule**, not a decl named `main` (a `main`
 decl is a hard error, [E0225](explain/E0225.md)). To run an effect **per matching row**, use
-`each (query { … })` — the effectful sibling of `map`: where a `map` body is a branch-free column
-kernel, an `each` body may branch, call, `insert`/`delete`, and run effects, once per row. Being a
-sequential per-element fan, it is a loop: `continue` skips the rest of the current element and advances to
-the next row (guard-clause style). There is no `break` — stopping a fan early is incoherent.
+`map (query { … }) eff` — the effectful per-entity fan: where a plain `map` body is a branch-free column
+kernel, a `map … eff` body may branch, call, `insert`/`delete`, and run effects, once per row (this is
+what the removed `each` keyword spelled). Being a sequential per-element fan, it is a loop: `continue`
+skips the rest of the current element and advances to the next row (guard-clause style). There is no
+`break` — stopping a fan early is incoherent.
 
 `proc` is **reserved for the foreign boundary** — only a `#foreign`/`@syscall`/`@intrinsic`
 declaration (or a `@drop` hook) is a `proc`. A non-foreign `proc` is an error
@@ -434,7 +435,7 @@ So a map over `pos` and `vel` applies to any archetype with those components (`P
 A map body is **only** column transforms (`col = expr`). It is a loopless, branch-free kernel:
 the runtime owns the iteration, so the same source vectorizes on the CPU today and runs on the
 GPU later. Control flow (`if`/`for`/`while`/`match`), loops, local bindings, and calls are
-rejected in a map body (E0046) — put those in a `func` or an `each`/`system`.
+rejected in a map body (E0046) — put those in a `func`, a `map (Q) eff`, or a `system`.
 
 ### Conditional behavior
 
@@ -479,7 +480,7 @@ drag_factor :: func(x: float) -> float {
     r = a - q * b;
   }
 
-  entry :: system {
+  entry :: system eff {
     divmod(17, 5)(q:, r:);          // call mirrors the signature: foo(in)(out)
     fmt.assert(q == 3 && r == 2, "17 / 5 = 3 rem 2\n")();
   }
@@ -488,7 +489,7 @@ drag_factor :: func(x: float) -> float {
   ```
 
 - **Pure** - a func body may not perform effects (call a `#foreign` extern, run an `Eff`, or
-  `insert`/`delete`); this is enforced as a hard error. Effects belong in a `system`/`each`/`map`.
+  `insert`/`delete`); this is enforced as a hard error. Effects belong in a `system`/`map`.
 - **Never foreign.** A foreign C function is a `proc` *inside* a `#foreign` block, never a `func`.
   There is no `unsafe` qualifier in the language.
 - Usable inside expressions; a func call is a value, so it is freely usable as an **in**-argument,
@@ -499,7 +500,7 @@ drag_factor :: func(x: float) -> float {
 | Kind              | Binding                                    | Is it a value? | Purpose                                |
 | ----------------- | ------------------------------------------ | -------------- | -------------------------------------- |
 | `func`            | `name :: func(in) -> T` or `func(in)(out)` | yes (`-> T`)   | pure computation; results via return **or** out-params |
-| `system` / `each` | `name :: system { … }`                     | no             | effects; scheduled by `#run`           |
+| `system`          | `name :: system { … }`                     | no             | effects; scheduled by `#run` (`map (Q) eff` = the effectful per-row fan) |
 | `map`             | `name :: map (query {components})`         | no             | data transform over archetypes         |
 | `proc`            | `name :: proc(in)(out)` *(in `#foreign`)*  | no             | foreign/`@syscall`/`@intrinsic` primitive **only** |
 
@@ -575,7 +576,7 @@ score :: int;
 N :: arche { score };
 [5]N(5);
 
-tally :: system {
+tally :: system eff {
   N.score = { 5, 1, 4, 2, 3 };
   total := reduce(+, N.score); // 15
   best  := reduce(max, N.score); // 5
@@ -620,7 +621,7 @@ per-site rather than smeared over a whole system:
 
 - A **`func`'s** baseline default is `clamp`. An unannotated fallible op in a func clamps — it can't
   crash unless you explicitly opt into `!undefined`/`!abort` or a crashing custom policy.
-- **Effectful code** (a `system`/`each`/`map`) has baseline default `abort`. Either default is
+- **Effectful code** (a `system`/`map`) has baseline default `abort`. Either default is
   overridable per-decl with `@default(<policy>)` (e.g. `@default(clamp) hot :: system {…}`), or
   globally with `--unchecked` (→ `undefined`). The implicit default is surfaced as an editor inlay
   so it's never a surprise.
@@ -760,7 +761,7 @@ route :: func(path: []char) -> int {
   return code;
 }
 
-entry :: system {
+entry :: system eff {
   fmt.assert(handle(Method.post) == 2, "POST -> 2\n")();
   fmt.assert(route("/about") == 2, "/about -> 2\n")();
 }
@@ -826,7 +827,7 @@ read_into :: func(fd: int, len: int) -> Eff([]char, int) {
   return read(fd, _, len);   // `_` is the C-ABI in-slot; the buffer is the caller-allocated OUT
 }
 
-reader :: system {
+reader :: system eff {
   read_into(0, 8)(buf: [8]char, n:);            // `:` allocates the OUT buffer the extern fills
   fmt.printf("read %d bytes (first=%d)\n", n, buf[0]);
 }
@@ -871,7 +872,7 @@ sound  :: opaque;
   `[N]Foo` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
 ```arche
-render :: system {
+render :: system eff {
   fb: [307200]int;                       // 640 * 480 framebuffer
   window_open("demo", 640, 480)(w:);
   window_present(w, fb, 640, 480)(fb);   // in-out: fb lent and handed back, stays live

@@ -4,7 +4,7 @@
 // RUN: %arche build --allow-undefined -o %t %s && %t | grep -qF "u=12 after=55"
 #import { fmt }
 
-entry :: system {
+entry :: system eff {
   a: [4]int;
   a[0] = 10;
   a[2] = 12;

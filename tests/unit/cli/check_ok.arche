@@ -1,7 +1,7 @@
 // `arche check` accepts a well-formed program (front-end only, no output produced).
 // RUN: %arche check %s
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("ok\n");
 }
 

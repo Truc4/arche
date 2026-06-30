@@ -3,7 +3,7 @@
 // innermost loop.
 // RUN: %arche build -o %t %s && %t | grep "sum=8 n=4"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   sum := 0;
   for (i := 0; i < 5; i = i + 1) {
     if (i == 2) {

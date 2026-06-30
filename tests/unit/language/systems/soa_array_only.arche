@@ -6,7 +6,7 @@ Particle :: arche { pos, vel }
 
 [1000]Particle ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
   insert(Particle { pos: 20.0, vel: 2.0 })(_:, _:);
   insert(Particle { pos: 30.0, vel: 3.0 })(_:, _:);

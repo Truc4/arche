@@ -8,11 +8,11 @@
 S :: arche { body :: [32]char, body_len :: int }
 [1]S(1);
 
-fill :: each (query { body, body_len }) {
+fill :: map (query { body, body_len }) eff {
   fmt.sprintf(_, "ok\n")(body, body_len);
 }
 
-show :: each (query { body, body_len }) {
+show :: map (query { body, body_len }) eff {
   fmt.printf("body_len=%d body=%s", body_len, body); // body carries its own trailing newline
 }
 

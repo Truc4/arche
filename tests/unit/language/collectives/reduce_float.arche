@@ -5,7 +5,7 @@
 w :: float;
 N :: arche { w }
 [4]N(4);
-entry :: system {
+entry :: system eff {
   N.w = { 1.0, 2.0, 3.0, 4.0 };
   s  := reduce(+, N.w);
   mx := reduce(max, N.w);

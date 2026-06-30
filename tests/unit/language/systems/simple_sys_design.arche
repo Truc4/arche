@@ -10,7 +10,7 @@ increment :: map (query { val }) {
   val = val + 1;
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("system_ran\n");
   fmt.assert(Counter.val[0] == 1, "system did not run\n")();
 }

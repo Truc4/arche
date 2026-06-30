@@ -8,7 +8,7 @@ sink :: func(own b: [8]char) -> int {
   return 0;
 }
 
-entry :: system {
+entry :: system eff {
   buf: [8]char;
   a := sink(buf);
   c := sink(buf);

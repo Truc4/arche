@@ -12,7 +12,7 @@ XS :: { 10, 20, 30 }
 
 M :: { { 1, 2, 3 }, { 4, 5, 6 } }
 
-entry :: system {
+entry :: system eff {
   whole := XS;
   row   := M[1];
   buf: [5]int;

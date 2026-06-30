@@ -8,7 +8,7 @@ counter: int = 0;
 
 x: int = counter; // a mutable global is not compile-time-known -> error
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%d\n", x);
 }
 

@@ -8,7 +8,7 @@ step :: map (query { position, velocity }) {
   position = position + velocity;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Body { position: 10.0, velocity: 1.0 })(_:, _:);
   insert(Body { position: 20.0, velocity: 2.0 })(_:, _:);
   insert(Body { position: 30.0, velocity: 3.0 })(_:, _:);
@@ -23,7 +23,7 @@ seed :: system {
   insert(Body { position: 120.0, velocity: 12.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   p0   := Body.position[0];
   p11  := Body.position[11];
   p0i  := p0 * 10.0;

@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "a3=99"
 #import { fmt }
 
-entry :: system {
+entry :: system eff {
   a: [4]int;
   a[0] = 1;
   i := 9; // a runtime value: unprovable, so the policy governs the write

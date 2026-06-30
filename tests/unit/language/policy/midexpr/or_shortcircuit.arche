@@ -3,7 +3,7 @@
 // lowers to a branch (clang-style `lor.rhs`), so the RHS policy prelude runs only on the taken path.
 // RUN: %arche build -o %t %s && %t
 #import { os }
-entry :: system {
+entry :: system eff {
   os.argc()(argc:);
   a: [4]int;
   a[0] = 1;

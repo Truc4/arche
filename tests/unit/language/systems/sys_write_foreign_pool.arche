@@ -19,12 +19,12 @@ Thing   :: arche { v }
 bump :: map (query { v }) {
   Config.gravity[0] = 7; // foreign write from a system → W0024 (a single-shot write; runs once, not per row)
 }
-seed :: system {
+seed :: system eff {
   insert(Config { gravity: 0 })(_:, _:);
   insert(Thing { v: 5 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("g=%d\n", Config.gravity[0]);
   // 7 — the system's single-shot write took effect once;
 }

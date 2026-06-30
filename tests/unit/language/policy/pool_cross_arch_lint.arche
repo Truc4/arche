@@ -18,7 +18,7 @@ evict_bar :: policy(count: int, cap: int, ok: int, slot: int) {
     slot = oldest;
   }
 }
-entry :: system {
+entry :: system eff {
   insert(Foo { v: 1, ts: 5 }) ?evict_bar(h:, ok:); // handler reads Bar, target Foo -> W0019
 }
 

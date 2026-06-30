@@ -118,6 +118,7 @@ typedef enum {
 	SN_CALLEE_NAME,   /* the callee identifier of a call expression */
 	SN_QUERY_REF,     /* a query name naming the query a `map(Name)` runs over */
 	SN_QUERY_BIND,    /* `as w` after an each query — binds the matched row's handle to `w` */
+	SN_EFF,           /* the `eff` permission marker trailing a map/system selector — kernel may run effects */
 	SN_ALLOC_TYPE,    /* the archetype name in `alloc Name(...)` */
 	SN_NAME_REF,      /* any other identifier reference (a variable) */
 	SN_POLICY_REF,    /* `!name` failure-policy marker trailing a fallible op (index/slice/call/pool-cap) */

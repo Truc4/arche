@@ -6,7 +6,7 @@
 fd   :: opaque;
 File :: arche { fd }
 [4]File;
-entry :: system {
+entry :: system eff {
   fmt.printf("ok opaque_declared\n");
 }
 

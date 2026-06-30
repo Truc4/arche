@@ -2,7 +2,7 @@
 // compile-time count N — no type-7 / arche_array special case.
 // RUN: %arche build -o %t %s && %t | grep "c0=72 c1=105 len=8"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   buf: [8]char;
   buf[0] = 'H';
   buf[1] = 'i';

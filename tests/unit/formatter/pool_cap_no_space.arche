@@ -10,7 +10,7 @@ Body :: arche { px :: [2]float, mass :: float }
 [4]Body(4) {
   px: 0.0, mass: 0.0,
 }
-entry :: system {
+entry :: system eff {
   b: [4]int;
   b[0] = 7;
   fmt.printf("%d\n", b[0]);

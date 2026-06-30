@@ -7,7 +7,7 @@
 x   :: int;
 Mob :: arche { x }
 [4]Mob(3);
-entry :: system {
+entry :: system eff {
   Mob.x = { 1, "two", 3 }; // "two" is not an int → rejected
   fmt.printf("%d\n", Mob.x[0]);
 }

@@ -4,7 +4,7 @@ Particle :: arche { pos :: float, vel :: float }
 
 [5]Particle ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(Particle { pos: 5.5, vel: 0.1 })(_:, _:);
   p  := Particle.pos[0];
   pi := p * 10.0;

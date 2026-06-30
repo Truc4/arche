@@ -1,7 +1,7 @@
 #import { fmt }
 Message :: arche { id :: int, value :: float }
 [100]Message;
-entry :: system {
+entry :: system eff {
   msg := "allocations done\n";
   fmt.print(msg)(_:);
 }

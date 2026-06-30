@@ -6,7 +6,7 @@ Foo :: arche { x :: float, y :: float }
 
 [4]Foo ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(Foo { x: 1.0, y: 2.0 })(_:, _:);
   v := Foo.x[0] * 10.0;
   fmt.assert(v == 10, "x[0] != 1.0 — entity did not populate Foo's pool\n")();

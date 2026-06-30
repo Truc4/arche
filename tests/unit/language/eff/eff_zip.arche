@@ -17,7 +17,7 @@ frame :: func(h: int) -> Eff([]int, int, int) {
   return zip(zbuf(h), zw(h), zh(h)); // product of three independent reads
 }
 
-entry :: system {
+entry :: system eff {
   frame(0)(px:, w:, h:); // bind all three out-slots at once
   px[1] = 77; // the buffer slot is writable
   fmt.printf("px0=%d px1=%d w=%d h=%d\n", px[0], px[1], w, h);

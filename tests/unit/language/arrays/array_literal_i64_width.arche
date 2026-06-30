@@ -6,7 +6,7 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "a=1000 2 b=300 400 500 c=70000 8"
 #import { fmt }
 
-entry :: system {
+entry :: system eff {
   a: [2]i64;
   a = { 1000, 2 }; // decl-then-assign
   b : [3]i64 = { 300, 400, 500 }; // bind-with-init

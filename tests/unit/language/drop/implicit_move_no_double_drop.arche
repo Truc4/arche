@@ -3,7 +3,7 @@
 // (the open is `i64 2`). One explicit `io.fclose(f)(_:)` → exactly one close syscall, no double.
 // RUN: %arche build --emit llvm-ir -o %t.ll %s ; test $(awk '/define .*@entry/{f=1} f&&/\(i64 3, i64/{c++} f&&/^}/{print c+0;exit}' %t.ll) -eq 1
 #import { io }
-entry :: system {
+entry :: system eff {
   io.fopen_read("/dev/null")(f:);
   io.fclose(f)(_:);
 }

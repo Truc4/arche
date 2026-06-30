@@ -8,14 +8,14 @@ specific combination that no single existing system holds.
 
 ---
 
-## 1. Pure kernel, per-element fan, effectful composer (`map` / `each` / `system`)
+## 1. Pure kernel, per-element fan, effectful composer (`map` / `map (Q) eff` / `system`)
 
 Three kinds run over the columns a query hands them, differing in what they may do. A `map` is a pure,
 branch-free, per-element kernel (no control flow, `select(c,a,b)` only), compiled to CPU and GPU,
-bit-exact f32. An `each` is the per-element fan: query columns become this element's scalars and the body
+bit-exact f32. A `map (Q) eff` is the per-element fan: query columns become this element's scalars and the body
 may use control flow and effects (a `map` that is not branch-free). A `system` is handed whole columns and
 runs effects over them, column-level work rather than per-element iteration; a query-less `system { }` is
-the composer that schedules the others. Purity is the seam: `map` is the pure, branch-free one; `each` and
+the composer that schedules the others. Purity is the seam: `map` is the pure, branch-free one; `map (Q) eff` and
 `system` carry the effects.
 
 ```arche
@@ -24,7 +24,7 @@ bump :: map (query { v, w }) {          // pure kernel: per-element, branch-free
     w = select(w > 0.0, w * 2.0, 0.0);
 }
 
-show :: each (query { n }) {            // per-element fan: scalar columns, control flow + effects OK
+show :: map (query { n }) eff {         // per-element fan: scalar columns, control flow + effects OK
     if (n > 15) { fmt.printf("n=%d\n", n); }
 }
 

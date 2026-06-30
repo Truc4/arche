@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 // Step 4: Condition-based for loop (like while in other languages)
 #import { fmt }
-entry :: system {
+entry :: system eff {
   for (i := 0; i < 3; i += 1) {
     fmt.printf("loop\n");
   }

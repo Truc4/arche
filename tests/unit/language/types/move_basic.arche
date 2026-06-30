@@ -10,7 +10,7 @@ resource :: opaque;
   resource_close :: proc(own r: resource);
 }
 
-entry :: system {
+entry :: system eff {
   resource_open(10)(r:);
   resource_set(r, 42);
   resource_get(r)(v:);

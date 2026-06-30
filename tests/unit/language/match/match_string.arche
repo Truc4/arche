@@ -2,7 +2,7 @@
 // Inlined in the system now that procs are gone; exercises all three arms.
 // RUN: %arche build -o %t %s && %t | grep "about"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   a := "/about";
   match a {
   "/"      : fmt.printf("home\n");

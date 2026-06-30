@@ -2,7 +2,7 @@
 // `?` is a pool overflow handler. `a[i] ?clamp` uses the handler sigil on a panic op -> error.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "panic policy\|? marks a pool" %t.out
 #import { os }
-entry :: system {
+entry :: system eff {
   os.argc()(k:);
   a: [4]int;
   x := a[k] ?clamp; // handler sigil on a bounds op -> wrong sigil

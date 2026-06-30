@@ -9,11 +9,11 @@
 S :: arche { raw :: [16]char }
 [1]S(1);
 
-seed :: each (query { raw }) {
+seed :: map (query { raw }) eff {
   fmt.sprintf(_, "abcdef")(raw, _:);
 }
 
-go :: each (query { raw }) {
+go :: map (query { raw }) eff {
   fmt.printf("%.*s %.*s\n", 3, raw[1: 4], 2, raw[4: 6]); // "bcd" + "ef"
 }
 

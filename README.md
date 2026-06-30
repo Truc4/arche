@@ -29,7 +29,7 @@ binary. (If you skipped `make install`, use `./build/arche` in place of `arche`.
 // hello.arche
 #import { fmt }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("Hello, World!\n");
 }
 
@@ -66,7 +66,7 @@ way to write code.
 - **No implicit heap** - all storage is static and planned upfront, so memory behavior is fully predictable. That's a property of the *language core*, **not** a ceiling on the data model: "no dynamic allocation" does **not** mean "no dynamic archetypes". **Dynamic (resizable) archetypes — the backbone of a full ECS — are on the roadmap as a library** built on the same columnar model, once the core language matures; the core just doesn't bake in implicit allocation.
 - **Libraries as devices & drivers** - a *device* is a library that declares shapes + maps but owns no storage; the *driver* (your program) picks the pool sizes and runs the device's maps. A hardware metaphor for dependency injection: the storage owner is always the caller, never the library. See [docs/devices.md](docs/devices.md).
 - **The "function," split four ways** - most languages overload one `function` keyword for jobs that have nothing in common. Arche gives each job its own form, and the grammar enforces the split (see below).
-- **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` defaults to `clamp`, so an unannotated op in one can't crash; effectful code (a `system`/`each`/`map`) defaults to `!abort`, the deliberate crash site. `--no-abort` bans every abort site (implicit or explicit) — but that is **not** a whole-build crash-free *proof*: a custom `policy` is your own code (it can call `_exit` or leave an op out of bounds). `!undefined` (the raw unchecked op, UB if out of range) is **forbidden by default** — `--allow-undefined` opts back in — so the remaining risk is just the policies you write.
+- **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` defaults to `clamp`, so an unannotated op in one can't crash; effectful code (a `system`/`map`) defaults to `!abort`, the deliberate crash site. `--no-abort` bans every abort site (implicit or explicit) — but that is **not** a whole-build crash-free *proof*: a custom `policy` is your own code (it can call `_exit` or leave an op out of bounds). `!undefined` (the raw unchecked op, UB if out of range) is **forbidden by default** — `--allow-undefined` opts back in — so the remaining risk is just the policies you write.
 
 ### The "function," split four ways
 
@@ -77,18 +77,18 @@ blur them. The shape of a declaration *tells you what it does*.
 | Form              | Binding                                 | Is a value? | Job |
 | ----------------- | --------------------------------------- | ----------- | --- |
 | `func`            | `name :: func(in) -> T` or `func(in)(out)` | **yes** (`-> T`) | pure computation — results via one return **or** an out-param list, no side effects, **total by default** (unannotated ops clamp) |
-| `system` / `each` | `name :: system { … }`                  | no          | an effect — runs actions (I/O, `insert`/`delete`, running an `Eff`); `each (query{…})` fans one per matching row |
+| `system`          | `name :: system { … }`                  | no          | an effect — runs actions (I/O, `insert`/`delete`, running an `Eff`); `map (query{…}) eff` fans one per matching row |
 | `map`             | `name :: map (query {components})`      | no          | a data transform — runs over **every** archetype carrying those components |
 | `policy`          | `name :: policy(len, i)`                | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
 
 `proc` is **reserved for the foreign boundary** — `#foreign`/`@syscall`/`@intrinsic` primitive
 declarations and `@drop` hooks. You never write a non-foreign `proc`; pure logic is a `func`, effects
-are a `system`/`each`/`map`. A program's entry point is a `#run` schedule, not a decl named `main`.
+are a `system`/`map`. A program's entry point is a `#run` schedule, not a decl named `main`.
 
 ```
 area   :: func(w: int, h: int) -> int                    // value:     r := area(w, h)
 divmod :: func(a: int, b: int)(q:, r:)                   // results:   divmod(17, 5)(q:, r:)
-greet  :: system { fmt.printf("hi\n"); }                 // effect:    scheduled by #run
+greet  :: system eff { fmt.printf("hi\n"); }                 // effect:    scheduled by #run
 step   :: map (query { pos, vel }) { pos = pos + vel; }  // transform: #run step
 clamp  :: policy(len: int, i: int) { … }                 // failure:   v := xs[k] !clamp
 ```
@@ -99,7 +99,7 @@ Why bother? Each split buys a real guarantee the overloaded keyword can't:
   running an `Eff`, or a mutating builtin from one is a hard error) and **total by default** (its
   baseline policy is `clamp`, so an unannotated fallible op can't crash). A `func` still produces
   **multiple** results or fills a buffer — through an out-param list `(out, …)` — it just stays pure.
-  A `system`/`each`/`map` is the only thing that *does* effects. So purity is readable straight off
+  A `system`/`map` is the only thing that *does* effects. So purity is readable straight off
   the keyword — no annotations, no effect inference.
 - **`map` — the loop isn't yours to write.** A map runs over a *query* — a set of *components*,
   not tables — and the compiler runs it over every matching archetype, generating the column loop.
@@ -126,7 +126,7 @@ integrate :: map (query { pos, vel }) {
   pos = pos + vel; // whole-column update — no explicit loop
 }
 
-report :: system {
+report :: system eff {
   fmt.printf("stepped\n");
 }
 

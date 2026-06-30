@@ -4,7 +4,7 @@
 // names must build clean.
 // RUN: %arche build -o %t %s && %t | grep "ns ok"
 #import { io os fmt }
-entry :: system {
+entry :: system eff {
   io.fopen_read("/dev/null")(fd:);
   buf: [16]char;
   io.fread(fd, 16)(buf, _n:);

@@ -12,7 +12,7 @@ hot :: proc() {
   i := 99;
   fmt.printf("d=%d\n", a[i]); // unannotated -> @default(proc, bounds, clamp) -> a[3]=13, no abort
 }
-entry :: system {
+entry :: system eff {
   hot();
 }
 

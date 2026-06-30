@@ -7,7 +7,7 @@ k   :: int;
 tag :: int;
 N   :: arche { k, tag }
 [5]N(5);
-entry :: system {
+entry :: system eff {
   N.k   = { 5, 4, 3, 2, 1 };
   N.tag = { 10, 20, 30, 40, 50 };
   sort(N.k);

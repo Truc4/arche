@@ -2,7 +2,7 @@
 // syscall result register is read correctly across two distinct syscalls.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt os }
-entry :: system {
+entry :: system eff {
   os.syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
   os.syscall(186, 0, 0, 0, 0, 0, 0)(tid:);
   if (pid == tid) {

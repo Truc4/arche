@@ -4,7 +4,7 @@
 // RUN: rm -rf %t.cache && env ARCHE_CACHE_DIR=%t.cache %arche build --incremental -o %t %s >/dev/null && env ARCHE_CACHE_DIR=%t.cache %arche build --incremental -o %t %s | grep -qE "[1-9][0-9]* reused from cache"
 // RUN: %t | grep -qF "flag_ok"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.print("flag_ok\n")(_:);
 }
 

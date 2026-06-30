@@ -1,0 +1,19 @@
+// `map (Q) eff` IS the old `each`: the effectful per-entity fan. `eff` lifts the pure-map E0046
+// transform-only restriction, so control flow (`if`) and effects (`fmt.printf`) are permitted, and the
+// body runs per row. Here values above 2.5 are clamped, with a per-row print on the clamp.
+// RUN: %arche build -o %t %s && %t | tr '\n' ',' | grep -qF "clamped,clamped,1.0 2.0 2.5 2.5,"
+#import { fmt }
+v :: float;
+R :: arche { v }
+[4]R(4);
+seed :: system { R.v = { 1.0, 2.0, 3.0, 4.0 }; }
+clampit :: map (query { v }) eff {
+  if (v > 2.5) {
+    v = 2.5;
+    fmt.printf("clamped\n");
+  }
+}
+show :: system eff {
+  fmt.printf("%.1f %.1f %.1f %.1f\n", R.v[0] * 1.0, R.v[1] * 1.0, R.v[2] * 1.0, R.v[3] * 1.0);
+}
+#run seq({ seed, clampit, show })

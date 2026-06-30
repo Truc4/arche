@@ -10,7 +10,7 @@ Mover :: arche { n :: int }
 [1]Win;
 Win :: arche { id :: int }
 
-addwin :: each (query { n }, query { id }) {
+addwin :: map (query { n }, query { id }) eff {
   n = n + id;
 }
 

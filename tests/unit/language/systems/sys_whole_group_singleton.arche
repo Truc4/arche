@@ -18,12 +18,12 @@ step :: map (query { pos, vel }) {
   vel -= (pos - Config.center[0]) / Config.stiffness[0]; // whole-vector spring toward the singleton center
   pos += vel; // whole-vector integrate
 }
-seed :: system {
+seed :: system eff {
   insert(Config { stiffness: 10, center_x: 100, center_y: 200 })(_:, _:);
   insert(Mover { pos_x: 80, pos_y: 80, vel_x: 0, vel_y: 0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("v=%d %d p=%d %d\n", Mover.vel.x[0], Mover.vel.y[0], Mover.pos.x[0], Mover.pos.y[0]);
 }
 

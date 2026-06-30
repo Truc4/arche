@@ -3,7 +3,7 @@
 // inferring the i64 result. A live pid is always > 0.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt os }
-entry :: system {
+entry :: system eff {
   os.syscall(39, 0, 0, 0, 0, 0, 0)(pid:);
   if (pid > 0) {
     fmt.printf("ok pid_is_positive\n");

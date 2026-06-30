@@ -15,12 +15,12 @@ step :: map (Movers) {
   pos = pos + vel;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Full { pos: 10.0, vel: 1.0 })(_:, _:);
   insert(PosOnly { pos: 50.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fp := Full.pos[0] * 10.0;
   pp := PosOnly.pos[0] * 10.0;
   fmt.assert(fp == 110.0, "Full.pos should be 11\n")();

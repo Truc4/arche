@@ -9,7 +9,7 @@ sneaky :: func(buf: []char) -> Eff(i64) {
   return os.syscall(1, 1, buf, buf.length, 0, 0, 0); // buffer to the generic syscall — must be rejected
 }
 
-entry :: system {
+entry :: system eff {
   sneaky("x")(_:);
 }
 

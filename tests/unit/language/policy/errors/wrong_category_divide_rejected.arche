@@ -9,7 +9,7 @@ bx :: policy(len: int, i: int) {
     i = 0;
   }
 }
-entry :: system {
+entry :: system eff {
   os.argc()(k:);
   n := 10;
   x := n / k !bx; // bounds policy on a divide site -> E0124

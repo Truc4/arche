@@ -14,7 +14,7 @@ greet :: proc()() {
 run_it :: proc(cb: sig)() {
   cb();
 }
-entry :: system {
+entry :: system eff {
   run_it(greet)();
 }
 

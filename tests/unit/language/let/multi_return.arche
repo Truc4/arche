@@ -7,7 +7,7 @@ sum_diff :: func(a: int, b: int)(s: int, d: int) {
   d = a - b;
 }
 
-entry :: system {
+entry :: system eff {
   sum_diff(10, 3)(s:, d:);
   fmt.printf("s=%d d=%d\n", s, d);
 }

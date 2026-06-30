@@ -201,7 +201,7 @@ static int dt_find_import(const char *src, size_t *insert_at, int *already) {
  * `#import { fmt }` prepended. */
 static char *synthesize(const char *file_source, int is_core, const DoctestExample *ex) {
 	if (is_core) {
-		size_t need = strlen("\nentry :: system {\n}\n#run entry\n") + strlen(ex->code) + 8;
+		size_t need = strlen("\nentry :: system eff {\n}\n#run entry\n") + strlen(ex->code) + 8;
 		char *out = malloc(need);
 		if (!out)
 			return NULL;
@@ -210,7 +210,7 @@ static char *synthesize(const char *file_source, int is_core, const DoctestExamp
 		else
 			/* Loose statements get their own entry: a `system` scheduled by `#run` (the only entry point —
 			 * `main` is no longer special). */
-			snprintf(out, need, "\nentry :: system {\n%s}\n#run entry\n", ex->code);
+			snprintf(out, need, "\nentry :: system eff {\n%s}\n#run entry\n", ex->code);
 		return out;
 	}
 
@@ -234,7 +234,7 @@ static char *synthesize(const char *file_source, int is_core, const DoctestExamp
 	const char *body = prefix ? prefix : file_source;
 
 	size_t need =
-	    strlen(fmt_import) + strlen(body) + strlen("\nentry :: system {\n}\n#run entry\n") + strlen(ex->code) + 8;
+	    strlen(fmt_import) + strlen(body) + strlen("\nentry :: system eff {\n}\n#run entry\n") + strlen(ex->code) + 8;
 	char *out = malloc(need);
 	if (!out) {
 		free(prefix);
@@ -243,7 +243,7 @@ static char *synthesize(const char *file_source, int is_core, const DoctestExamp
 	if (ex->has_main)
 		snprintf(out, need, "%s%s\n%s", fmt_import, body, ex->code);
 	else
-		snprintf(out, need, "%s%s\nentry :: system {\n%s}\n#run entry\n", fmt_import, body, ex->code);
+		snprintf(out, need, "%s%s\nentry :: system eff {\n%s}\n#run entry\n", fmt_import, body, ex->code);
 	free(prefix);
 	return out;
 }
@@ -705,7 +705,7 @@ static void run_group(const char *synth_path, DoctestExamples *ex, const int *gr
 
 		Str synth = {NULL, 0, 0};
 		str_add(&synth, shared.buf, shared.len);
-		str_addz(&synth, "\nentry :: system {\n"); /* `#run` is the only entry — `main` isn't special */
+		str_addz(&synth, "\nentry :: system eff {\n"); /* `#run` is the only entry — `main` isn't special */
 		str_addz(&synth, body);
 		str_addz(&synth, "}\n#run entry\n");
 
@@ -746,7 +746,7 @@ static void run_group(const char *synth_path, DoctestExamples *ex, const int *gr
 	if (!ran_any && first_line >= 0) {
 		Str synth = {NULL, 0, 0};
 		str_add(&synth, shared.buf, shared.len);
-		str_addz(&synth, "\nentry :: system {\n}\n#run entry\n");
+		str_addz(&synth, "\nentry :: system eff {\n}\n#run entry\n");
 		char exe[256], captured[4096] = "";
 		snprintf(exe, sizeof(exe), "/tmp/arche_dt_%d_ctx%d", (int)getpid(), g);
 		int rc = compile_capturing(synth.buf, synth_path, exe, captured, sizeof(captured));

@@ -18,7 +18,7 @@ evict_oldest :: policy(count: int, cap: int, ok: int, slot: int) {
     slot = oldest;
   }
 }
-entry :: system {
+entry :: system eff {
   insert(Foo { v: 10, ts: 5 })(h0:, ok0:);
   insert(Foo { v: 20, ts: 9 })(h1:, ok1:);
   insert(Foo { v: 30, ts: 7 }) ?reject(h2:, ok2:); // per-call override: reject, not evict

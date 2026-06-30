@@ -2,7 +2,7 @@
 // Simple test to see if 'use' statement works
 #import { csv fmt }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("ok\n");
 }
 

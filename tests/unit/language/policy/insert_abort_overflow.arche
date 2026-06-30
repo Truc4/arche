@@ -4,7 +4,7 @@
 Foo :: arche { v :: int }
 [2]Foo ?abort;
 
-seed :: system {
+seed :: system eff {
   insert(Foo { v: 1 });
   insert(Foo { v: 2 });
   insert(Foo { v: 3 }); // pool full → abort (exit 134, "arche: pool full")

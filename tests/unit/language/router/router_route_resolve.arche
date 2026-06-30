@@ -39,7 +39,7 @@ slice :: func(own buf: []char, path: []char, start: int, len: int) -> []char {
   return buf;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Route { pattern: "/", hid: handler.home })(_:, _:);
   insert(Route { pattern: "/users/:id", hid: handler.user })(_:, _:);
   insert(Route { pattern: "/static/*", hid: handler.static_files })(_:, _:);
@@ -52,7 +52,7 @@ seed :: system {
   insert(Req { path: "/nope", out_h: -1, cap0_start: -1, cap0_len: -1, best: 0 })(_:, _:);
 }
 
-dispatch :: each (query { path, out_h, cap0_start, cap0_len }) {
+dispatch :: map (query { path, out_h, cap0_start, cap0_len }) eff {
   h  := out_h;
   st := cap0_start;
   ln := cap0_len;
@@ -75,7 +75,7 @@ dispatch :: each (query { path, out_h, cap0_start, cap0_len }) {
   }
 }
 
-done :: system {
+done :: system eff {
   fmt.printf("\n");
 }
 

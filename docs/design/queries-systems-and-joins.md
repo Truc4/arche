@@ -15,40 +15,40 @@ hidden row cursor. What differs is what each one is *allowed to do* with those c
   is a no-op the compiler deletes (there were no side effects to keep). To thread state you rebind the
   return: `px := paint(move px, …)`.
 - **`map`** — handed columns; a **pure** per-element kernel. Branch-free, effect-free (E0046), GPU-portable.
-- **`each`** — the **per-element fan**: a current element exists, so a query column is a **scalar** (`pos.x`
+- **`map (Q) eff`** — the **per-element fan**: a current element exists, so a query column is a **scalar** (`pos.x`
   is *this* element's x), and the body **may have control flow / effects** (a `map` that isn't branch-free).
-  It runs over **one** query (no joins); for cross-pool work, **nest** an `each` inside another (see *Cross-pool
-  work is nesting*). An anonymous `each(Q) { … }` may appear in **statement position** — that is the inline
+  It runs over **one** query (no joins); for cross-pool work, **nest** a `map (Q) eff` fan inside another (see *Cross-pool
+  work is nesting*). An anonymous `map(Q) eff { … }` may appear in **statement position** — that is the inline
   fan, emitted in place so it captures the enclosing scope. *(Built.)* The **independent fold/scan** form
   (threading an `own` accumulator) is still open.
 - **`system`** — handed whole **columns**; **runs effects** over them (builds `Eff`s via funcs, runs them
   with `()`), and does column-level work. A system **never iterates** per element (`pos.x` is the x
-  sub-**column**); per-element scalar work is an `each`. A run-once `system { }` (no query) is the composer.
+  sub-**column**); per-element scalar work is a `map (Q) eff` fan. A run-once `system { }` (no query) is the composer.
 - **`#run`** — the orchestrator: the compile-time-folded schedule. The only place dispatch is composed. A
-  **leaf is a bare map/each/system name** — `#run seq({ boot, forever(frame) })`; there is no `run`
-  constructor or `run` statement (both retired — `map`/`each` are kinds of systems, scheduled by name).
+  **leaf is a bare map/system name** — `#run seq({ boot, forever(frame) })`; there is no `run`
+  constructor or `run` statement (both retired — `map` are kinds of systems, scheduled by name).
 
 Removed: **`run`** — both the `run <map>` **statement** and the `run(...)` Schedule **constructor** are gone.
-A map/each/system is dispatched only by **naming it in `#run`**; a system body never dispatches. (`run` is no
+A map/system is dispatched only by **naming it in `#run`**; a system body never dispatches. (`run` is no
 longer a keyword.) Removed: **`proc`** as a declared kind — a "procedure" is composed (a `func` that builds
-an `Eff`, or fills out-params, + a `system`/`each` that runs it). A non-foreign `proc` is **W0030
+an `Eff`, or fills out-params, + a `system`/`map (Q) eff` that runs it). A non-foreign `proc` is **W0030
 `proc_not_primitive`** (error-by-default); `proc` survives **only** as the foreign/primitive boundary form —
 `#foreign` externs, `@syscall`, `@intrinsic`, and `@drop` destructor hooks. There is no `main` either (a decl
 named `main` is **E0225**); the entry is a `#run` schedule.
 
 > `system(Q)` is now genuinely **columnar** (whole-column ops + boundary effects, no per-element row loop).
-> The per-element fan that used to be smuggled into `system(query)` is now its own kind, **`each`**.
+> The per-element fan that used to be smuggled into `system(query)` is now a `map` with the `eff` permission — **`map (Q) eff`**.
 
 ## Queries
 
 A query is **source-agnostic**: it names **components**, never an archetype/pool. `query { pos, vel }`
-matches any entity that has those components. **A query gives you the columns.** `map`/`each`/`system` are
+matches any entity that has those components. **A query gives you the columns.** `map`/`system` are
 *handed* those columns.
 
 - **Selector forms are interchangeable**: inline `query { … }`, a named `Q :: query { … }`, or an archetype
   name all mean the same thing — the columns.
-- **One query, no joins.** `map` and `each` run over **exactly one** query; there is no tuple-of-queries, no
-  driver/singleton broadcast, no N×M join. A multi-query `each(Q1, Q2)` is a **parse error**. (A singleton is
+- **One query, no joins.** a `map` (pure or `eff`) runs over **exactly one** query; there is no tuple-of-queries, no
+  driver/singleton broadcast, no N×M join. A multi-query `map(Q1, Q2) eff` is a **parse error**. (A singleton is
   not a real thing — see *Cross-pool work is nesting*.)
 - **No hand-indexing.** `Pool.col[i]` (incl. the singleton `[0]`) outside a query is banned (W0029; the rule
   is error for program code, with `@allow(pool_index_outside_query)` for test peeks — see *Bans* for rollout
@@ -56,14 +56,14 @@ matches any entity that has those components. **A query gives you the columns.**
 
 ### Cross-pool work is nesting, not joins
 
-To combine two pools you **nest** one fan inside another — you do not join. `each` stays single-query; the
+To combine two pools you **nest** one fan inside another — you do not join. the fan stays single-query; the
 *cross* comes from **explicit nesting**, which is just an ordinary loop inside a loop:
 
 ```
 render :: system {
-  each (query { handle, bg }) {          // OUTER: per window — establishes the framebuffer context
+  map (query { handle, bg }) eff {          // OUTER: per window — establishes the framebuffer context
     gfx_be_frame(handle)(px:);           // this window's canvas (a local)
-    each (query { pos, color, r }) {     // INNER: per ball — captures px, paints into it
+    map (query { pos, color, r }) eff {     // INNER: per ball — captures px, paints into it
       px[…] = color;
     };
   };
@@ -77,7 +77,7 @@ Why this and not a join:
   "draw every ball in every window" is just correct.)
 - **No singleton, no `[1]` special case.** `[2]Window` just works: the outer loop runs twice. There is no
   broadcast and nothing is "the one" window.
-- **No closures, no new kind.** An anonymous `each(Q) { … }` is the `each` value-form used in statement
+- **No closures, no new kind.** An anonymous `map(Q) eff { … }` is the `map (Q) eff` value-form used in statement
   position (Odin/Jai: anonymous = named minus the name). It is emitted **in place**, so the body captures the
   enclosing scope lexically — there is no closure object. It is a loop, not a definition, so it does not open
   nested funcs/systems.
@@ -116,7 +116,7 @@ arche — see slices).
 
 There is no non-foreign `proc` — and more deeply, **a "procedure" (a multi-step effectful action) is not a
 declared kind at all.** It is *composed*: pure `func`s build `Eff` values (or fill out-params), `|>` threads a
-pure transform through an effect, and a `system`/`each` runs the result with `()`. The effectfulness lives in
+pure transform through an effect, and a `system`/`map (Q) eff` runs the result with `()`. The effectfulness lives in
 the **composition**, never in a keyword. (`proc` itself now only spells the foreign/primitive boundary —
 `#foreign`/`@syscall`/`@intrinsic`/`@drop`; see the kind table above.)
 
@@ -155,7 +155,7 @@ Circle :: arche { cx :: int  cy :: int  r :: int  color :: int }
 circle :: func(own px: []int, w: int, h: int, cx: int, cy: int, r: int, color: int) -> []int { … return px }
 
 // BATCH: a sequential fold over the shapes — move the canvas through each circle and rebind the result
-circles :: each (Circle, Window) {
+circles :: map (Circle, Window) eff {
   px := circle(move px, w, h, cx, cy, r, color);
 }
 
@@ -171,7 +171,7 @@ present :: system (Window) {
 - **The return must be used.** `circle(move px, …);` alone would be a dead no-op. `px := circle(move px, …)`
   moves the canvas in (consuming the old binding — `own`/`move` kills it), then rebinds the returned canvas
   with `:=`. Linear, zero-copy, fused in-place; nothing copied, nothing aliased, no slice repointed.
-- **`circles` is a fold, not a parallel `each`** — each shape consumes the previous canvas, so order matters
+- **`circles` is a fold, not a parallel `map (Q) eff`** — each shape consumes the previous canvas, so order matters
   (overlap) and it can't run out of order.
 - **No `|>`, no `frame`.** There is no value-bearing `Eff` on the draw path to `fmap` over — the pixels are
   pool state painted by the fold, and the **only** effect is `present`/`blit` at the boundary. That keeps it
@@ -188,24 +188,24 @@ present :: system (Window) {
   peek and need `@allow` (or a harness-level demotion) first, so it ships **warn-default** until that lands
   (`--pool-index=error` opts in today).
 - **No slice repoint** — test landed RED; rule to build.
-- **No joins on `map`/`each`** — both run over exactly one query; a multi-query `each(Q1, Q2)` / `map` join
-  is a parse error. Cross-pool work is **nesting** (an `each` inside another), not a join. (`system(Q1, Q2)`
+- **No joins on `map`** — both run over exactly one query; a multi-query `map(Q1, Q2) eff` / `map` join
+  is a parse error. Cross-pool work is **nesting** (a `map (Q) eff` fan inside another), not a join. (`system(Q1, Q2)`
   multi-query is a remaining holdover — it should fold into nesting too; tracked as a TODO.)
 
 ## Built (this model)
 
-- **`each`** — the per-element fan (scalars + control flow + effects), single-query; cross-pool by nesting
-  (incl. anonymous inline `each` in statement position). Dispatched by name from `#run`.
+- **`map (Q) eff`** — the per-element fan (scalars + control flow + effects), single-query; cross-pool by nesting
+  (incl. anonymous inline `map (Q) eff` in statement position). Dispatched by name from `#run`.
 - **`system(Q)` is columnar** — whole-column ops + boundary effects, no per-element row loop.
-- **`run` removed** — bare map/each/system names are schedule leaves; `@gpu` is a decorator on the map decl.
+- **`run` removed** — bare map/system names are schedule leaves; `@gpu` is a decorator on the map decl.
 
 ## Open / not yet built
 
-- `each`'s **independent fold/scan** form (threading an `own` accumulator through the elements).
+- the fan's **independent fold/scan** form (threading an `own` accumulator through the elements).
 - gfx as data: framebuffer-as-`Window`-pool-`px`, `circle` the pure unit, `circles` the fold, `present`/
   `blit` the one boundary effect via the opaque handle. `frame` removed.
 - A pure func's discarded-return → no-op (lint?), and the move/`:=` rebind threading for `own` returns.
-- **Relationships (keyed cross-pool pairing) — TODO.** Nesting (above) is how `each` does cross-pool work
+- **Relationships (keyed cross-pool pairing) — TODO.** Nesting (above) is how the `map (Q) eff` fan does cross-pool work
   *today*: the inner fan sees **every** element of its pool (a full cartesian with the outer). That is right
   when the pairing is shared context (all balls into the same window) or when "everything × everything" is
   what you mean. It is **not** enough when each entity should pair with a *specific* other entity — "this ball
@@ -214,8 +214,8 @@ present :: system (Window) {
   join construct:
 
   ```
-  each (query { handle } as $w) {        // bind the matched window to $w
-    each (query { pos, color, r } where window == $w) {   // only THIS window's drawables
+  map (query { handle } as $w) eff {        // bind the matched window to $w
+    map (query { pos, color, r } where window == $w) eff {   // only THIS window's drawables
       …
     };
   };

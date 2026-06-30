@@ -7,7 +7,7 @@ tag :: int;
 B   :: arche { v, tag }
 [4]B;
 
-entry :: system {
+entry :: system eff {
   insert(B, 2, 7)(_:, _:); // legacy positional — must be `insert(B{ v: 2, tag: 7 })`
 }
 

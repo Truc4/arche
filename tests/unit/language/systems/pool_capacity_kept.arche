@@ -7,7 +7,7 @@ Thing :: arche { v :: int }
 
 [4]Thing;
 
-entry :: system {
+entry :: system eff {
   fmt.printf("cap=%d\n", Thing.capacity);
 }
 

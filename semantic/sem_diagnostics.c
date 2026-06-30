@@ -140,6 +140,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_extern_multi_out]              = { "E0223", "extern_multi_out",              CLASS_ERROR, 1 },
 	[SEM_DIAG_slice_repoint]                 = { "E0224", "slice_repoint",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_main_reserved]                 = { "E0225", "main_reserved",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_effect_without_eff]            = { "E0226", "effect_without_eff",            CLASS_ERROR, 1 },
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
@@ -882,6 +883,13 @@ SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char 
 	return sem_emit_(ctx, SEM_DIAG_func_not_pure, loc, "func '%s' is not pure — %s (effects belong in a proc)", name,
 	                 reason);
 }
+SemDiag *sem_emit_effect_without_eff(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *reason) {
+	return sem_emit_(ctx, SEM_DIAG_effect_without_eff, loc,
+	                 "%s '%s' is pure by default but %s — declare the `eff` permission to run effects: "
+	                 "`%s … eff { … }`",
+	                 kind, name ? name : "<kernel>", reason, kind);
+}
 SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form) {
 	return sem_emit_(ctx, SEM_DIAG_insert_delete_outlist, loc,
 	                 "`%s` reports success as a value — it must be called as a statement with an out-list: `%s`", name,
@@ -996,7 +1004,7 @@ SemDiag *sem_emit_lint_proc_could_be_func(SemanticContext *ctx, SourceLoc loc, c
 SemDiag *sem_emit_lint_proc_not_primitive(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_proc_not_primitive, loc,
 	                 "proc '%s' is not a primitive — `proc` is reserved for `#foreign`/`@syscall`/`@intrinsic`. "
-	                 "Pure logic → a `func`; effects or pool access → a `system`/`each`/`map`; a "
+	                 "Pure logic → a `func`; effects or pool access → a `system`/`map (Q) eff`; a "
 	                 "result-dependent sequence → decompose across systems (a producer writes a column, a "
 	                 "consumer reads it)",
 	                 name);

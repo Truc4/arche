@@ -9,7 +9,7 @@ window :: opaque;
   window_close :: proc(own w: window);
 }
 
-entry :: system {
+entry :: system eff {
   sound_open()(s:);
   window_close(move s);
 }

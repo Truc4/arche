@@ -7,7 +7,7 @@ tag :: int;
 B   :: arche { v, tag }
 [4]B;
 
-entry :: system {
+entry :: system eff {
   insert(B { v: 2 })(_:, _:); // missing `tag`
 }
 

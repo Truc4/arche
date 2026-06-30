@@ -8,7 +8,7 @@ float_multiply :: map (query { val }) {
   val = val * 2.0;
 }
 
-seed :: system {
+seed :: system eff {
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 1.0 })(_:, _:);
@@ -19,7 +19,7 @@ seed :: system {
   insert(FloatOps { val: 1.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   v0          := FloatOps.val[0];
   v1          := FloatOps.val[1];
   v2          := FloatOps.val[2];

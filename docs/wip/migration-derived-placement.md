@@ -1,7 +1,7 @@
 # Migrating arche-rpg to Derived-Access Placement and Scheduling
 
 A worked example of the proposition in `notes.md` #6: the compiler **derives** per-column
-read/write facts from how `map` / `each` / `system` touch a pool, and uses those facts to drive (1) the
+read/write facts from how `map` / `system` touch a pool, and uses those facts to drive (1) the
 parallel schedule, (2) data layout, and (3) CPU-vs-GPU residency and transfers, with no annotations and no
 hand-written mapper.
 
@@ -178,7 +178,7 @@ Almost nothing. The migration is mostly the absence of work:
 | color/r transfers | copy with everything | upload once, shared read-only view, derived |
 | read/write annotations | none needed | none needed (derived from kernel bodies) |
 
-The author keeps writing ordinary `map` / `each` / `system` kernels over the pool. The columns' access
+The author keeps writing ordinary `map` / `system` kernels over the pool. The columns' access
 modes, the schedule, the layout, and the CPU/GPU placement are recovered from those kernels.
 
 ---
@@ -271,7 +271,7 @@ as something the patterns below can lean on.
 
 The endpoint of "everything that touches data in parallel is branchless" is a hard rule, with the same
 character as the flat-effect model's *a system cannot call a system*: **data-dependent control flow in a leaf
-(`map`/`each`/`system`) is unspellable.** Generalize `map`'s existing `E0046` to every leaf — a branch or a
+(`map`/`system`) is unspellable.** Generalize `map`'s existing `E0046` to every leaf — a branch or a
 data-dependent loop in a leaf body is a hard error, with **no flag and no `@allow`**. Hitting it is not a
 case to opt out of; it is a signal to *redesign*. Control flow goes to exactly three places instead:
 
@@ -281,12 +281,12 @@ case to opt out of; it is a signal to *redesign*. Control flow goes to exactly t
 - **result-dependent sequencing → decompose** (state-as-data; below).
 
 The objection is "but the monadic tail — read a header, then read *that many* bytes — has to live somewhere,
-and the flat-effect model puts it inline in a system/each." The claim here is that the monadic tail is **not
+and the flat-effect model puts it inline in a `system`/`map (Q) eff`." The claim here is that the monadic tail is **not
 irreducible**: it decomposes, and the ban is what forces the decomposition.
 
 ```arche
 // BEFORE — the BANNED inline monadic form (data-dependent sequencing + branches in a leaf):
-handle :: each (query { fd, ok }) {
+handle :: map (query { fd, ok }) eff {
   hdr: [1]char;
   read(fd, hdr, 1)(got:, err:);
   if err != 0 || got == 0 { ok = 0; return; }   // branch + early return — banned
@@ -301,7 +301,7 @@ handle :: each (query { fd, ok }) {
 // PROPOSED — state as data, one branchless step per tick. States linear so "phase complete" = +1:
 //   NEED_HDR = 0, NEED_BODY = 1, DONE = 2.   `want - have` is the bytes to pull in BOTH phases
 //   (want = HDR in phase 0, want = HDR + len in phase 1), so the read needs no state branch.
-tick :: each (query { fd, state, want, have, buf } as r) {
+tick :: map (query { fd, state, want, have, buf } as r) eff {
   going    := (state < DONE);              // 1 while unfinished, else 0   (mask)
   req      := (want - have) * going;       // bytes to pull; 0 once DONE   (mask)
   recv(fd, req)(buf, got:);  have = have + got;
@@ -323,7 +323,7 @@ delete, the body finishes on the present row, removal happens at the seam).
 
 Two facts worth pinning:
 
-- **It collapses to ONE `each`, not separate systems.** Once conditionality is `whenS`/`select` values, there
+- **It collapses to ONE `map (Q) eff`, not separate systems.** Once conditionality is `whenS`/`select` values, there
   is nothing to *call* between the steps, so advance + reply + evict are one body. Separate systems are forced
   only by a real barrier: a deferred `insert`/`delete` must land before the next step reads pool *membership*;
   a cross-row reduction/sort must complete; or the next step queries a different archetype. None hold here.
@@ -331,7 +331,7 @@ Two facts worth pinning:
   `tick` re-run each loop iteration — same system count as the inline version. "ECS decomposition" (a producer
   system writes a column a consumer reads) is only forced when the monadic step must be *shared between*
   systems or hits one of those barriers; a self-contained framed read is just "reify state into columns + loop
-  one branchless `each`."
+  one branchless `map (Q) eff`."
 
 **Honest cost (cross-ref §7): on a CPU this is objectively slower and buys nothing there** — per-tick rescan
 of every active connection, polling `recv`s that mostly return EAGAIN, and predicated waste (`body_len` and
@@ -343,7 +343,7 @@ CPU. The branchless form is the right shape *only* if this FSM is placed wide (�
 1. The **selective layer must be finished** — value-producing `ifS`, not just the currently-wired guard form
    (`whenS`, `ifS` with a `pure()` else) — or legitimate static conditionals have nowhere to land.
 2. It **changes the flat-effect model's position.** `the-flat-effect-model.md` §5/§8 currently *permit* the
-   monadic tail to live inline in a flat system/each as an "honest cost." This rule rewrites that to "monadic
+   monadic tail to live inline in a flat `system`/`map (Q) eff` as an "honest cost." This rule rewrites that to "monadic
    tail = redesign trigger → decompose."
 3. The one sanctioned holdout — `csv.load` under `@allow(proc_not_primitive)` — must become the pending
    archetype-targeted load system, or the no-escape-hatch rule has an escape hatch.
@@ -353,7 +353,7 @@ CPU. The branchless form is the right shape *only* if this FSM is placed wide (�
 The kinds stop being primitives. There is one `system`, carrying a **permission signature**: the read set
 (the query), the write set (a `(mutables)` list), and the `eff` flag. The write set is a *separate list*, not
 Bevy-style `&mut` inside the query, because arche queries are **named and shared** across many systems while
-mutability is per-use — so it hoists out of the query to the system that writes. `map` and `each` are then
+mutability is per-use — so it hoists out of the query to the system that writes. `map` (pure and `eff`) is then
 just named flag-presets over this signature (`map` = no `eff`, fanning over a query; etc.), not distinct kinds.
 
 There is deliberately **no branch flag** on this signature, and **no branch color on funcs.** Leaves are

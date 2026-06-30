@@ -10,7 +10,7 @@
 W0 :: 640;
 H0 :: 480;
 
-entry :: system {
+entry :: system eff {
   gfx.open(W0, H0, "arche gfx — resize me; close or press a key")(win:);
 
   is_open := true;

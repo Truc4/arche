@@ -5,7 +5,7 @@ head :: func(buf: [8]char) -> int {
   return buf[0];
 }
 
-entry :: system {
+entry :: system eff {
   b: [8]char;
   b[0] = 72;
   b[1] = 33;

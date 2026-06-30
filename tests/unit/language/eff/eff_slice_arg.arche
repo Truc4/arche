@@ -13,7 +13,7 @@ measure :: func(own s: []char) -> Eff(int) {
   return eff_strlen(s);
 }
 
-entry :: system {
+entry :: system eff {
   measure("hello")(n:);
   fmt.printf("n=%d\n", n);
 }

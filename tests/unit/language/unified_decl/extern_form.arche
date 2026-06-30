@@ -6,7 +6,7 @@
   abs :: proc(x: int)(r: int);
 }
 
-entry :: system {
+entry :: system eff {
   abs(-5)(a:);
   fmt.printf("abs=%d\n", a);
 }

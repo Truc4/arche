@@ -7,7 +7,7 @@ add :: func(a: int, b: int) -> int {
 double :: func(x: int) -> int {
   return x + x;
 }
-entry :: system {
+entry :: system eff {
   s := add(5, 7);
   d := double(3);
   fmt.printf("sum=%d d=%d\n", s, d);

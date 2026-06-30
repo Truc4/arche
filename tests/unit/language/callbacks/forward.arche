@@ -12,7 +12,7 @@ apply :: proc(cb: logger)() {
   cb(7)();
 }
 
-entry :: system {
+entry :: system eff {
   apply(log_it)();
 }
 

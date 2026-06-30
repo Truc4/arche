@@ -10,7 +10,7 @@ Acc :: arche { got :: int }
 [2]T ?abort;
 [1]Acc ?abort;
 
-seed :: system {
+seed :: system eff {
   insert(T { name: "ab" })(_:, _:);
   insert(T { name: "cd" })(_:, _:);
   insert(Acc { got: 0 })(_:, _:);
@@ -18,13 +18,13 @@ seed :: system {
 
 // Outer fans T (rows "ab","cd"); inner fans the single Acc row. `name[0]` (outer column) must be the
 // current outer row's first char: 'a'(97) then 'c'(99). got: 0 -> 97 -> 9799.
-fold :: each (query { name }) {
-  each (query { got }) {
+fold :: map (query { name }) eff {
+  map (query { got }) eff {
     got = got * 100 + name[0];
   };
 }
 
-show :: each (query { got }) {
+show :: map (query { got }) eff {
   fmt.printf("%d\n", got);
 }
 

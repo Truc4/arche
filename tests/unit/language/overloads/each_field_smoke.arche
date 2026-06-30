@@ -25,7 +25,7 @@ dump :: proc(arch: archetype) {
   }
 }
 
-entry :: system {
+entry :: system eff {
   bump(Pair);
   dump(Pair);
 }

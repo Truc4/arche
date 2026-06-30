@@ -22,7 +22,7 @@ seed :: system {
   scan(+, N.tag);
 }
 
-verify :: system {
+verify :: system eff {
   sort(N.k);
   fmt.assert(N.tag[0] == 40, "t0\n")();
   fmt.assert(N.tag[39] == 1, "t39\n")();

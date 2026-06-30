@@ -2,7 +2,7 @@
 #import { fmt }
 Point :: arche { x :: int }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("allocated\n");
 }
 

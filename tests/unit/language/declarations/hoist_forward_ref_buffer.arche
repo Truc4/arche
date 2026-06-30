@@ -1,7 +1,7 @@
 // WANT: hoisting applies to buffer globals — a system may touch a buffer declared below it.
 // RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep -q "buf0=9"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   buf[0] = 9; // forward reference to a buffer declared later
   fmt.printf("buf0=%d\n", buf[0]);
 }

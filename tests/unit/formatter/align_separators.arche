@@ -13,7 +13,7 @@
 // RUN: %arche fmt %s | grep -qF "fmt.printf(\"x: %d\\n\", short);"
 #import { fmt }
 
-entry :: system {
+entry :: system eff {
   short      := 1;
   muchlonger := 2;
 

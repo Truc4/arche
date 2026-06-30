@@ -1,0 +1,14 @@
+// `eff` PROPAGATES: a `system` that runs effects only through a nested kernel (here an inline `each`
+// doing I/O) is still effectful and must declare `eff`. The effect-walk recurses into the nested fan,
+// so the outer pure `system` is rejected (E0226) even though its own statements look effect-free.
+// RUN: not %arche build -o %t %s 2>&1 | grep -qF "is pure by default"
+#import { fmt }
+v :: float;
+R :: arche { v }
+[4]R(4);
+outer :: system {
+  map (query { v }) eff {
+    fmt.printf("%g\n", v * 1.0);
+  };
+}
+#run seq({ outer })

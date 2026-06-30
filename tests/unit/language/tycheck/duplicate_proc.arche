@@ -11,7 +11,7 @@ foo :: proc() {
   fmt.printf("%d\n", 2);
 }
 
-entry :: system {
+entry :: system eff {
   foo();
 }
 

@@ -4,7 +4,7 @@
 // numeric names distinct. (GREEN today; must STAY green.)
 // RUN: %arche build -o %t %s && %t | grep "v=5"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x  : int  = 5;
   y  : i32  = x; // int <-> i32 transparent
   z  : byte = 200;

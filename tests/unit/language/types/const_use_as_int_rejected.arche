@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'i32', got 'float'" %t.out
 #import { fmt }
 PI    :: 3.14;
-entry :: system {
+entry :: system eff {
   x: int = PI;
   fmt.printf("%d\n", x);
 }

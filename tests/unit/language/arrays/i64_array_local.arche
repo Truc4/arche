@@ -1,7 +1,7 @@
 // i64[] local — arithmetic at i64 width (values beyond i32 range).
 // RUN: %arche build -o %t %s && %t | grep -q "x=5000000000"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   a: [4]i64;
   a[0] = 3000000000;
   a[1] = 2000000000;

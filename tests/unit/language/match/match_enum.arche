@@ -4,7 +4,7 @@
 #import { fmt }
 method :: enum { get, post = 5, delete }
 
-entry :: system {
+entry :: system eff {
   m := method.post;
   match m {
   method.get    : fmt.printf("delete=%d GET\n", method.delete);

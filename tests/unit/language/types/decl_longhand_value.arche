@@ -2,7 +2,7 @@
 // RUN: %arche build -o %t %s && %t | grep "v: 42"
 #import { fmt }
 answer: int: 42;
-entry :: system {
+entry :: system eff {
   fmt.printf("v: %d\n", answer);
 }
 

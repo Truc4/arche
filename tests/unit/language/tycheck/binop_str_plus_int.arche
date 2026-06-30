@@ -4,7 +4,7 @@
 // str↔scalar pairings — the audit's "a" + 1 gap.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 binary operand: expected 'str', got 'i32'"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   s: str = "a";
   x := s + 1;
   fmt.printf("%d\n", x);

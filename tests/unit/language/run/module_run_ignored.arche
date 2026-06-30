@@ -8,7 +8,7 @@
 // RUN: ! grep -q "from lib" %t.out
 #import { fmt "runmod/lib.arche" }
 
-hello :: system {
+hello :: system eff {
   fmt.printf("from main\n");
 }
 

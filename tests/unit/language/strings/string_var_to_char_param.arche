@@ -5,7 +5,7 @@ slen :: func(s: []char) -> int {
   return str.strlen(s);
 }
 
-entry :: system {
+entry :: system eff {
   lit := slen("hello");
   x   := "hello";
   var := slen(x);

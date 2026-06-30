@@ -9,7 +9,7 @@ five :: func() -> int {
 
 x: int = five(); // folds to 5 at compile time
 
-entry :: system {
+entry :: system eff {
   fmt.printf("x=%d\n", x);
 }
 

@@ -5,7 +5,7 @@
 // mixed `{ 1, "two", 3 }` slipped through both the compiler and the LSP.
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0200 type_mismatch 0 array element: expected 'i32', got 'str'"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   xs: [3]int = { 1, "two", 3 };
   fmt.printf("%d\n", xs[0]);
 }

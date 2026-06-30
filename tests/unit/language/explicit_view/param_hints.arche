@@ -17,7 +17,7 @@ add :: func(a: int, b: int) -> int {
 store :: proc(own dst: []char, src: []char) {
   dst[0] = src[0];
 }
-entry :: system {
+entry :: system eff {
   r   := add(1, 2);
   buf := "xx";
   store(copy buf, buf);

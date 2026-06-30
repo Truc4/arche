@@ -16,7 +16,7 @@ dampen :: map (query { vel }) {
   vel = vel * 0.99;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
   insert(Particle { pos: 20.0, vel: 2.0 })(_:, _:);
   insert(Particle { pos: 30.0, vel: 3.0 })(_:, _:);
@@ -24,7 +24,7 @@ seed :: system {
   insert(Body { pos: 60.0, vel: 6.0, mass: 20.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   pp  := Particle.pos[0];
   bp  := Body.vel[0];
   ppi := pp * 10.0;

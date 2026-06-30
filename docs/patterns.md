@@ -40,13 +40,13 @@ work for `#foreign` extern groups too, but for `#module`/`#file` they are usuall
 
 A step that _might_ produce a result shouldn't gate everything after it with "if I got a result, do
 the next thing." Have the producer **write a row into a pool** (or not); a later system reads that
-pool and does the next step. A consumer `each` over an _empty_ pool runs zero times — the absence of
+pool and does the next step. A consumer `map (Q) eff` fan over an _empty_ pool runs zero times — the absence of
 the row _is_ the skipped branch.
 
 **Don't** thread the whole thing through one procedural pass, guarding each effect on the last result:
 
 ```
-handle :: system {
+handle :: system eff {
   parse(req)(method:, target:, ok:);
   if (!ok) { respond(conn, 400); return; }       // guard
   resolve(target)(id:);
@@ -69,7 +69,7 @@ Routed  :: arche { handler :: int } // well-formed requests route here → dispa
 [4]Bad;
 [4]Routed;
 
-seed :: system {
+seed :: system eff {
   insert(Request { code: 2 })(_:, _:);
   insert(Request { code: -1 })(_:, _:); // malformed
   insert(Request { code: 0 })(_:, _:);
@@ -77,7 +77,7 @@ seed :: system {
 
 // PARSE = the producer: route each request into the pool for its case. The `if (!ok) respond(400)` guard
 // becomes "insert into Bad"; everything else goes to Routed. No `return`, no downstream gating.
-parse :: each (query { code }) {
+parse :: map (query { code }) eff {
   if (code < 0) {
     insert(Bad { status: 400 })(_:, _:);
   } else {
@@ -88,11 +88,11 @@ parse :: each (query { code }) {
 // Two consumers, each over its OWN pool. `as r` binds the matched row's handle; after doing the n+1 step,
 // `delete(r)` CONSUMES it — removes it from the pool. Neither asks "was there an error?": an empty pool
 // runs zero times, and because each row is deleted, a later pass drains nothing (no re-processing).
-errors :: each (query { status } as r) {
+errors :: map (query { status } as r) eff {
   fmt.printf("respond %d\n", status); // the error response …
   delete(r)(_:);                      // … then consume the Bad row (it's handled — remove it)
 }
-dispatch :: each (query { handler } as r) {
+dispatch :: map (query { handler } as r) eff {
   fmt.printf("serve route %d\n", handler); // dispatch …
   delete(r)(_:);                           // … then consume the Routed row
 }
@@ -100,11 +100,11 @@ dispatch :: each (query { handler } as r) {
 #run seq({ seed, parse, errors, dispatch })
 ```
 
-**Why:** a consumer `each` over an empty pool is a no-op — that _is_ the conditional. System 1
+**Why:** a consumer `map (Q) eff` fan over an empty pool is a no-op — that _is_ the conditional. System 1
 produces `n` (inserts a row); system 2 consumes `n` (does the n+1 step, then **`delete`s the row** via its
 `as r` handle); the schedule orders writer-before-reader within the pass. "Branch on a result" becomes
 "route the row into the pool for that case," and an absent row is simply never read — no per-step guards,
 no intra-row effect→effect chaining. **Consuming = deleting**: a handled row leaves the pool, so it is
 never re-processed on a later pass (a drained pool re-runs to nothing). This is the shape of arche-rpg's
-`done :: each (Closed)`: it fires only once a `Closed` row exists, so "should we exit?" needs no boolean —
+`done :: map (Closed) eff`: it fires only once a `Closed` row exists, so "should we exit?" needs no boolean —
 the row's presence is the signal.

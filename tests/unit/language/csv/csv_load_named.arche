@@ -9,7 +9,7 @@ Row :: arche { price :: float, quantity :: int }
   price: 0.0, quantity: 0,
 }
 
-entry :: system {
+entry :: system eff {
   csv.load(Row, "/tmp/csv_load_named.csv");
   fmt.printf(
     "p=[%g %g %g] q=[%d %d %d]\n",

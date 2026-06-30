@@ -36,7 +36,7 @@ PROG = (
     "[1]Window ?abort;\n"
     "[1]Disc ?abort;\n"
     "[1]Rect ?abort;\n"
-    "boot :: system {\n"
+    "boot :: system eff {\n"
     "  gfx.open(%d, %d, \"t\")(win:);\n"
     "  insert(Window { handle: win, bg: %d });\n"
     "  insert(Disc { pos: (32, 32), color: %d, r: 10 });\n"          # disc center (32,32) r=10

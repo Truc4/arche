@@ -15,7 +15,7 @@
 // RUN: %arche fmt %s | grep -qE "^  solo: int = 9;$"
 #import { fmt }
 
-entry :: system {
+entry :: system eff {
   foo: int = 1;
   bar := 2;
   baz := 3;

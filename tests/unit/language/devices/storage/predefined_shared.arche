@@ -7,11 +7,11 @@
 
 [16]Cell; // one pool (the shape comes from the devices), sized to max(4, 16)
 
-seed :: system {
+seed :: system eff {
   insert(Cell { a: 1.0, b: 2.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.assert(Cell.b[0] == 3.0, "vstore.vbump did not run\n")();
   fmt.assert(Cell.a[0] == 2.0, "vcache.vtouch did not run\n")();
   fmt.printf("predef_shared_ok\n");

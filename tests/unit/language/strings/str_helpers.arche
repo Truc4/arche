@@ -3,7 +3,7 @@
 // module's request parsing and the web server's ".." traversal check.
 // RUN: %arche build -o %t %s && %t | grep -q "^fc=1 miss=3 ew=1 no=0 has=1 clean=0$"
 #import { str fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf(
     "fc=%d miss=%d ew=%d no=%d has=%d clean=%d\n",
     str.find_char("a b", 0, 3, ' '), // first space at index 1

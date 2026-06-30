@@ -15,7 +15,7 @@ both :: func(a: int, b: int) -> Eff(int) {
   return seq(acc_a(a), acc_a(b)); // seq of two func-built Effs
 }
 
-entry :: system {
+entry :: system eff {
   both(10, 20)(t:);
   fmt.printf("t=%d\n", t);
 }

@@ -12,7 +12,7 @@ Grid :: arche { cell :: int }
 [pick(1)]Grid(pick(1)) {
   cell: 0,
 }
-entry :: system {
+entry :: system eff {
   fmt.printf("unreached\n");
 }
 

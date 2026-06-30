@@ -16,8 +16,8 @@ Schedule :: sum {
 }
 ```
 
-- A **leaf is a bare map/each/system name** — `#run seq({ boot, render })` dispatches them in order. There is
-  **no `run` constructor** and **no `run` statement** (both retired); `map`/`each` are kinds of systems and
+- A **leaf is a bare map/system name** — `#run seq({ boot, render })` dispatches them in order. There is
+  **no `run` constructor** and **no `run` statement** (both retired); `map` are kinds of systems and
   are scheduled by name. A system body never dispatches another.
 - `seq({…})` / `par({…})` — children in order (`par` is sequential in v1).
 - `loop(s)` — repeat forever; `halt` — stop. (`when(c, s)` is a reserved constructor, not wired to program

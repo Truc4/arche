@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { parse fmt }
-entry :: system {
+entry :: system eff {
   buf: [4]char;
   buf[0] = '1';
   buf[1] = '.';

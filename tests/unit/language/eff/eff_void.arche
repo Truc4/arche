@@ -12,7 +12,7 @@ raise :: func() -> Eff() {
   return eff_flag(); // a void extern under-applies to the empty Eff()
 }
 
-entry :: system {
+entry :: system eff {
   raise()(); // run the empty Eff with a bare () — no out-slots to bind
   eff_flagged()(r:);
   fmt.printf("r=%d\n", r);

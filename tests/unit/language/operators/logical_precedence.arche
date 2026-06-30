@@ -3,7 +3,7 @@
 // and `2 > 1 && 3 > 2` == `(2>1) && (3>2)` == 1.
 // RUN: %arche build -o %t %s && %t | grep -q "^1 1$"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   a := 1 || 0 && 0;
   b := 2 > 1 && 3 > 2;
   fmt.printf("%d %d\n", a, b);

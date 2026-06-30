@@ -6,7 +6,7 @@ MAX :: 100;
 
 limit: int = MAX;
 
-entry :: system {
+entry :: system eff {
   fmt.printf("limit=%d\n", limit);
 }
 

@@ -14,7 +14,7 @@ P :: arche { w :: int }
 [4]P(4);
 N :: 4;
 
-show :: system {
+show :: system eff {
   fmt.printf("%d\n", S.v[0]);
   for (i := 0; i < N; i = i + 1) {
     fmt.printf("%d\n", P.w[i]);

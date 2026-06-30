@@ -2,7 +2,7 @@
 // registry format (mirrors break_outside_loop / E0030).
 // RUN: %build/arche-analyzer --dump %s | grep -qF "error E0093 continue_outside_loop 0 \`continue\` can only appear inside a loop body"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   continue;
   fmt.printf("%d\n", 1);
 }

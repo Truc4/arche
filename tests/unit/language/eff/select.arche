@@ -17,7 +17,7 @@ gi :: func(c: int, m: []char) -> Eff() {
   return ifS(c, note(m), pure());
 } // ditto, explicit else
 
-t :: system {
+t :: system eff {
   gw(1 == 1, "w1 ")(); // true  -> run  -> "w1 "
   gw(1 == 2, "wX ")(); // false -> skip
   gi(1 == 1, "i1 ")(); // true  -> run  -> "i1 "

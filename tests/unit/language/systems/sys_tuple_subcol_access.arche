@@ -17,7 +17,7 @@ boot :: system {
   Mover.vel.x = { 1, 2 };
 }
 
-show :: system {
+show :: system eff {
   fmt.printf("x0=%d x1=%d\n", Mover.pos.x[0], Mover.pos.x[1]);
 }
 

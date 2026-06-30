@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt os }
-entry :: system {
+entry :: system eff {
   buf: [256]char;
   os.read(0, 256)(buf, n:);
   fmt.printf("read returned: %d\n", n);

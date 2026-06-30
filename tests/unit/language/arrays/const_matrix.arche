@@ -4,7 +4,7 @@
 #import { fmt }
 M :: { { 1, 2 }, { 3, 4 } }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%d\n", M[1][0]);
 }
 

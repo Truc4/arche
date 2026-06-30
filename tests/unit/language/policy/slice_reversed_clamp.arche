@@ -3,7 +3,7 @@
 // compiler net-clamp. Runtime bounds so nothing folds away.
 // RUN: %arche build -o %t %s && %t | grep -qF "rev_len=0"
 #import { os fmt }
-entry :: system {
+entry :: system eff {
   os.argc()(argc:);
   a: [4]int;
   a[0] = 1;

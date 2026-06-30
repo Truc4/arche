@@ -12,15 +12,15 @@ Person :: arche { name :: [8]char }
 Src :: arche { buf :: [8]char }
 [1]Src(1) ?abort;
 
-build :: each (query { buf }) {
+build :: map (query { buf }) eff {
   fmt.sprintf(_, "hi")(buf, _:);
 }
 
-ins :: each (query { buf }) {
+ins :: map (query { buf }) eff {
   insert(Person { name: buf })(_:, _:);
 }
 
-show :: each (query { name }) {
+show :: map (query { name }) eff {
   pad := name[3]; // past "hi" — must be a zero pad, not stale bytes
   fmt.printf("name=%s pad=%d len=%d\n", name, pad, str.strlen(name));
 }

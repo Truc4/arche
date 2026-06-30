@@ -6,7 +6,7 @@ two :: func() -> int {
   return 1, 2;
 }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%d\n", 0);
 }
 

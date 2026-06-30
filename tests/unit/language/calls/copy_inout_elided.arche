@@ -7,7 +7,7 @@
 #foreign {
   sink :: proc(own buf: []char, n: int)(buf: []char, r: int);
 }
-entry :: system {
+entry :: system eff {
   b: [64]char;
   sink(copy b, 64)(b, _r:);
 }

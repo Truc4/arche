@@ -6,7 +6,7 @@ rd :: func(s: []int, i: int) -> int {
   return s[i] !clamp;
 }
 
-entry :: system {
+entry :: system eff {
   a: [4]int;
   a[0] = 10;
   a[1] = 11;

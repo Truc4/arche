@@ -5,7 +5,7 @@ pair :: func()(x: int, y: int) {
   y = 7;
 }
 
-entry :: system {
+entry :: system eff {
   pair()(x:, y:);
   fmt.assert(x == 42, "x not 42\n")();
   fmt.assert(y == 7, "y not 7\n")();

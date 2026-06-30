@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "mgfx wayland"
 // RUN: %arche build --select mgfx=x11 -o %t %s && %t | grep "mgfx x11"
 #import { mgfx }
-entry :: system {
+entry :: system eff {
   mgfx.backend()(_:);
 }
 

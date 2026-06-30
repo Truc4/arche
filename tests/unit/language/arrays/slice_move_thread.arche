@@ -11,7 +11,7 @@ step :: func(own xs: []int, i: int, v: int) -> []int {
   return xs;
 }
 
-entry :: system {
+entry :: system eff {
   a: [4]int;
   a := step(move a, 0, 100);
   a := step(move a, 1, 200);

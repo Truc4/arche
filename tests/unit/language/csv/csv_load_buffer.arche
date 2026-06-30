@@ -6,7 +6,7 @@ Transaction :: arche { price :: float, quantity :: int }
   price: 0.0, quantity: 0,
 }
 
-entry :: system {
+entry :: system eff {
   os.open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);
   buf: [256]char;
   os.read(fd, 256)(buf, rd_data:);

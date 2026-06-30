@@ -11,7 +11,7 @@ Enemies :: arche { x, y }
 
 // Only ONE can be allocated
 
-entry :: system {
+entry :: system eff {
   fmt.printf("multiple handles ok\n");
 }
 

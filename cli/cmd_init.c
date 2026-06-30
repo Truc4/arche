@@ -64,10 +64,10 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		    "Movers :: query { pos, vel }\n"
 		    "\n"
 		    "/// ```arche\n"
-		    "/// seed :: system {\n"
+		    "/// seed :: system eff {\n"
 		    "///   insert(Particle{ pos: 10.0, vel: 1.0 }); // `?abort` pool: overflow crashes, no `ok` to handle\n"
 		    "/// }\n"
-		    "/// check :: system {\n"
+		    "/// check :: system eff {\n"
 		    "///   fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\")();\n"
 		    "/// }\n"
 		    "/// #run seq({ seed, integrate, check })\n"
@@ -91,7 +91,7 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 			for (int i = 3; i < argc; i++)
 				n += snprintf(content + n, sizeof(content) - (size_t)n, "%s ", argv[i]);
 			n += snprintf(content + n, sizeof(content) - (size_t)n,
-			              "fmt }\n\nreport :: system {\n  fmt.printf(\"ran\\n\");\n}\n"
+			              "fmt }\n\nreport :: system eff {\n  fmt.printf(\"ran\\n\");\n}\n"
 			              "// schedule the imported devices' systems before `report` in this `#run`.\n"
 			              "#run seq({ report })\n");
 			if (write_new_file(path, content) != ARCHE_OK)
@@ -110,10 +110,10 @@ int init_run(int argc, char **argv, const GlobalOpts *g) {
 		         "\n"
 		         "[1000]Particle ?abort;    // driver picks the size + overflow policy for the global shape\n"
 		         "\n"
-		         "seed :: system {\n"
+		         "seed :: system eff {\n"
 		         "  insert(Particle{ pos: 10.0, vel: 1.0 }); // `?abort` pool: overflow crashes, no `ok` to handle\n"
 		         "}\n"
-		         "check :: system {\n"
+		         "check :: system eff {\n"
 		         "  fmt.assert(Particle.pos[0] * 10 == 110, \"integrate did not run\\n\")();\n"
 		         "  fmt.printf(\"ran\\n\");\n"
 		         "}\n"

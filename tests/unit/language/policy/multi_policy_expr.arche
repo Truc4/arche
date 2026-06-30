@@ -9,7 +9,7 @@ read2 :: func(small: []int, big: []int, i: int) -> int {
   return small[i] !clamp + big[i] !clamp;
 }
 
-entry :: system {
+entry :: system eff {
   foo : [4]int;
   bar : [4]int;
   baz : [4]int;

@@ -7,7 +7,7 @@
 // pool for each shape they require, at the datasheet minimum — then it builds.
 // RUN: rm -rf %t.dd && mkdir -p %t.dd/store && cp %repo/tests/unit/language/devices/storage/store/store.arche %repo/tests/unit/language/devices/storage/store/store.ds.arche %t.dd/store/ && cd %t.dd && %arche init driver app store && grep -q "\[4\]Node" app.arche && %arche build -o app app.arche && ./app | grep -q "ran"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("init_cli_ok\n");
 }
 

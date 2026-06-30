@@ -10,7 +10,7 @@ BIG  :: 1_000_000;
 v    :: int;
 N    :: arche { v }
 [4]N(4);
-entry :: system {
+entry :: system eff {
   fmt.assert(RED == 16711680, "hex const\n")();
   fmt.assert(MASK == 10, "bin const\n")();
   fmt.assert(PERM == 493, "oct const\n")();

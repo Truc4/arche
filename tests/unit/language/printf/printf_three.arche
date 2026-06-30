@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "Third: 3"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("First: %d\n", 1);
   fmt.printf("Second: %d\n", 2);
   fmt.printf("Third: %d\n", 3);

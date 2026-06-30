@@ -24,7 +24,7 @@ outer :: func(data: []char, n: int) -> int {
   return inner(data, n);
 }
 
-entry :: system {
+entry :: system eff {
   buf: [8]char;
   buf[0] = 'a';
   buf[1] = ',';

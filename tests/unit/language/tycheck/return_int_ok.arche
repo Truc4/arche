@@ -6,7 +6,7 @@ answer :: func() -> int {
   return 42;
 }
 
-entry :: system {
+entry :: system eff {
   x := answer();
   fmt.printf("%d\n", x);
 }

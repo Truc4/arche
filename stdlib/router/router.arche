@@ -6,8 +6,8 @@
 /// requests against every route, scores each match (static 3 > param 2 > catchall 1 > 0), and writes the
 /// best handler + first capture span onto the request row. A trie would link nodes by index (hand-indexing,
 /// forbidden); a flat scan stays pure-columnar.
-resolve :: each (query { pattern, hid }) {
-  each (query { path, out_h, cap0_start, cap0_len, best }) {
+resolve :: map (query { pattern, hid }) eff {
+  map (query { path, out_h, cap0_start, cap0_len, best }) eff {
     sc := -1;
     cs := -1;
     cl := -1;

@@ -1,7 +1,7 @@
 #import { fmt }
 Counter :: arche { value :: int }
 [1]Counter ?abort;
-entry :: system {
+entry :: system eff {
   insert(Counter { value: 0 })(_:, _:);
   x := 10;
   y := 20;

@@ -365,7 +365,7 @@ void test_codegen_gen_exhaustion_abort(void) {
 	char *ir = compile_to_ir_string("hp :: int;\n"
 	                                "Unit :: arche { hp }\n"
 	                                "[4]Unit ?abort;\n"
-	                                "entry :: system {\n"
+	                                "entry :: system eff {\n"
 	                                "  insert(Unit{ hp: 1 })(h:);\n"
 	                                "  delete(h);\n"
 	                                "}\n");

@@ -6,7 +6,7 @@
 v :: int;
 N :: arche { v }
 [5]N(5);
-entry :: system {
+entry :: system eff {
   N.v = { 1, 2, 3, 4, 5 };
   sum  := reduce(+, N.v);
   prod := reduce(*, N.v);

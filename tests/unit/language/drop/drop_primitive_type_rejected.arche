@@ -9,7 +9,7 @@ bad :: proc(own x: i64) {
   fmt.printf("%d\n", x);
 }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("unused\n");
 }
 

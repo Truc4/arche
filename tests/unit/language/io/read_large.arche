@@ -3,7 +3,7 @@
 cb      :: char;
 CharBuf :: arche { cb }
 [10000]CharBuf;
-entry :: system {
+entry :: system eff {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
   scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
   io.fread(fd, 10000)(scratch, rd_data:);

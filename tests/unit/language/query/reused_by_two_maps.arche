@@ -16,11 +16,11 @@ damp :: map (Movers) {
   vel = vel * 0.5;
 }
 
-seed :: system {
+seed :: system eff {
   insert(P { pos: 10.0, vel: 2.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   p := P.pos[0] * 10.0;
   v := P.vel[0] * 10.0;
   fmt.assert(p == 130.0, "pos should be 13\n")();

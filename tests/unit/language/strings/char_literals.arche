@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 // Step 1: Char literals
 #import { fmt }
-entry :: system {
+entry :: system eff {
   c   := 44;
   nl  := 10;
   tab := 9;

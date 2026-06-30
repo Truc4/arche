@@ -12,8 +12,8 @@ frame :: func(h: window) -> Eff([]int, int, int) {
 }
 
 /// Fill each window's framebuffer with its `bg` colour (0xRRGGBB).
-clear :: system {
-  each (query { handle, bg }) {
+clear :: system eff {
+  map (query { handle, bg }) eff {
     frame(handle)(px:, w:, h:);
     n := w * h;
     for (i := 0; i < n; i += 1) {
@@ -23,16 +23,16 @@ clear :: system {
 }
 
 /// Present the framebuffer to the window.
-present :: system (query { handle }) {
+present :: system (query { handle }) eff {
   gfx_be_present(handle);
 }
 
 /// A window-close event as data: empty while open, one row once closed. The driver owns `[1]Closed` and
-/// reacts (e.g. an `each (Closed)` that halts). `at` is the close stamp.
+/// reacts (e.g. an `map (Closed) eff` that halts). `at` is the close stamp.
 Closed :: arche { at :: i64 }
 
-poll :: system {
-  each (query { handle }) {
+poll :: system eff {
+  map (query { handle }) eff {
     gfx_be_poll(handle)(r:);
     if (!r) {
       insert(Closed { at: 0 })(_:, _ok:);

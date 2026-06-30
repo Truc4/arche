@@ -18,7 +18,7 @@ gather :: map (query { v, out }) {
   out = out(Table.val[v]); // base suppressed → column ptr; index v auto-indexed per row → Table.val[v_i]
 }
 
-seed :: system {
+seed :: system eff {
   insert(Table { val: 10 })(_:, _:);
   insert(Table { val: 20 })(_:, _:);
   insert(Table { val: 30 })(_:, _:);
@@ -28,7 +28,7 @@ seed :: system {
   insert(Ent { v: 3, out: 0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("out=%d %d %d\n", Ent.out[0], Ent.out[1], Ent.out[2]);
   // gather: 30 10 40;
 }

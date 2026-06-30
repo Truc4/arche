@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "Integer: 42"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x := 42;
   fmt.printf("Integer: %d\n", x);
   fmt.printf("Literal: %d\n", 123);

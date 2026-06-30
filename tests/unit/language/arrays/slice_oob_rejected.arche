@@ -11,7 +11,7 @@ sum :: func(xs: []int) -> int {
   return total;
 }
 
-entry :: system {
+entry :: system eff {
   a: [8]int;
   fmt.printf("%d\n", sum(a[2: 10])); // hi=10 > length 8 -> abort
 }

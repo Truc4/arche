@@ -9,13 +9,13 @@ advance :: map (query { pos, vel }) {
   pos = pos + vel;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
   insert(Particle { pos: 2.0, vel: 0.2 })(_:, _:);
   insert(Particle { pos: 3.0, vel: 0.3 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   p0  := Particle.pos[0];
   p1  := Particle.pos[1];
   p0i := p0 * 10.0;

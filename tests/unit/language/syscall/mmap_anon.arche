@@ -4,7 +4,7 @@
 // syscall the graphics framebuffer will use.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt os }
-entry :: system {
+entry :: system eff {
   os.syscall(9, 0, 4096, 3, 34, -1, 0)(p:);
   if (p > 1000000) {
     os.syscall(11, p, 4096, 0, 0, 0, 0)(un:);

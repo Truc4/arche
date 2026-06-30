@@ -12,12 +12,12 @@ Clock :: arche { last, bank }
 Counter :: arche { n }
 [1]Counter(1);
 
-boot :: system {
+boot :: system eff {
   os.now_ms()(now:);
   Clock.last = { now };
 }
 
-frame :: system {
+frame :: system eff {
   os.now_ms()(now:);
   Clock.bank[0] = Clock.bank[0] + (now - Clock.last[0]);
   Clock.last[0] = now;

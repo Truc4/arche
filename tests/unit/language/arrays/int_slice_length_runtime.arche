@@ -12,7 +12,7 @@ sum :: func(xs: []int) -> int {
   return total;
 }
 
-entry :: system {
+entry :: system eff {
   a: [4]int;
   a[0] = 10;
   a[1] = 20;

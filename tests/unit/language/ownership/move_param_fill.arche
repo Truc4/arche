@@ -15,7 +15,7 @@ fill :: func(own buf: [32]char, s: []char) -> [32]char {
   return buf;
 }
 
-entry :: system {
+entry :: system eff {
   b: [32]char;
   r := fill(move b, "hello");
   n := str.strlen(r);

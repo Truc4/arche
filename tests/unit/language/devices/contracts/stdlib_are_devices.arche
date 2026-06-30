@@ -7,7 +7,7 @@
 // (adding a new stdlib module without a datasheet would fail here).
 // RUN: for m in csv fmt http io net os parse router str term; do test -f %repo/stdlib/$m/$m.ds.arche || { echo "stdlib '$m' is not a device: missing $m.ds.arche"; exit 1; }; done
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("stdlib_devices_check\n");
 }
 

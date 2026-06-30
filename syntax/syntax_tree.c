@@ -263,6 +263,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "QUERY_REF";
 	case SN_QUERY_BIND:
 		return "QUERY_BIND";
+	case SN_EFF:
+		return "EFF";
 	case SN_ALLOC_TYPE:
 		return "ALLOC_TYPE";
 	case SN_NAME_REF:

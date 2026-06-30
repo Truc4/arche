@@ -18,15 +18,15 @@ seedp :: system {
 }
 
 run :: system {
-  each (query { wid }) { // outer: per window
+  map (query { wid }) eff { // outer: per window
     base := wid; // per-window context
-    each (query { v }) { // inner: per ball — captures `base`
+    map (query { v }) eff { // inner: per ball — captures `base`
       v = v + base;
     };
   };
 }
 
-check :: system {
+check :: system eff {
   fmt.assert(P.v[0] == 11, "row 0\n")();
   fmt.assert(P.v[1] == 12, "row 1\n")();
   fmt.assert(P.v[2] == 13, "row 2\n")();

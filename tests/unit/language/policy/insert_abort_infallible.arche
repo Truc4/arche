@@ -6,19 +6,19 @@
 Foo :: arche { v :: int }
 [4]Foo ?abort;
 
-seed :: system {
+seed :: system eff {
   insert(Foo { v: 7 }); // no out-list — `?abort` means there is no `ok` to handle
 }
-show :: each (query { v }) {
+show :: map (query { v }) eff {
   fmt.printf("v=%d ", v);
 }
-clear :: each (query { v } as w) {
+clear :: map (query { v } as w) eff {
   delete(w); // bare delete — infallible (aborts on a stale handle)
 }
-done :: each (query { v }) {
+done :: map (query { v }) eff {
   fmt.printf("STILL v=%d", v); // no live rows after clear → never prints
 }
-tail :: system {
+tail :: system eff {
   fmt.printf("then empty\n");
 }
 

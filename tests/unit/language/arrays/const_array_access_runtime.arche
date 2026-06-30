@@ -8,7 +8,7 @@
 #import { fmt }
 XS    :: { 10, 20, 30 }
 M     :: { { 1, 2, 3 }, { 4, 5, 6 } }
-entry :: system {
+entry :: system eff {
   row := M[1]; // a [3]i32 row alias
   buf: [5]int;
   buf[1] = 7;

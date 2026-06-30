@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x := 42;
   fmt.assert(x == 42, "with int type failed\n")();
   y := 3.14;

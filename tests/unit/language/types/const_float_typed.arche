@@ -5,7 +5,7 @@
 #import { fmt }
 PI :: 3.14;
 TAU: float: 6.28;
-entry :: system {
+entry :: system eff {
   fmt.printf("pi: %.2f tau: %.2f\n", PI, TAU - PI);
 }
 

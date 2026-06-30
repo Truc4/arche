@@ -5,7 +5,7 @@ fill :: func(own buf: [4]i64) -> [4]i64 {
   buf[0] = 5000000000;
   return buf;
 }
-entry :: system {
+entry :: system eff {
   a: [4]i64;
   r := fill(move a);
   fmt.printf("o=%lld\n", r[0]);

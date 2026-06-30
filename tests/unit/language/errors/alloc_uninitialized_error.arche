@@ -5,7 +5,7 @@ Counter :: arche { val :: int }
 
 [5]Counter;
 
-entry :: system {
+entry :: system eff {
   x := Counter.val[0];
   fmt.printf("should not reach\n");
 }

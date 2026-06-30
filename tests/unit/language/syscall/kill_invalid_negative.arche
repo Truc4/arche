@@ -2,7 +2,7 @@
 // negative errno directly (no libc errno indirection) — proves error returns.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt os }
-entry :: system {
+entry :: system eff {
   os.syscall(62, 2000000000, 0, 0, 0, 0, 0)(r:);
   if (r < 0) {
     fmt.printf("ok\n");

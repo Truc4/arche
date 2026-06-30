@@ -2,7 +2,7 @@
 // normalizes to truthiness). Works on any int operand.
 // RUN: %arche build -o %t %s && %t | grep "nz=1 nx=0 dn=1"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x  := 5;
   z  := 0;
   nz := !z; // z is zero  -> 1

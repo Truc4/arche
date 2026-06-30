@@ -2461,10 +2461,14 @@ static void lower_query_columns(SyntaxView f, HirStmt **stmts, int stmt_count, H
 	*out_count = pc;
 }
 
+/* The optional `eff` permission marker (`system (Q) eff { … }`) parses to an SN_EFF child. */
+static int sv_has_eff(SyntaxView f) { return sv_present(sv_child_at(f, SN_EFF, 0)); }
+
 static HirDecl *lower_system_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_SYSTEM);
 	HirSystemDecl *as = calloc(1, sizeof(HirSystemDecl));
 	as->name = name;
+	as->eff = sv_has_eff(f);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* `system(Q)` carries query columns (the effectful fan); a run-once `system { }` resolves to 0. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
@@ -2477,6 +2481,7 @@ static HirDecl *lower_system_from(SyntaxView f, char *name) {
 static HirEachDecl *lower_each_payload(SyntaxView f, char *name) {
 	HirEachDecl *as = calloc(1, sizeof(HirEachDecl));
 	as->name = name;
+	as->eff = 1; /* the each fan (and `map (Q) eff`) is the effectful per-entity kind by construction */
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* `each(Q)` carries its query columns (flattened), bound per-element in codegen's row loop. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
@@ -2494,6 +2499,8 @@ static HirDecl *lower_each_from(SyntaxView f, char *name) {
 }
 
 static HirDecl *lower_map_from(SyntaxView f, char *name) {
+	/* A plain `map` is the pure branch-free column transform. `map (Q) eff` is the effectful per-entity fan
+	 * and parses directly to SN_EACH_EXPR (the each machinery), so it never reaches here. */
 	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
 	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
 	as->name = name;

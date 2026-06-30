@@ -10,7 +10,7 @@ g :: proc(a: int, b: int, c: int) {
   fmt.printf("%d\n", a + b + c);
 }
 
-entry :: system {
+entry :: system eff {
   g(1, 2, 3);
   g(
     alpha,

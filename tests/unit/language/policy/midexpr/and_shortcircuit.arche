@@ -4,7 +4,7 @@
 // runs only on the taken path, so the short-circuited-out `!abort` never fires.
 // RUN: %arche build -o %t %s && %t
 #import { os }
-entry :: system {
+entry :: system eff {
   os.argc()(argc:);
   a: [4]int;
   a[0] = 1;

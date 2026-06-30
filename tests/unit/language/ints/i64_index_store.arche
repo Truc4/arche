@@ -8,7 +8,7 @@ setb :: func(own buf: []char, i: i64, v: int) -> []char {
   }
   return buf;
 }
-entry :: system {
+entry :: system eff {
   b: [16]char;
   // i64-indexed stores into a local buffer and via a char[] param
   for (i: i64 = 0; i < 16; i = i + 1) {

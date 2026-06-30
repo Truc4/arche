@@ -7,7 +7,7 @@
 g :: func(x: int, y: int) -> int {
   return x + y;
 }
-entry :: system {
+entry :: system eff {
   os.argc()(argc:);
   a: [4]int;
   a[0] = 2;

@@ -10,11 +10,11 @@ seed :: system {
   Ball.color = { 1, 2 };
 }
 
-shift :: each (Ball) {
+shift :: map (Ball) eff {
   pos.x = pos.x + color; // per-element: add this ball's color to its x
 }
 
-check :: system {
+check :: system eff {
   fmt.assert(Ball.pos.x[0] == 8, "row 0\n")();
   fmt.assert(Ball.pos.x[1] == 11, "row 1\n")();
   fmt.printf("each-archetype ok\n");

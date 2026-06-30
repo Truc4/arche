@@ -4,7 +4,7 @@ get_len :: func(s: []char) -> int {
   return str.strlen(s);
 }
 
-entry :: system {
+entry :: system eff {
   len := get_len("hello");
   if (len == 5) {
     fmt.printf("strlen ok\n");

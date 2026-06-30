@@ -8,24 +8,24 @@
 Job :: arche { n :: int }
 [8]Job ?abort;
 
-seed :: system {
+seed :: system eff {
   insert(Job { n: 1 })(_:, _:);
   insert(Job { n: 2 })(_:, _:);
   insert(Job { n: 3 })(_:, _:);
 }
 
 // Consumer: process the row, then `delete(w)` removes it. `w` is the row's own handle (bare, like insert's).
-drain :: each (query { n } as w) {
+drain :: map (query { n } as w) eff {
   fmt.printf("do %d ", n);
   delete(w)(_:);
 }
 
-bar :: system {
+bar :: system eff {
   fmt.printf("| ");
 }
 
 // The SECOND drain must print nothing — the pool was emptied by the first.
-done :: system {
+done :: system eff {
   fmt.printf("done\n");
 }
 

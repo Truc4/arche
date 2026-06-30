@@ -3,7 +3,7 @@
 // (b dies, so it's read before the move). Proves explicit copy/move work as bind RHS expressions.
 // RUN: %arche build -o %t %s && %t | grep -q "a0=5 b0=9 c0=9"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   a: [3]int;
   a[0] = 5;
   b := copy a; // explicit clone — a stays alive

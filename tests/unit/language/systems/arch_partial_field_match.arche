@@ -16,12 +16,12 @@ gravity :: map (query { pos, mass }) {
   pos = pos + mass;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
   insert(Body { pos: 2.0, vel: 0.2, mass: 10.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   ppi := Particle.pos[0] * 10.0;
   bpi := Body.pos[0] * 10.0;
   fmt.assert(ppi == 10, "Particle.pos should stay 1.0 (no mass component)\n")();

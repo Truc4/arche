@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { io fmt }
-entry :: system {
+entry :: system eff {
   io.fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf: [256]char;
   io.fread(fd, 256)(buf, rd_v1:);

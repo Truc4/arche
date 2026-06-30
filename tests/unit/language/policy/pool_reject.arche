@@ -5,7 +5,7 @@
 #import { fmt }
 Foo :: arche { v :: int }
 [2]Foo;
-entry :: system {
+entry :: system eff {
   insert(Foo { v: 1 })(h0:, ok0:); // unannotated -> default ?reject
   insert(Foo { v: 2 }) ?reject(h1:, ok1:); // explicit, identical
   insert(Foo { v: 3 }) ?reject(h2:, ok2:); // pool full -> ok2 = 0, no abort

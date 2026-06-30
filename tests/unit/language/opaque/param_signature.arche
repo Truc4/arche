@@ -8,7 +8,7 @@ res :: opaque;
 describe :: func(f: res) -> int {
   return 0;
 }
-entry :: system {
+entry :: system eff {
   fmt.printf("ok opaque_param\n");
 }
 

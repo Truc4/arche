@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "undefined.*helper|helper.*undefined" %t.out
 #import { sib_filepriv fmt }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%d\n", sib_filepriv.useit());
 }
 

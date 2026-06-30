@@ -4,7 +4,7 @@ Tensor :: arche { data :: [5][5]float }
 
 [5]Tensor;
 
-entry :: system {
+entry :: system eff {
   fmt.print("allocations done\n")(_:);
 }
 

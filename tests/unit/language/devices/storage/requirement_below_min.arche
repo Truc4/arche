@@ -5,11 +5,11 @@
 
 [2]Node; // below the datasheet minimum of 4 — must error (the shape comes from store)
 
-seed :: system {
+seed :: system eff {
   insert(Node { key: 2.0, val: 3.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("should_not_build\n");
 }
 

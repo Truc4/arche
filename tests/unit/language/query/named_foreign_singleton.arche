@@ -19,12 +19,12 @@ step :: map (Movers) {
   pos += vel;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Config { k: 10.0, center_x: 100.0, center_y: 200.0 })(_:, _:);
   insert(Mover { pos_x: 80.0, pos_y: 80.0, vel_x: 0.0, vel_y: 0.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf(
     "v=%.0f %.0f p=%.0f %.0f\n",
     Mover.vel.x[0] * 1.0,

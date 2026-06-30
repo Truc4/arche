@@ -11,7 +11,7 @@ prod :: func(a: int, b: int) -> Eff(int) {
   return eff_mul(a, b);
 }
 
-entry :: system {
+entry :: system eff {
   prod(6, 7)(p:);
   fmt.printf("p=%d\n", p);
 }

@@ -5,7 +5,7 @@
 #import { fmt }
 Foo :: arche { v :: int }
 [4]Foo;
-entry :: system {
+entry :: system eff {
   insert(Foo { v: 7 })(h:, ok:); // lands at slot 0
   fmt.printf("ok=%d h_nonzero=%d\n", ok, h != 0); // h != 0 must be true despite slot 0
 }

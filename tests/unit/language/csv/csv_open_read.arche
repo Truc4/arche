@@ -3,7 +3,7 @@
 
 buf: [65536]char;
 
-entry :: system {
+entry :: system eff {
   fmt.printf("about to open file\n");
   io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);

@@ -73,7 +73,7 @@ step_map :: map (query { ax, ay, avx, avy }) {
 }
 
 // (2) each: identical body as a per-row fan
-step_each :: each (query { bx, by, bvx, bvy }) {
+step_each :: map (query { bx, by, bvx, bvy }) eff {
   bvx = bvx - (bx - 400.0) * 0.05;
   bvy = bvy - (by - 300.0) * 0.05;
   bvx = bvx * 0.99;
@@ -136,18 +136,18 @@ laps_gpu :: func() -> Schedule {
                step_gpu, step_gpu, step_gpu, step_gpu, step_gpu });
 }
 
-t_start_map :: system { os.now_ms()(now:); Timer.start[0] = now; }
-t_end_map :: system { os.now_ms()(now:); Timer.map_ms[0] = now - Timer.start[0]; }
-t_start_each :: system { os.now_ms()(now:); Timer.start[0] = now; }
-t_end_each :: system { os.now_ms()(now:); Timer.each_ms[0] = now - Timer.start[0]; }
-t_start_sys :: system { os.now_ms()(now:); Timer.start[0] = now; }
-t_end_sys :: system { os.now_ms()(now:); Timer.sys_ms[0] = now - Timer.start[0]; }
-t_start_loop :: system { os.now_ms()(now:); Timer.start[0] = now; }
-t_end_loop :: system { os.now_ms()(now:); Timer.loop_ms[0] = now - Timer.start[0]; }
-t_start_gpu :: system { os.now_ms()(now:); Timer.start[0] = now; }
-t_end_gpu :: system { os.now_ms()(now:); Timer.gpu_ms[0] = now - Timer.start[0]; }
+t_start_map :: system eff { os.now_ms()(now:); Timer.start[0] = now; }
+t_end_map :: system eff { os.now_ms()(now:); Timer.map_ms[0] = now - Timer.start[0]; }
+t_start_each :: system eff { os.now_ms()(now:); Timer.start[0] = now; }
+t_end_each :: system eff { os.now_ms()(now:); Timer.each_ms[0] = now - Timer.start[0]; }
+t_start_sys :: system eff { os.now_ms()(now:); Timer.start[0] = now; }
+t_end_sys :: system eff { os.now_ms()(now:); Timer.sys_ms[0] = now - Timer.start[0]; }
+t_start_loop :: system eff { os.now_ms()(now:); Timer.start[0] = now; }
+t_end_loop :: system eff { os.now_ms()(now:); Timer.loop_ms[0] = now - Timer.start[0]; }
+t_start_gpu :: system eff { os.now_ms()(now:); Timer.start[0] = now; }
+t_end_gpu :: system eff { os.now_ms()(now:); Timer.gpu_ms[0] = now - Timer.start[0]; }
 
-report :: system {
+report :: system eff {
   ca := reduce(+, MoverA.ax);
   cb := reduce(+, MoverB.bx);
   cc := reduce(+, MoverC.cx);

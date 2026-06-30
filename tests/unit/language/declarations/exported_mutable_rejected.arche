@@ -5,7 +5,7 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "Lint error \[exported_mutable_global\]" %t.out
 #import { "./extmut/lib" fmt }
 
-entry :: system {
+entry :: system eff {
   bump();
   fmt.printf("count\n");
 }

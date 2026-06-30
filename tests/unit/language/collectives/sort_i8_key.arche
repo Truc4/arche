@@ -7,7 +7,7 @@ k   :: i8;
 tag :: int;
 N   :: arche { k, tag }
 [40]N(40);
-entry :: system {
+entry :: system eff {
   N.k = {
     40,
     39,

@@ -11,7 +11,7 @@ widget :: opaque;
 wfree :: proc(own w: widget) {
   free_widget(move w)();
 }
-entry :: system {
+entry :: system eff {
   fmt.print("ok\n")(_:);
 }
 

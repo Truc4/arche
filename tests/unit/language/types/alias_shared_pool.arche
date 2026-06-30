@@ -12,7 +12,7 @@ B  :: arche { mp, hp }
 
 [4]A ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(A { hp: 10, mp: 20 })(_:, _:);
   insert(B { hp: 30, mp: 40 })(_:, _:);
   fmt.printf("hp0=%d mp0=%d hp1=%d mp1=%d\n", A.hp[0], A.mp[0], A.hp[1], A.mp[1]);

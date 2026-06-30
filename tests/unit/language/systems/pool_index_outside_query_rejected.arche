@@ -11,7 +11,7 @@ seed :: system {
   Thing.n = { 10, 20, 30 };
 }
 
-peek :: system {
+peek :: system eff {
   fmt.printf("%d\n", Thing.n[0]);
 }
 

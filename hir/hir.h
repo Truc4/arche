@@ -159,6 +159,7 @@ typedef struct {
 	HirStmt **stmts;
 	int stmt_count;
 	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
+	int eff;    /* 1 if the `eff` permission was declared: the kernel may run effects */
 	SourceLoc loc;
 } HirMapDecl;
 
@@ -170,6 +171,7 @@ typedef struct {
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
+	int eff; /* 1 if the `eff` permission was declared: the system may run effects */
 	SourceLoc loc;
 } HirSystemDecl;
 
@@ -185,6 +187,7 @@ typedef struct {
 	char *row_var;
 	HirStmt **stmts;
 	int stmt_count;
+	int eff; /* 1 if the `eff` permission was declared (always set for `map (Q) eff` lowered to each) */
 	SourceLoc loc;
 } HirEachDecl;
 

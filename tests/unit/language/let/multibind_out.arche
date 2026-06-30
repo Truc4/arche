@@ -6,7 +6,7 @@ fill_buf :: func(own buf: [32]char) -> int {
   return 99;
 }
 
-entry :: system {
+entry :: system eff {
   buf: [32]char;
   result := fill_buf(move buf);
   fmt.printf("result: %d\n", result);

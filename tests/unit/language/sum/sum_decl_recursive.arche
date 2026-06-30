@@ -10,7 +10,7 @@ Tree :: sum {
   leaf(int) pair(Tree, Tree) many([]Tree) empty
 }
 
-entry :: system {
+entry :: system eff {
   sum := 1 + 2; // `sum` is still a normal identifier
   fmt.printf("ok %d\n", sum);
 }

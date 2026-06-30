@@ -4,7 +4,7 @@
 // divide (which would crash on d==0). Runtime divisor — a literal 0 divisor would fold away.
 // RUN: %arche build -o %t %s && %t
 #import { os }
-entry :: system {
+entry :: system eff {
   os.argc()(argc:);
   d := argc - argc; // 0 at runtime, opaque to the constant folder
   s := 0;

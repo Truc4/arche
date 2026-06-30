@@ -4,7 +4,7 @@
 // RUN: grep -qi "Lint warning \[exported_mutable_global\]" %t.err
 #import { "./extmut/lib" fmt }
 
-entry :: system {
+entry :: system eff {
   fmt.print("ok\n")(_:);
 }
 

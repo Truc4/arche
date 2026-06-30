@@ -27,7 +27,7 @@ sleep_ms :: func(ms: int) -> Eff(i64) {
   return nanosleep(req);
 }
 
-entry :: system {
+entry :: system eff {
   os.now_ms()(t0:);
   sleep_ms(50)(_:); // run the func→Eff; must actually sleep ~50ms
   os.now_ms()(t1:);

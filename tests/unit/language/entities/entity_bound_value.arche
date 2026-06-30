@@ -8,7 +8,7 @@ tag :: int;
 B   :: arche { v, tag }
 [4]B ?abort;
 
-entry :: system {
+entry :: system eff {
   e := B { tag: 7, v: 2 }; // out of declaration order — names bind, not position
   insert(e)(_:, _:);
   fmt.printf("v=%d tag=%d\n", B.v[0], B.tag[0]);

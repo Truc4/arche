@@ -10,7 +10,7 @@ bump :: func(x: int) -> Eff(int) {
   return eff_add1(x);
 }
 
-entry :: system {
+entry :: system eff {
   bump(1)(a:, b:); // Eff(int) yields 1, but 2 out-args given
 }
 

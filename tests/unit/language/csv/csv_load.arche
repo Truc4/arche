@@ -6,7 +6,7 @@ Transaction :: arche { price :: float, quantity :: int }
   price: 0.0, quantity: 0,
 }
 
-load_csv :: system {
+load_csv :: system eff {
   io.fopen_read("../../../../../tests/fixtures/transactions.csv")(fd:);
   buf       : [256]char;
   price_str : [32]char;
@@ -72,7 +72,7 @@ load_csv :: system {
 // Copy quantity string (after comma)
 // Convert and assign
 
-check :: system {
+check :: system eff {
   fmt.assert(Transaction.price[0] == 1.0, "price[0] not 1.0\n")();
   fmt.printf("csv ok\n");
 }

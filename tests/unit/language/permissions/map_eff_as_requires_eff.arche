@@ -1,0 +1,9 @@
+// The `as w` row-binder (which binds a row handle for effectful ops like `delete(w)`) is only meaningful
+// on the effectful fan, so it requires the `eff` permission: `map (query {…} as w) eff`. Using `as`
+// without `eff` is a hard error.
+// RUN: not %arche build -o %t %s 2>&1 | grep -qF "row-binder requires the"
+n :: int;
+P :: arche { n }
+[8]P ?abort;
+bad :: map (query { n } as w) { n = n + 1; }
+#run seq({ bad })

@@ -6,7 +6,7 @@ not_found :: func() -> int {
   return 404;
 }
 h: handler: not_found;
-entry :: system {
+entry :: system eff {
   c := h();
   fmt.printf("code=%d\n", c);
 }

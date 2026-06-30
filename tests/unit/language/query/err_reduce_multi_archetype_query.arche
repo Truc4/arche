@@ -11,7 +11,7 @@ B   :: arche { v, tag } // distinct shape, but both have column `v`
 
 Vals :: query { v }
 
-entry :: system {
+entry :: system eff {
   insert(A { v: 1 })(_:, _:);
   insert(B { v: 2, tag: 7 })(_:, _:);
   sum := reduce(+, Vals.v);

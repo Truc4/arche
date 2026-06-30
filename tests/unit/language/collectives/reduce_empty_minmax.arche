@@ -8,7 +8,7 @@ I  :: arche { iv }
 F  :: arche { fv }
 [4]I; // zero rows
 [4]F; // zero rows
-entry :: system {
+entry :: system eff {
   imn := reduce(min, I.iv); // +INT_MAX
   imx := reduce(max, I.iv); // -INT_MAX-ish (INT_MIN)
   fmn := reduce(min, F.fv); // +inf

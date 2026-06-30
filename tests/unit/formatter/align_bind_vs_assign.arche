@@ -8,7 +8,7 @@
 // And the binding is never widened to reach the assignment column:
 // RUN: ! %arche fmt %s | grep -qE "^  y + := "
 #import { fmt }
-entry :: system {
+entry :: system eff {
   data: [2]int;
   data[0] = 7;
   data[1] = 9;

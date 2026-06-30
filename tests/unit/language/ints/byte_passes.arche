@@ -28,7 +28,7 @@ classify_commas :: func(data: []char, own mask: []char, n: i64) -> []char {
   }
   return mask;
 }
-entry :: system {
+entry :: system eff {
   src: [8]char;
   src[0] = 'a';
   src[1] = ',';

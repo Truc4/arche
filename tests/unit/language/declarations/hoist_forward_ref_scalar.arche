@@ -1,7 +1,7 @@
 // WANT: top-level names hoist uniformly — a system may read a global declared BELOW it.
 // RUN: %arche build --exported-mutable=allow -o %t %s && %t | grep -q "g=7"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   v := g; // forward reference to a global declared later
   fmt.printf("g=%d\n", v);
 }

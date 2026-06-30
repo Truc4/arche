@@ -7,7 +7,7 @@
 Foo :: arche { v :: int }
 [4]Foo;
 
-seed :: system {
+seed :: system eff {
   insert(Foo { v: 1 })(_:, _:); // discards ok on a fallible pool → discarded_ok error
 }
 

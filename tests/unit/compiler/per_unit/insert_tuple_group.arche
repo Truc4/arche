@@ -7,11 +7,11 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "p=11 22 v=1 2"
 #import { tgdev fmt }
 [1]Mover ?abort;
-seed :: system {
+seed :: system eff {
   insert(Mover { pos_x: 10, pos_y: 20, vel_x: 1, vel_y: 2 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("p=%d %d v=%d %d\n", Mover.pos.x[0], Mover.pos.y[0], Mover.vel.x[0], Mover.vel.y[0]);
 }
 

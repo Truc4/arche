@@ -19,7 +19,7 @@ shift :: system (Ball) {
   pos.x = pos.x + 1;
 }
 
-check :: system {
+check :: system eff {
   fmt.assert(Ball.pos.x[0] == 8, "row 0 x\n")();
   fmt.assert(Ball.color[0] == 101, "row 0 color\n")();
   fmt.assert(Ball.pos.x[1] == 10, "row 1 x\n")();

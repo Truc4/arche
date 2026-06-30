@@ -8,7 +8,7 @@ N   :: arche { k, tag }
 [40]N(40) {
   k: 7, tag: 1
 }
-entry :: system {
+entry :: system eff {
   scan(+, N.tag); // tag = 1..40, k all 7
   sort(N.k); // equal keys → stable → tag order unchanged
   fmt.assert(N.tag[0] == 1, "t0\n")();

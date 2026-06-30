@@ -2,7 +2,7 @@
 // RUN: %arche build -o %t %s && %t | grep "got 5"
 #import { fmt }
 meters :: float;
-entry  :: system {
+entry  :: system eff {
   d: meters = 5.0;
   fmt.printf("got %g\n", d);
 }

@@ -5,7 +5,7 @@
 v :: int;
 N :: arche { v }
 [4]N; // capacity 4, zero rows inserted
-entry :: system {
+entry :: system eff {
   sum  := reduce(+, N.v);
   prod := reduce(*, N.v);
   fmt.printf("sum=%d prod=%d\n", sum, prod);

@@ -1,9 +1,9 @@
 /// Draw a filled disc per drawable entity — centre `pos`, radius `r`, colour `color` — into each window's
 /// framebuffer, clamped to its bounds.
-circle :: system {
-  each (query { handle }) {
+circle :: system eff {
+  map (query { handle }) eff {
     frame(handle)(px:, w:, h:);
-    each (query { pos, color, r }) {
+    map (query { pos, color, r }) eff {
       r2 := r * r;
       y0 := pos.y - r;
       y1 := pos.y + r;
@@ -41,10 +41,10 @@ circle :: system {
 /// Draw a filled axis-aligned rectangle per drawable entity — top-left `rx,ry`, size `rw,rh`, colour
 /// `rcolor` — into each window's framebuffer, clamped to its bounds. (Components are `r`-prefixed so they
 /// don't shadow the window's `w`/`h` locals inside the fan.)
-rect :: system {
-  each (query { handle }) {
+rect :: system eff {
+  map (query { handle }) eff {
     frame(handle)(px:, w:, h:);
-    each (query { rx, ry, rw, rh, rcolor }) {
+    map (query { rx, ry, rw, rh, rcolor }) eff {
       y0 := ry;
       y1 := ry + rh;
       if (y0 < 0) {

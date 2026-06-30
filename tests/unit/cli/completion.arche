@@ -7,7 +7,7 @@
 // RUN: %arche completion fish | grep -qF "driver\'s"
 // RUN: ! %arche completion fish | grep -qF "a driver's pools"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("x\n");
 }
 

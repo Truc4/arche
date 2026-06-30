@@ -8,11 +8,11 @@
 // RUN: env ARCHE_HOT_DIR=%t.hot ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qF "sys_ok"
 #import { hotsys fmt }
 [1]Cell ?abort;
-seed :: system {
+seed :: system eff {
   insert(Cell { v: 0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.assert(Cell.v[0] == 1, "system did not run over the driver's pool\n")();
   fmt.printf("sys_ok\n");
 }

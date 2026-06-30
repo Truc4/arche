@@ -4,7 +4,7 @@
 // fail here. Covers both ops, both outcomes, and nested chains.
 // RUN: %arche build -o %t %s && %t | grep -qF "and_t=1 and_f=0 or_t=1 or_f=0 nest_t=1 nest_f=0"
 #import { os fmt }
-entry :: system {
+entry :: system eff {
   os.argc()(argc:);
   z      := argc - argc; // 0, opaque to the folder
   one    := z + 1; // 1

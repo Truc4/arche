@@ -9,7 +9,7 @@ resource :: opaque;
   resource_close :: proc(own r: resource);
 }
 
-entry :: system {
+entry :: system eff {
   resource_open(1)(r1:);
   resource_open(2)(r2:);
   resource_open(3)(r3:);

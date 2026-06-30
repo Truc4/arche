@@ -11,7 +11,7 @@ go :: proc(f: proc()())() {
   f()();
 }
 
-entry :: system {
+entry :: system eff {
   go(twice)();
 }
 

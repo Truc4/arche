@@ -191,6 +191,9 @@ typedef enum {
 	                                   runtime `?:`/`match` selecting different externs) — no fn-pointer. E0222. */
 	SEM_DIAG_main_reserved,         /* a user decl named `main` — the program entry is `#run`, not `main`;
 	                                   `main` carries no special meaning and is reserved. E0225. */
+	SEM_DIAG_effect_without_eff,    /* a `map`/`system` runs an effect (insert/delete, extern/proc call, an
+	                                   Eff run) without the `eff` permission — kernels are pure by default;
+	                                   declare `eff` (or `map (Q) eff`) to run effects. E0226. */
 
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
@@ -386,6 +389,8 @@ SemDiag *sem_emit_unknown_const_value(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_const_rhs_invalid(SemanticContext *ctx, SourceLoc loc);
 
 SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason);
+SemDiag *sem_emit_effect_without_eff(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *reason);
 SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form);
 
 SemDiag *sem_emit_policy_provable_oob(SemanticContext *ctx, SourceLoc loc, const char *base, int idx, int len);

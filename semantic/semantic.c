@@ -4809,13 +4809,21 @@ static const char *func_call_effect_reason(SemanticContext *ctx, const char *nam
  * subtree rooted at `v` (a statement or expression view), or NULL if pure. Mirrors the old AST
  * walker: a `run`, an effectful call, or a read/write of archetype/global state is an effect. A
  * func's only inputs are its params + `::` constants, so any static/global touch makes it impure. */
-static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *owner) {
+static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *owner, int kernel_mode) {
 	if (!sv_present(v))
 		return NULL;
 	const char *r;
 	SyntaxNodeKind k = sv_kind(v);
 	if (k == SN_RUN_STMT)
 		return "runs a map (`run`)";
+	if (k == SN_EXPR_STMT) {
+		/* A bare Eff value in statement position is RUN — codegen executes it (`fmt.printf("…");` runs printf).
+		 * Building an Eff and binding it to a local is pure; discarding it bare runs it. (The out-list run form
+		 * `f(in)(out:)` is an SN_PROC_CALL_STMT, handled below.) */
+		SyntaxView e = sem_node_at_expr(v, 0);
+		if (sv_present(e) && tyid_kind(ctx->ty_arena, sem_expr_type_id(ctx, e)) == TYK_EFF)
+			return "runs an effect (an Eff value)";
+	}
 	if (k == SN_PROC_CALL_STMT) {
 		/* The out-list form `f(in)(out:)` RUNS f. Running an extern, a proc, or an archetype-mutating
 		 * builtin is an effect — even though the inner call node is typed TYK_EFF (building the effect is
@@ -4859,7 +4867,10 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *
 			}
 			free(fb);
 		}
-	} else if (k == SN_ASSIGN_STMT) {
+	} else if (k == SN_ASSIGN_STMT && !kernel_mode) {
+		/* Writing static memory is impure for a FUNC, but a KERNEL exists to write its columns/singletons —
+		 * that's data work, governed by the (write-set), not the `eff` permission. So in kernel_mode this is
+		 * not an effect. */
 		char *tn = sv_resolved_name(ctx, sem_node_at_expr(v, 0));
 		const char *rr = NULL;
 		if (tn && !name_is_owner_param(owner, tn)) {
@@ -4871,7 +4882,9 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *
 		free(tn);
 		if (rr)
 			return rr;
-	} else if (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR) {
+	} else if (!kernel_mode &&
+	           (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR)) {
+		/* Reading static memory is impure for a FUNC; a kernel reads its columns/singletons freely. */
 		char *nm = sv_resolved_name(ctx, v);
 		const char *rr = NULL;
 		if (nm && !name_is_owner_param(owner, nm)) {
@@ -4886,7 +4899,7 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *
 	}
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE)
-			if ((r = purity_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src}, owner)))
+			if ((r = purity_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src}, owner, kernel_mode)))
 				return r;
 	return NULL;
 }
@@ -4895,7 +4908,20 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *
 static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode, DeclSummary *owner) {
 	const char *r;
 	for (int i = 0, n = sem_stmt_count(declnode); i < n; i++)
-		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i), owner)))
+		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i), owner, 0)))
+			return r;
+	return NULL;
+}
+
+/* The first TRUE side-effect in a kernel body (a `map`/`system`/`each`), or NULL if effect-free. Unlike
+ * func purity, a kernel's reads/writes of its own columns and singletons are data work (not effects) — only
+ * insert/delete/dealloc, calls to externs/`#foreign`/procs, and running an `Eff` count. The walk recurses
+ * into nested kernels, so an effect inside an inline `each`/`map (Q) eff` propagates to the enclosing
+ * `system` for free. A kernel that trips this without the `eff` permission is a hard error. */
+static const char *kernel_effect_body_view(SemanticContext *ctx, SyntaxView declnode, DeclSummary *owner) {
+	const char *r;
+	for (int i = 0, n = sem_stmt_count(declnode); i < n; i++)
+		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i), owner, 1)))
 			return r;
 	return NULL;
 }
@@ -6672,6 +6698,13 @@ static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 	for (int i = 0, n = sem_stmt_count(sys->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(sys->body_node, i));
 	ctx->in_body = 0;
+	/* Pure by default: a `system` may run effects only with the `eff` permission. The walk recurses into any
+	 * inline `each`/`map (Q) eff`, so a system that runs effects through a nested kernel is caught too. */
+	if (!sv_present(sv_child_at(sys->body_node, SN_EFF, 0))) {
+		const char *reason = kernel_effect_body_view(ctx, sys->body_node, sys);
+		if (reason)
+			sem_emit_effect_without_eff(ctx, sys->loc, "system", sys->name, reason);
+	}
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
 	ctx->current_proc = prev_proc;
@@ -6746,7 +6779,9 @@ static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
 	const char *old_map_archetype = ctx->current_map_archetype;
 	ctx->current_map_archetype = map_archetype;
 	int prev_in_map = ctx->in_map;
-	ctx->in_map = 1; /* map = pure per-element kernel: enables the E0046 transform-only restriction */
+	/* `map` is the pure per-element kernel: E0046 (transform-only) active. The effectful per-entity fan is
+	 * `map (Q) eff`, which parses to SN_EACH_EXPR (analyze_each_decl), so it never reaches here. */
+	ctx->in_map = 1;
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(map->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(map->body_node, i));

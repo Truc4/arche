@@ -6,7 +6,7 @@
 #import { fmt }
 count := 0;
 
-entry :: system {
+entry :: system eff {
   fmt.printf("count=%d then ", count);
   count = 3;
   fmt.printf("%d\n", count);

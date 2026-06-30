@@ -13,7 +13,7 @@ bump :: func(x: int) -> Eff(int) {
   return eff_add1(x);
 }
 
-entry :: system {
+entry :: system eff {
   bump(41)(r:); // IMPURE: run it — r comes from running, not from the func
   fmt.printf("r=%d\n", r);
 }

@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep "cbrt27=3"
 // RUN: %arche run %s | grep "cbrt27=3"
 #import { clink fmt }
-entry :: system {
+entry :: system eff {
   clink.cube_root(27.0)(r:);
   fmt.printf("cbrt27=%f\n", r);
 }

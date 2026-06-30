@@ -7,7 +7,7 @@ fill :: func(own buf: [8]int, n: int) -> [8]int {
   buf[1] = 7;
   return buf;
 }
-entry :: system {
+entry :: system eff {
   b: [8]int;
   r := fill(move b, 8);
   c := 2;

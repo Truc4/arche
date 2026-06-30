@@ -3,7 +3,7 @@
 // `else` token). Each else here must actually run: expect B, C, F.
 // RUN: %arche build -o %t %s && %t | tr '\n' ' ' | grep -q "B C F"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x := 5;
   if (x == 1) {
     fmt.print("A\n")(_:);

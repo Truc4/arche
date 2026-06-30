@@ -4,7 +4,7 @@ Matrix :: arche { data :: [10]float }
 
 [5]Matrix ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(Matrix { data: 1.5 })(_:, _:);
   val := Matrix.data[0][0];
   vi  := val * 10.0;

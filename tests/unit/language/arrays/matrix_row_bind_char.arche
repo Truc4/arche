@@ -4,7 +4,7 @@
 #import { os }
 S :: { "aa", "bb" }
 
-entry :: system {
+entry :: system eff {
   r := S[0];
   os.write(1, r, r.length)(_:);
   os.write(1, "\n", 1)(_:);

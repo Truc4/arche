@@ -1,5 +1,5 @@
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x      := 10;
   y      := 20;
   result := x + y;

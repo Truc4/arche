@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { str fmt }
-entry :: system {
+entry :: system eff {
   n := str.strlen("hello");
   fmt.printf("strlen returned: %d\n", n);
 }

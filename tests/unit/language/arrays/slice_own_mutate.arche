@@ -13,7 +13,7 @@ zero :: func(own xs: []int) -> int {
   return xs.length;
 }
 
-entry :: system {
+entry :: system eff {
   a: [2]int;
   a[0] = 7;
   a[1] = 9;

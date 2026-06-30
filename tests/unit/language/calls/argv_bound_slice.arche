@@ -5,7 +5,7 @@
 // returned slice must carry the real bytes AND the right length (regression for the rawptr→bound mechanism).
 #import { os fmt }
 
-entry :: system {
+entry :: system eff {
   os.argv(2)(a:); // argv[2] = "bravo" (argv[0] is the program, argv[1] = "alpha")
   fmt.printf("arg1=%s len=%d\n", a, a.length);
 }

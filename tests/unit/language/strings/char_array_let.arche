@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-entry :: system {
+entry :: system eff {
   buf: [256]char;
   c := ',';
   fmt.printf("ok\n");

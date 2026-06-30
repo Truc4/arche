@@ -10,7 +10,7 @@ Counter :: arche { val }
   val: 7
 }
 
-entry :: system {
+entry :: system eff {
   fmt.print("ok\n")(_:);
 }
 

@@ -6,7 +6,7 @@ Nums :: arche { val :: float }
   val: 0.0,
 }
 
-entry :: system {
+entry :: system eff {
   Nums.val[0] = 1.0;
   Nums.val[1] = 2.0;
   Nums.val[2] = 3.0;

@@ -11,7 +11,7 @@ seed :: system {
   S.v = { 1, 2, 3, 4 };
 }
 
-guard :: each (query { v, out }) {
+guard :: map (query { v, out }) eff {
   if (v == 1) {
     out = 10;
     continue;
@@ -23,11 +23,11 @@ guard :: each (query { v, out }) {
   out = 99;
 }
 
-show :: each (query { out }) {
+show :: map (query { out }) eff {
   fmt.printf("%d ", out);
 }
 
-tail :: system {
+tail :: system eff {
   fmt.printf("\n");
 }
 

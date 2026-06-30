@@ -1,7 +1,7 @@
 // `arche fmt` is idempotent: formatting its own output passes `--check`.
 // RUN: %arche fmt %s > %t.f && %arche fmt --check %t.f
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("x\n");
 }
 

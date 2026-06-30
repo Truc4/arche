@@ -12,7 +12,7 @@ move_sys :: map (query { pos, vel }) {
   pos = pos + vel;
   log_step()();
 }
-seed :: system {
+seed :: system eff {
   insert(Particle { pos: 1.0, vel: 2.0 })(_:, _:);
 }
 

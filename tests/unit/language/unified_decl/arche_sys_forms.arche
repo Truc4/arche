@@ -12,11 +12,11 @@ bump :: map (query { pos }) {
   pos = pos + 2.0;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Particle { pos: 1.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("pos0=%f\n", Particle.pos[0]);
 }
 

@@ -2,7 +2,7 @@
 // RUN: %arche build --emit=llvm-ir -o %t.ll %s && grep -q "define" %t.ll
 // RUN: %arche build --emit=asm -o %t.s %s && grep -q "\.text\|\.section" %t.s
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("x\n");
 }
 

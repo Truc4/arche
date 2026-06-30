@@ -16,7 +16,7 @@ full :: func(s: []char) -> Eff(int) {
   return take(s, s.length); // param.length threaded through the nested builder
 }
 
-entry :: system {
+entry :: system eff {
   full("hello")(r:);
   fmt.printf("r=%d\n", r);
 }

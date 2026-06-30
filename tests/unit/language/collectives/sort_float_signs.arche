@@ -24,7 +24,7 @@ seed :: system {
   scan(+, N.tag);
 }
 
-verify :: system {
+verify :: system eff {
   sort(N.v);
   fmt.assert(N.v[0] < 0.0, "neg first\n")();
   fmt.assert(N.v[39] > 0.0, "pos last\n")();

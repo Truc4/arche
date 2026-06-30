@@ -12,7 +12,7 @@ bump :: func(own buf: [16]char) -> [16]char {
   return buf;
 }
 
-entry :: system {
+entry :: system eff {
   a: [16]char;
   a := fill(move a); // a is now a `char[]` slice "hi" (length 2)
   b: [16]char;

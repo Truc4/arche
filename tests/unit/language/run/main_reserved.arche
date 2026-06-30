@@ -3,11 +3,11 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "is reserved" %t.out
 #import { fmt }
 
-main :: system {
+main :: system eff {
   fmt.printf("never\n");
 }
 
-go :: system {
+go :: system eff {
   fmt.printf("scheduled\n");
 }
 

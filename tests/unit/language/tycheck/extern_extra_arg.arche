@@ -6,7 +6,7 @@
 #foreign {
   unmap2 :: proc(data: []char, size: i64);
 }
-entry :: system {
+entry :: system eff {
   buf: [8]char;
   unmap2(buf, 8, 8);
 }

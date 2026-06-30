@@ -10,7 +10,7 @@ double_val :: map (query { val }) {
   val = val * 2;
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("system_ran\n");
   fmt.assert(Task.val[0] == 10, "val not 10\n")();
 }

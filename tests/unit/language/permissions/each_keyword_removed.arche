@@ -1,0 +1,9 @@
+// The `each` keyword was removed — the effectful per-entity fan is `map (Q) eff`. `each` is now an
+// ordinary identifier, so `each (query {…}) { … }` is no longer a kernel declaration and fails to compile.
+// (Regression guard so the keyword stays gone.)
+// RUN: not %arche build -o %t %s 2>&1
+v :: float;
+R :: arche { v }
+[2]R(2);
+go :: each (query { v }) { v = v + 1.0; }
+#run seq({ go })

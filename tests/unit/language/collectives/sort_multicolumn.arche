@@ -23,7 +23,7 @@ seed :: system {
   scan(+, N.c);
 }
 
-verify :: system {
+verify :: system eff {
   sort(N.k);
   b0 := N.b[0];
   fmt.assert(N.a[0] == 40, "a0\n")();

@@ -37,13 +37,13 @@ Done :: arche { code :: int } [4]Done;          // "task finished" — as data
 
 seed :: system { insert(Work { n: 42 })(_:, _:); }
 
-run_task :: each (query { n } as w) {           // process each work request
+run_task :: map (query { n } as w) eff {           // process each work request
   // …do the work…
   insert(Done { code: n })(_:, _:);             // EMIT a Done row instead of calling on_done
   delete(w)(_:);                                // consume the request
 }
 
-finish :: each (query { code } as d) {          // the "on_done" callback = a consumer system
+finish :: map (query { code } as d) eff {          // the "on_done" callback = a consumer system
   fmt.printf("task done: %d\n", code);          // runs zero times if no Done row was emitted
   delete(d)(_:);
 }

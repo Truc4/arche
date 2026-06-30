@@ -14,7 +14,7 @@ sum :: func(xs: []int) -> int {
 }
 M: [2][3]int: { { 1, 2, 3 }, { 4, 5, 6 } }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("e=%d sum=%d\n", M[1][2], sum(M[1]));
 }
 

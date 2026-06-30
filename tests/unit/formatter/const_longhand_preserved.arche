@@ -4,7 +4,7 @@
 #import { fmt }
 answer: int: 42;
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%d\n", answer);
 }
 

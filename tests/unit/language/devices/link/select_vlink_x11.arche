@@ -2,7 +2,7 @@
 // (vlink_wval) is NOT linked. Proves a device's link inputs follow the variant overlay.
 // RUN: env ARCHE_SELECT=vlink=x11 %arche build -o %t %s && %t | grep "val=11"
 #import { vlink fmt }
-entry :: system {
+entry :: system eff {
   vlink.value()(v:);
   fmt.printf("val=%d\n", v);
 }

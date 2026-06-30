@@ -6,7 +6,7 @@ Point :: arche { x :: int }
   x: 42,
 }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("before access\n");
   val := Point.x[0];
   fmt.assert(val == 42, "val not 42\n")();

@@ -207,7 +207,6 @@ static void synchronize(Parser *parser) {
 		case TOK_PROC:
 		case TOK_MAP:
 		case TOK_SYSTEM:
-		case TOK_EACH:
 		case TOK_FUNC:
 		case TOK_LET:
 		case TOK_FOR:
@@ -1455,6 +1454,39 @@ static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
 	return 1;
 }
 
+/* After a map/system/each selector, an optional bare `eff` permission marker may
+ * precede the `{` body: `system (Q) eff { … }`. `eff` is a CONTEXTUAL keyword (it is
+ * a permission only here; elsewhere it is an ordinary identifier — e.g. an `Eff` local
+ * named `eff`), so we match the ident text and wrap it as an SN_EFF marker the lowerer
+ * detects. Absent ⇒ the kernel is pure (running effects is then a hard error). */
+static int parse_opt_eff(Parser *parser) {
+	if (cur_ident_is(parser, "eff", 3)) {
+		int e_cp = syntax_cp(parser);
+		advance(parser); /* consume 'eff' */
+		syntax_wrap(parser, e_cp, SN_EFF);
+		return 1;
+	}
+	return 0;
+}
+
+/* Optional `as w` row-binder inside a fan's parens (`map (query {…} as w) eff`) — binds the matched row's
+ * generation-checked handle to `w` (a `handle(driver)` local) for `delete(w)(ok:)` / relationship filters.
+ * `as` is a contextual keyword. Returns 1 if a binder was parsed. */
+static int parse_opt_row_bind(Parser *parser) {
+	if (cur_ident_is(parser, "as", 2)) {
+		advance(parser); /* consume 'as' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected a name after 'as' — `map (query {…} as w) eff` binds the matched row as `w`");
+			return 0;
+		}
+		int b_cp = syntax_cp(parser);
+		advance(parser); /* the binder name */
+		syntax_wrap(parser, b_cp, SN_QUERY_BIND);
+		return 1;
+	}
+	return 0;
+}
+
 /* `out_kind` receives the SyntaxNodeKind for the primary expression form parsed,
  * derived from parse context (not from a built AST node). The caller wraps the
  * syntax tree node with it. Left untouched when the primary already wrapped itself (paren). */
@@ -1557,13 +1589,25 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected a query in `map(...)` — a name `map(Movers)` or a literal `map(query {…})`");
 			return 0;
 		}
+		/* optional `as w` row-binder (only the effectful per-entity fan binds a row handle). */
+		int map_has_bind = parse_opt_row_bind(parser);
 		if (check(parser, TOK_COMMA)) {
-			error(parser, "maps don't support joins — a map runs over ONE query; to combine pools, nest an "
-			              "`each` inside another (cross-pool work is explicit nesting, not a join)");
+			error(parser, "maps don't support joins — a map runs over ONE query; to combine pools, nest a "
+			              "`map (…) eff` inside another (cross-pool work is explicit nesting, not a join)");
 			return 0;
 		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')'");
+			return 0;
+		}
+		/* `map (Q) eff` is the EFFECTFUL per-entity fan — it routes to the SN_EACH_EXPR machinery (per-row
+		 * body with control flow + effects), the same kernel the removed `each` keyword produced. A plain
+		 * `map` stays the pure branch-free column transform (SN_MAP_EXPR, E0046-restricted). */
+		if (parse_opt_eff(parser)) {
+			*out_kind = SN_EACH_EXPR;
+		} else if (map_has_bind) {
+			error(parser, "the `as` row-binder requires the `eff` permission — it binds a handle for effectful "
+			              "row ops (`delete(w)`): write `map (query {…} as w) eff { … }`");
 			return 0;
 		}
 		return parse_block_body(parser);
@@ -1597,55 +1641,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 		}
-		return parse_block_body(parser);
-	}
-	if (check(parser, TOK_EACH)) {
-		advance(parser); /* consume 'each' */
-		*out_kind = SN_EACH_EXPR;
-		/* `each(Q) { body }` is the per-element fan: the body runs PER matched element (scalars), with control
-		 * flow + effects. `each` runs over ONE query — there are NO joins. To combine pools, NEST an each
-		 * (which may be anonymous, in statement position) inside another; the inner fan captures the outer's
-		 * per-element context. Cross-pool work is explicit nesting, not a tuple of queries. */
-		if (!match(parser, TOK_LPAREN)) {
-			error(parser, "Expected '(' after 'each' — `each` always fans over a query");
-			return 0;
-		}
-		if (check(parser, TOK_QUERY)) {
-			int q_cp = syntax_cp(parser);
-			advance(parser); /* consume 'query' */
-			if (!parse_query_columns(parser))
-				return 0;
-			syntax_wrap(parser, q_cp, SN_QUERY_EXPR);
-		} else if (check(parser, TOK_IDENT)) {
-			int ref_cp = syntax_cp(parser);
-			advance(parser); /* the query name */
-			syntax_wrap(parser, ref_cp, SN_QUERY_REF);
-		} else {
-			error(parser, "Expected a query in `each(...)` — a name `each(Drawables)` or a literal "
-			              "`each(query {…})`");
-			return 0;
-		}
-		/* optional `as w` — bind the matched row's generation-checked handle to `w` (a `handle(driver)`
-		 * local), for `delete(w)(ok:)` / relationship filters. `as` is a contextual keyword (no global one). */
-		if (cur_ident_is(parser, "as", 2)) {
-			advance(parser); /* consume 'as' */
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected a name after 'as' — `each (query {…} as w)` binds the matched row as `w`");
-				return 0;
-			}
-			int b_cp = syntax_cp(parser);
-			advance(parser); /* the binder name */
-			syntax_wrap(parser, b_cp, SN_QUERY_BIND);
-		}
-		if (check(parser, TOK_COMMA)) {
-			error(parser, "each runs over ONE query — there are no joins; to combine pools, NEST an `each` "
-			              "inside another (cross-pool work is explicit nesting)");
-			return 0;
-		}
-		if (!match(parser, TOK_RPAREN)) {
-			error(parser, "Expected ')'");
-			return 0;
-		}
+		parse_opt_eff(parser);
 		return parse_block_body(parser);
 	}
 	if (check(parser, TOK_ENUM)) {

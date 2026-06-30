@@ -4,7 +4,7 @@
 
 buf: [65536]char;
 
-entry :: system {
+entry :: system eff {
   io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);
   io.close(move fd)(_:);

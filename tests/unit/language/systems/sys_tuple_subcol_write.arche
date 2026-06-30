@@ -10,7 +10,7 @@ boot :: system {
   Mover.pos.x = { 7, 9 };
 }
 
-check :: system {
+check :: system eff {
   fmt.printf("ok %d %d\n", Mover.pos.x[0], Mover.pos.x[1]);
 }
 

@@ -14,10 +14,10 @@ bump :: map (query { hp }) {
   hp = hp + 1;
 }
 
-mob_seed :: system {
+mob_seed :: system eff {
   insert(Mob { hp: 0 })(_:, _:);
 }
 
-mob_report :: system {
+mob_report :: system eff {
   fmt.printf("n=%d\n", Mob.hp[0]);
 }

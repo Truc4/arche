@@ -6,7 +6,7 @@
 [1]S ?abort;
 S :: arche { v :: int }
 
-seed :: system {
+seed :: system eff {
   insert(S { v: 10 })(_:, _:);
 }
 
@@ -14,7 +14,7 @@ bump :: system (query { v }) {
   v = v + 5;
 }
 
-check :: system {
+check :: system eff {
   fmt.assert(S.v[0] == 15, "singleton column write lost\n")();
   fmt.printf("ok\n");
 }

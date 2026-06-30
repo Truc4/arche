@@ -10,10 +10,10 @@
 Particle :: arche { pos, vel }
 
 /// ```arche
-/// seed :: system {
+/// seed :: system eff {
 ///   insert(Particle{ pos: 10.0, vel: 1.0 })(_:, _:);
 /// }
-/// check :: system {
+/// check :: system eff {
 ///   fmt.assert(Particle.pos[0] * 10 == 110, "device doctest did not drive its shape\n")();
 ///   fmt.printf("widget_doctest_ok\n");
 /// }

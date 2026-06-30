@@ -1,0 +1,8 @@
+// The `eff` permission (slice 1): a `system` is PURE BY DEFAULT. Running an effect (here, I/O via
+// `fmt.printf`) without declaring `eff` is a hard error (E0226 effect_without_eff).
+// RUN: not %arche build -o %t %s 2>&1 | grep -qF "is pure by default"
+#import { fmt }
+go :: system {
+  fmt.printf("hi\n");
+}
+#run seq({ go })

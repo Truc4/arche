@@ -9,7 +9,7 @@ P :: arche { x :: int }
 [4]P(4) {
   x: 0
 }
-entry :: system {
+entry :: system eff {
   for (i := 0; i < 4; i = i + 1) {
     P.x[i] = i; // i < 4 <= init count 4 → proven, no implicit !abort
   }

@@ -2,7 +2,7 @@
 // resolves to the x11 implementation, and the always-merged `hello`/`extra` are present too.
 // RUN: env ARCHE_SELECT=vgfx=x11 %arche build -o %t %s && %t | grep "x11 window"
 #import { vgfx }
-entry :: system {
+entry :: system eff {
   vgfx.hello()(_:); // always-merged
   vgfx.extra()(_:); // always-merged (descriptive dotted filename)
   vgfx.open_window()(_:); // x11 variant

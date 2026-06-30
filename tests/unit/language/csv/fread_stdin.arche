@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { io fmt }
-entry :: system {
+entry :: system eff {
   buf: [256]char;
   io.stdin()(fd:);
   io.fread(fd, 256)(buf, n:);

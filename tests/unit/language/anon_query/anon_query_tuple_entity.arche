@@ -14,11 +14,11 @@ step :: map (Movers) {
   pos = pos + vel;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Movers { pos: (1.0, 2.0), vel: (3.0, 4.0) })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   px := Movers.pos.x[0] * 1.0;
   py := Movers.pos.y[0] * 1.0;
   fmt.printf("p=%.0f %.0f\n", px, py);

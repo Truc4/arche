@@ -4,7 +4,7 @@ Particle :: arche { id :: int }
 
 [5]Particle ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(Particle { id: 1 })(_:, _:);
   insert(Particle { id: 2 })(_:, _:);
   a := Particle.id[0];

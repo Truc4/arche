@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-entry :: system {
+entry :: system eff {
   for (i := 0; i < 3; i += 1) {
     fmt.printf("before if\n");
     if (1) {

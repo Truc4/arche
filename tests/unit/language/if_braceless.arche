@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 // Step 3: Braceless if body (single statement)
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x := 1;
   if (x == 1) {
     fmt.printf("braceless if ok\n");

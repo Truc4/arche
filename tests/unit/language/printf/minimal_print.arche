@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep test
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.print("test\n")(_:);
 }
 

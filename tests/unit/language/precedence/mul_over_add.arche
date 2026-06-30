@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "RESULT=8"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("RESULT=%d\n", 2 + 3 * 2);
 }
 

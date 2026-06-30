@@ -3,7 +3,7 @@
 // char and numeric element types.
 // RUN: %arche build -o %t %s && %t | grep "slen=3 tlen=4 buflen=8 iblen=10"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   buf: [8]char;
   s := buf[2: 5]; // length 3
   ib: [10]int;

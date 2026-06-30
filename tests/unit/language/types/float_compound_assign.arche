@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-entry :: system {
+entry :: system eff {
   x := 1.5;
   x += 1.0;
   fmt.assert(x == 2.5, "float compound assign failed\n")();

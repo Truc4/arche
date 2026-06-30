@@ -1,7 +1,7 @@
 // Prefix unary minus composes with a tighter binary op: 2 * (-3) -> -6.
 // RUN: %arche build -o %t %s && %t | grep "RESULT=-6"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("RESULT=%d\n", 2 * -3);
 }
 

@@ -6,7 +6,7 @@
 #link {
   "m; echo pwned"
 }
-entry :: system {
+entry :: system eff {
   fmt.printf("unreachable\n");
 }
 

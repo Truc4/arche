@@ -17,7 +17,7 @@ seed :: system {
   scan(+, N.tag);
 }
 
-verify :: system {
+verify :: system eff {
   sort(N.k);
   k0   := N.k[0];
   k63  := N.k[63];

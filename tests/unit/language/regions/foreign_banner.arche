@@ -3,7 +3,7 @@
 // is an FFI declaration bound to libc.
 // RUN: %arche build -o %t %s && %t | grep "abs=9"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   abs(-9)(a:);
   fmt.printf("abs=%d\n", a);
 }

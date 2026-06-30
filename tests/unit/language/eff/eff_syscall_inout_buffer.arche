@@ -13,7 +13,7 @@ clock_mono :: func() -> Eff([2]i64, i64) {
   return sys_clk(1, _); // `_` is the ABI in-slot; the timespec is the OUT
 }
 
-entry :: system {
+entry :: system eff {
   ts: [2]i64;
   clock_mono()(ts, _:); // no `:` — bind the kernel-written OUT to the EXISTING `ts`
   ms := ts[0] * 1000 + ts[1] / 1000000;

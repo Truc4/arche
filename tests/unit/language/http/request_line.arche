@@ -33,7 +33,7 @@ span_eq :: func(raw: []char, start: int, len: int, lit: []char) -> int {
   return 1;
 }
 
-seed :: system {
+seed :: system eff {
   insert(
     Req {
       raw          : "GET /a?b=1 HTTP/1.1\r\n",
@@ -60,11 +60,11 @@ seed :: system {
 
 // The test's `raw` is a NUL-terminated literal, so its received length is `strlen` (a live server gets the
 // byte count from `net.recv`'s out-slot instead).
-measure :: each (query { raw, raw_len }) {
+measure :: map (query { raw, raw_len }) eff {
   raw_len = str.strlen(raw);
 }
 
-check :: each (query { raw, method_start, method_len, target_start, target_len, ok }) {
+check :: map (query { raw, method_start, method_len, target_start, target_len, ok }) eff {
   if (ok == 1) {
     getm := span_eq(raw, method_start, method_len, "GET");
     tm   := span_eq(raw, target_start, target_len, "/a"); // query-trimmed
@@ -75,7 +75,7 @@ check :: each (query { raw, method_start, method_len, target_start, target_len, 
   }
 }
 
-done :: system {
+done :: system eff {
   fmt.printf("\n");
 }
 

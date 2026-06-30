@@ -4,7 +4,7 @@ check_buf :: func(buf: [32]char) -> int {
   return str.strlen(buf);
 }
 
-entry :: system {
+entry :: system eff {
   n1 := str.strlen("hello");
   fmt.printf("direct strlen: %d\n", n1);
   n2 := check_buf("hello");

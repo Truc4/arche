@@ -11,7 +11,7 @@ Resource :: arche { cell }
 }
 [2]Resource ?reject;
 
-entry :: system {
+entry :: system eff {
   resource_open(1)(r1:);
   insert(Resource { cell: r1 })(_:, ok1:);
   resource_open(2)(r2:);

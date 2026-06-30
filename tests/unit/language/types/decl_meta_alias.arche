@@ -4,7 +4,7 @@
 // RUN: %arche build -o %t %s && %t | grep "ok: 7"
 #import { fmt }
 weight: type: int;
-entry :: system {
+entry :: system eff {
   w: weight = 7;
   fmt.printf("ok: %d\n", w);
 }

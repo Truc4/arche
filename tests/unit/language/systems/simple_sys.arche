@@ -9,13 +9,13 @@ dummy :: map (query { pos }) {
   pos = pos;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Body { pos: 1.0 })(_:, _:);
   insert(Body { pos: 2.0 })(_:, _:);
   insert(Body { pos: 3.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("system_ran\n");
   p0  := Body.pos[0];
   p1  := Body.pos[1];

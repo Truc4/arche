@@ -5,7 +5,7 @@ cb      :: char;
 CharBuf :: arche { cb }
 [65536]CharBuf;
 
-entry :: system {
+entry :: system eff {
   io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);
   if (fd > 0) {

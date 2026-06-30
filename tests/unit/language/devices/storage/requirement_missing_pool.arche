@@ -6,7 +6,7 @@
 
 // no `Node[N]` pool — the store device's `Node` requirement is unmet
 
-verify :: system {
+verify :: system eff {
   fmt.printf("should_not_build\n");
 }
 

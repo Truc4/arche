@@ -5,7 +5,7 @@ double :: func(x: int) -> int {
   return x * 2;
 }
 
-entry :: system {
+entry :: system eff {
   y := double("hello");
   fmt.printf("%d\n", y);
 }

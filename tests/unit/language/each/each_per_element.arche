@@ -10,7 +10,7 @@ seed :: system {
   Acc.n = { 10, 20, 30 };
 }
 
-show :: each (query { n }) {
+show :: map (query { n }) eff {
   if (n > 15) {
     fmt.printf("n=%d\n", n);
   }

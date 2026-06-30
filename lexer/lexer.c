@@ -156,10 +156,8 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 6 && strncmp(start, "system", 6) == 0) {
 		return TOK_SYSTEM;
 	}
-	/* `each` is the per-element fan: a current element (scalars), with control flow + effects. */
-	if (length == 4 && strncmp(start, "each", 4) == 0) {
-		return TOK_EACH;
-	}
+	/* `each` is NOT a keyword: the per-element effectful fan is `map (Q) eff` (the old `each` keyword was
+	 * removed; it is now an ordinary identifier). */
 	/* `query` is a first-class archetype selector (a column set) — a `map`/collective runs over one. */
 	if (length == 5 && strncmp(start, "query", 5) == 0) {
 		return TOK_QUERY;
@@ -668,8 +666,6 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_MAP";
 	case TOK_SYSTEM:
 		return "TOK_SYSTEM";
-	case TOK_EACH:
-		return "TOK_EACH";
 	case TOK_QUERY:
 		return "TOK_QUERY";
 	case TOK_FUNC:

@@ -2,7 +2,7 @@
 // RUN: %arche build -o %t %s && %t | grep "r=3"
 #import { fmt }
 dist  :: alias float;
-entry :: system {
+entry :: system eff {
   d  : dist  = 3.0;
   f  : float = d;
   d2 : dist  = f;

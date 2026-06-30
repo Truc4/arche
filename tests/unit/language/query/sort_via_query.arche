@@ -7,7 +7,7 @@ N :: arche { v }
 
 Vals :: query { v }
 
-entry :: system {
+entry :: system eff {
   insert(N { v: 5 })(_:, _:);
   insert(N { v: 9 })(_:, _:);
   insert(N { v: 1 })(_:, _:);

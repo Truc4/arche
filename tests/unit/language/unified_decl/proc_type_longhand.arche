@@ -11,7 +11,7 @@ negate :: func(a: int) -> int {
 }
 h : handler : not_found;
 g : unop    : negate;
-entry :: system {
+entry :: system eff {
   c := h();
   r := g(7);
   fmt.printf("code=%d r=%d\n", c, r);

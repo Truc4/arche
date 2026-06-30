@@ -20,7 +20,7 @@ seed :: system {
   Body.vel = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("p0=%.0f p7=%.0f\n", Body.pos[0] * 1.0, Body.pos[7] * 1.0);
 }
 

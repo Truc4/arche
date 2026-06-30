@@ -3,7 +3,7 @@ Player :: arche { pos :: float }
 
 [10]Player ?abort;
 
-entry :: system {
+entry :: system eff {
   insert(Player { pos: 1.0 })(h1:, _:);
   delete(h1)(_:);
   insert(Player { pos: 2.0 })(h2:, _:);

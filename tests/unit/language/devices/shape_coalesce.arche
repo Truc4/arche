@@ -7,11 +7,11 @@
 Pt :: arche { px, py } // the same shape coaldev defines — coalesces, does not duplicate
 [8]Pt ?abort;
 
-seed :: system {
+seed :: system eff {
   insert(Pt { px: 10.0, py: 1.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   fmt.assert(Pt.px[0] == 11.0, "coaldev.step did not run over the driver's pool\n")();
   fmt.printf("coalesce_ok\n");
 }

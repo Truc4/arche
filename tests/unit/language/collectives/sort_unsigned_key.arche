@@ -7,7 +7,7 @@ k   :: u32;
 tag :: int;
 N   :: arche { k, tag }
 [3]N(3);
-entry :: system {
+entry :: system eff {
   N.k   = { 1, 4000000000, 2 };
   N.tag = { 10, 20, 30 };
   sort(N.k); // unsigned ascending: 1, 2, 4000000000 → tags 10, 30, 20

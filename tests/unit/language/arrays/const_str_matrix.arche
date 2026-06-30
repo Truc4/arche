@@ -6,7 +6,7 @@
 #import { fmt }
 S :: { "a", "bb", "ccc" }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%c%c%c %c%c%c\n", S[0][0], S[1][0], S[2][0], S[2][0], S[2][1], S[2][2]);
 }
 

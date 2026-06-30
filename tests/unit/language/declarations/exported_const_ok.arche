@@ -5,7 +5,7 @@
 #import { fmt }
 MAX :: 100;
 
-entry :: system {
+entry :: system eff {
   fmt.printf("max=%d\n", MAX);
 }
 

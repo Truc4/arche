@@ -3,7 +3,7 @@
 // path's copy branch.
 // RUN: %arche build -o %t %s && %t | grep -q "a0=7 b0=9"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   a : [3]int;
   b : [3]int;
   b[0] = 7;

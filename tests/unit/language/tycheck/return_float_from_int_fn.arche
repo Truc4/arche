@@ -7,7 +7,7 @@ foo :: func() -> int {
   return 1.5;
 }
 
-entry :: system {
+entry :: system eff {
   x := foo();
   fmt.printf("%d\n", x);
 }

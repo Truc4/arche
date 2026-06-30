@@ -29,7 +29,6 @@ const char *arche_token_category(TokenKind kind, SyntaxNodeKind parent) {
 	case TOK_PROC:
 	case TOK_MAP:
 	case TOK_SYSTEM:
-	case TOK_EACH:
 	case TOK_QUERY:
 	case TOK_FUNC:
 	case TOK_LET:

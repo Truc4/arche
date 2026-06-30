@@ -27,7 +27,7 @@ keep :: func(s: []char, lim: int) -> int {
   }
   return acc;
 }
-entry :: system {
+entry :: system eff {
   fmt.printf("%d\n", dup("ab") + keep("ab", 1));
 }
 

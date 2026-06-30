@@ -7,7 +7,7 @@ take :: func(b: [8]char) -> int {
   return 0;
 }
 
-entry :: system {
+entry :: system eff {
   buf: [8]char;
   buf[0] = 'A';
   n := take(move buf);

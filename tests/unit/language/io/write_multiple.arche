@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { os }
-entry :: system {
+entry :: system eff {
   os.write(1, "First\n", 6)(_:);
   os.write(1, "Second\n", 7)(_:);
   os.write(1, "Third\n", 6)(_:);

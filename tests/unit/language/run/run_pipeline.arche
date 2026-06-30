@@ -12,11 +12,11 @@ step :: map (query { x }) {
   x = x + 1;
 }
 
-boot :: system {
+boot :: system eff {
   insert(Counter { x: 0 })(_:, _:);
 }
 
-report :: system {
+report :: system eff {
   fmt.printf("x=%d\n", Counter.x[0]);
 }
 

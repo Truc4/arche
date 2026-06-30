@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { io }
-entry :: system {
+entry :: system eff {
   io.stdout_write("hello\n", 6)(_:);
 }
 

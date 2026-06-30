@@ -4,7 +4,7 @@
 // real stdlib opaques — no FFI stub needed.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "socket" %t.out
 #import { io net }
-entry :: system {
+entry :: system eff {
   io.stdout()(f:);
   buf: [8]char;
   // net.send expects a `socket`; handing it an `fd` is the type error.

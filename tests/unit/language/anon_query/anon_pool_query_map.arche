@@ -14,11 +14,11 @@ step :: map (Movers) {
   pos = pos + vel;
 }
 
-seed :: system {
+seed :: system eff {
   insert(Movers { pos: 10.0, vel: 1.0 })(_:, _:);
 }
 
-verify :: system {
+verify :: system eff {
   v := Movers.pos[0] * 10.0;
   // read a column THROUGH the query
   fmt.assert(v == 110.0, "pos should be 11\n")();

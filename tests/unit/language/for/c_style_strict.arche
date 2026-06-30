@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t | grep "0" && %t | grep "9"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   for (i := 0; i < 10; i = i + 1) {
     fmt.printf("%d\n", i);
   }

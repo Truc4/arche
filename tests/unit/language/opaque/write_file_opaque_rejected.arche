@@ -11,7 +11,7 @@ make_fd :: proc()(f: file) {
 sink :: proc(own f: file) {
 }
 
-entry :: system {
+entry :: system eff {
   make_fd()(h:);
   sink(move h);
 }

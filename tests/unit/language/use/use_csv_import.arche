@@ -5,7 +5,7 @@ cb      :: char;
 CharBuf :: arche { cb }
 [65536]CharBuf;
 
-entry :: system {
+entry :: system eff {
   io.open("tests/fixtures/data.csv")(fd:);
   if (fd) {
     scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)

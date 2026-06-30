@@ -1,5 +1,5 @@
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.print("Hello, World!\n")(_:);
 }
 

@@ -8,7 +8,7 @@ pos(x, y) :: int;
 hp        :: float;
 Mob       :: arche { pos, hp }
 [8]Mob(3);
-entry :: system {
+entry :: system eff {
   Mob.pos.x = { 10, 20, 30 };
   Mob.pos.y = { 1, 2, 3 };
   Mob.hp    = { 5, 10, 15 }; // int literals into a float column → promoted to 5.0/10.0/15.0

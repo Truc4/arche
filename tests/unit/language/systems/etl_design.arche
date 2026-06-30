@@ -41,7 +41,7 @@ task4_process :: map (query { amount }) {
   amount = amount * 2.0;
 }
 
-verify :: system {
+verify :: system eff {
   fmt.printf("ok\n");
 }
 

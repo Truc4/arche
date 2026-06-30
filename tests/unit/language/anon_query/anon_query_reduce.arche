@@ -8,7 +8,7 @@ v :: int;
 
 Vals :: query { v }
 
-entry :: system {
+entry :: system eff {
   insert(Vals { v: 10 })(_:, _:);
   insert(Vals { v: 20 })(_:, _:);
   insert(Vals { v: 30 })(_:, _:);

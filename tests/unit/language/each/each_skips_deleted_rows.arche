@@ -9,18 +9,18 @@
 Job :: arche { n :: int }
 [8]Job ?abort;
 
-seed :: system {
+seed :: system eff {
   insert(Job { n: 10 })(h0:, _:);
   insert(Job { n: 20 })(h1:, _:);
   insert(Job { n: 30 })(h2:, _:);
   delete(h1)(_:); // remove the middle row → a hole at slot 1
 }
 
-show :: each (query { n }) {
+show :: map (query { n }) eff {
   fmt.printf("live %d ", n); // must NOT print 20 (the freed hole)
 }
 
-done :: system {
+done :: system eff {
   fmt.printf("done\n");
 }
 

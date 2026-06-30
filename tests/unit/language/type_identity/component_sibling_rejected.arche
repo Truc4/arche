@@ -5,7 +5,7 @@
 #import { fmt }
 Particle :: arche { mass :: float, charge :: float }
 [4]Particle(4);
-entry :: system {
+entry :: system eff {
   Particle.mass[0] = 10.0;
   m := Particle.mass[0]; // m : mass
   bad: charge = m; // mass -> charge sibling : ERROR

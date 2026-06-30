@@ -4,7 +4,7 @@
 #import { fmt }
 count := 0;
 
-entry :: system {
+entry :: system eff {
   count = count + 1;
   fmt.print("ok\n")(_:);
 }

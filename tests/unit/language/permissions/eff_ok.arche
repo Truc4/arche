@@ -1,0 +1,7 @@
+// A `system eff` is permitted to run effects — the declared-effectful composer.
+// RUN: %arche build -o %t %s && %t | grep -qF "hi"
+#import { fmt }
+go :: system eff {
+  fmt.printf("hi\n");
+}
+#run seq({ go })

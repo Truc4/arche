@@ -7,11 +7,11 @@
 S :: arche { raw :: [16]char }
 [1]S(1);
 
-seed :: each (query { raw }) {
+seed :: map (query { raw }) eff {
   fmt.sprintf(_, "abcd")(raw, _:);
 }
 
-go :: each (query { raw }) {
+go :: map (query { raw }) eff {
   v := raw[1: str.strlen(raw)]; // strlen("abcd")=4 → raw[1:4] = "bcd"
   fmt.printf("%s len=%d\n", v, v.length);
 }

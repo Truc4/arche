@@ -11,7 +11,7 @@ resource :: opaque;
   @drop(resource)
   resource_close :: proc(own r: resource);
 }
-entry :: system {
+entry :: system eff {
   ff := 3.5;
   resource_open(42)(h:);
   {

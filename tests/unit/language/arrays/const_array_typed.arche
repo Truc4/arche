@@ -4,7 +4,7 @@
 #import { fmt }
 XS: [3]int: { 10, 20, 30 }
 
-entry :: system {
+entry :: system eff {
   fmt.printf("%d\n", XS[0]);
 }
 

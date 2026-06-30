@@ -5,7 +5,7 @@
 #import { fmt }
 pi    :: 3;
 tau   :: pi;
-entry :: system {
+entry :: system eff {
   fmt.printf("tau: %d\n", tau);
 }
 

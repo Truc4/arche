@@ -11,7 +11,7 @@ Win :: arche { id :: int }
 Nums :: query { n }
 Ids  :: query { id }
 
-seed :: system {
+seed :: system eff {
   Mover.n = { 10, 20, 30 };
   insert(Win { id: 99 })(_:, _:);
 }
@@ -20,7 +20,7 @@ addwin :: system (Nums, Ids) {
   n = n + id;
 }
 
-check :: system {
+check :: system eff {
   fmt.assert(Mover.n[0] == 109, "row 0\n")();
   fmt.assert(Mover.n[1] == 119, "row 1\n")();
   fmt.assert(Mover.n[2] == 129, "row 2\n")();

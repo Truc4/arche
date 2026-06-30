@@ -1,0 +1,10 @@
+// A PURE `system` — only column/singleton writes (data work), no effects — needs no `eff` and is
+// unchanged by the pure-by-default flip. Writing columns is the kernel's purpose, not an effect.
+// RUN: %arche build -o %t %s && %t | grep -qF "v0=3"
+#import { fmt }
+v :: float;
+R :: arche { v }
+[4]R(4);
+zero :: system { R.v = { 3.0, 1.0, 2.0, 4.0 }; }
+show :: system eff { fmt.printf("v0=%.0f\n", R.v[0] * 1.0); }
+#run seq({ zero, show })

@@ -2,7 +2,7 @@
 // `char[N]`. Mutating the copy leaves the source untouched.
 // RUN: %arche build -o %t %s && %t | grep "ok"
 #import { fmt }
-entry :: system {
+entry :: system eff {
   xs: [4]int;
   xs[0] = 7;
   xs[1] = 9;

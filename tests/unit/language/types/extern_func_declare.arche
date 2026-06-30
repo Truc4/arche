@@ -1,7 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 // Test just extern declarations via core.arche
 #import { fmt }
-entry :: system {
+entry :: system eff {
   fmt.printf("extern declarations ok\n");
 }
 

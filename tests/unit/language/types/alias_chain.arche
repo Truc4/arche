@@ -4,7 +4,7 @@
 #import { fmt }
 base  :: int;
 level :: base;
-entry :: system {
+entry :: system eff {
   x : level = 4;
   y : level = 6;
   fmt.printf("result: %d\n", x + y);

@@ -5,7 +5,7 @@ fill :: func(own buf: [4]float) -> [4]float {
   buf[0] = 3.25;
   return buf;
 }
-entry :: system {
+entry :: system eff {
   f: [4]float;
   r := fill(move f);
   fmt.printf("fout=%g\n", r[0]);

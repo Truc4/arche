@@ -3,7 +3,7 @@
 // (and `greet`) must be IGNORED. By design silent. Not a standalone test — only imported.
 #import { fmt }
 
-greet :: system {
+greet :: system eff {
   fmt.printf("from lib\n");
 }
 

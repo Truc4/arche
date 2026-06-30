@@ -11,7 +11,7 @@ M :: { { 1, 2, 3 }, { 4, 5, 6 } }
 runtime :: func(n: int) -> int {
   return n;
 }
-entry :: system {
+entry :: system eff {
   i := runtime(99);
   fmt.printf("%d\n", M[i] !clamp[0]);
 }

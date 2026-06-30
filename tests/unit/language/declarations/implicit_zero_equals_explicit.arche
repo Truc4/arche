@@ -7,7 +7,7 @@
 g_implicit: int; // implicit: defaults to = 0
 g_explicit: int = 0; // explicit zero
 
-entry :: system {
+entry :: system eff {
   fmt.printf("imp=%d exp=%d\n", g_implicit, g_explicit);
 }
 

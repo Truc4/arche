@@ -405,7 +405,7 @@ void test_no_false_positive_when_unconsumed(void) {
 	                                  "  close_ :: proc(own w: window);\n"
 	                                  "  poll_ :: proc(w: window);\n"
 	                                  "}\n"
-	                                  "entry :: system {\n"
+	                                  "entry :: system eff {\n"
 	                                  "  open_(\"\", 1, 1)(w:);\n"
 	                                  "  poll_(w);\n"
 	                                  "  close_(move w);\n"

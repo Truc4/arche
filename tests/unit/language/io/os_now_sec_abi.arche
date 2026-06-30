@@ -4,7 +4,7 @@
 // `double` into an f32 slot; GREEN once it returns `float`.
 // RUN: %arche build -o %t %s && %t | grep -qF "PASS"
 #import { os fmt }
-entry :: system {
+entry :: system eff {
   os.os_now_sec()(s0:);
   os.os_now_sec()(s1:);
   diff := s1 - s0;
