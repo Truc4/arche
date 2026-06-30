@@ -1,0 +1,26 @@
+// The regime where the derived placer SHOULD pick GPU (and Slice 4's per-dispatch model does not yet):
+// @resident data + many dispatches amortize the one-time transfer; the GPU's faster compute then wins.
+// Measured on a GTX 1650 (this box): GPU ~661 ms vs CPU ~1921 ms (~2.9x). Capturing this in the cost
+// model is Slice 5 (residency + amortized-transfer term).
+#import { fmt os }
+g :: float;
+GR :: arche { g }
+@resident
+[16000000]GR(16000000);
+h :: float;
+HC :: arche { h }
+[16000000]HC(16000000);
+ms :: i64;
+T :: arche { ms }
+[4]T(4);
+@gpu
+gpu_heavy :: map (query { g }) (g) { g = ((((((((((((((((((((((((((((((((g)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+cpu_heavy :: map (query { h }) (h) { h = ((((((((((((((((((((((((((((((((h)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+seedg :: system { GR.g = { 1.0 }; }
+seedc :: system { HC.h = { 1.0 }; }
+sg :: system eff { os.now_ms()(now:); T.ms[0]=now; }
+eg :: system eff { os.now_ms()(now:); T.ms[1]=now; }
+sc :: system eff { os.now_ms()(now:); T.ms[2]=now; }
+ec :: system eff { os.now_ms()(now:); T.ms[3]=now; }
+rep :: system eff { fmt.printf("N=16000000 K=40 fpe=64  GPU_ms=%d  CPU_ms=%d\n", T.ms[1]-T.ms[0], T.ms[3]-T.ms[2]); }
+#run seq({ seedg, seedc, sg, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu_heavy, gpu.sync(GR), eg, sc, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, cpu_heavy, ec, rep })

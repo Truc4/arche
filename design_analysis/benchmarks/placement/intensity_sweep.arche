@@ -1,0 +1,44 @@
+// Decision-correctness sweep: for each arithmetic intensity, a CPU arm (plain map) and a forced-GPU
+// arm (@gpu) over identical static pools, each timed over K dispatches. Prints
+// 'ROW <flops/elem> <cpu_ms> <gpu_ms>'. On a box where the GPU's throughput beats its per-dispatch
+// overhead some rows flip to GPU; on an overhead-bound box the CPU wins every row (the honest result).
+#import { fmt os }
+c :: float;
+P :: arche { c }
+[262144]P(262144);
+ms :: i64;
+T :: arche { ms }
+[16]T(16);
+cpu0 :: map (query { c }) (c) { c = c + 1.0; }
+@gpu
+gpu0 :: map (query { c }) (c) { c = c + 1.0; }
+cpu1 :: map (query { c }) (c) { c = ((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+@gpu
+gpu1 :: map (query { c }) (c) { c = ((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+cpu2 :: map (query { c }) (c) { c = ((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+@gpu
+gpu2 :: map (query { c }) (c) { c = ((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+cpu3 :: map (query { c }) (c) { c = ((((((((((((((((((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+@gpu
+gpu3 :: map (query { c }) (c) { c = ((((((((((((((((((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+seed :: system { P.c = { 1.0 }; }
+s0 :: system eff { os.now_ms()(now:); T.ms[0] = now; }
+e0 :: system eff { os.now_ms()(now:); T.ms[1] = now; }
+s1 :: system eff { os.now_ms()(now:); T.ms[2] = now; }
+e1 :: system eff { os.now_ms()(now:); T.ms[3] = now; }
+s2 :: system eff { os.now_ms()(now:); T.ms[4] = now; }
+e2 :: system eff { os.now_ms()(now:); T.ms[5] = now; }
+s3 :: system eff { os.now_ms()(now:); T.ms[6] = now; }
+e3 :: system eff { os.now_ms()(now:); T.ms[7] = now; }
+s4 :: system eff { os.now_ms()(now:); T.ms[8] = now; }
+e4 :: system eff { os.now_ms()(now:); T.ms[9] = now; }
+s5 :: system eff { os.now_ms()(now:); T.ms[10] = now; }
+e5 :: system eff { os.now_ms()(now:); T.ms[11] = now; }
+s6 :: system eff { os.now_ms()(now:); T.ms[12] = now; }
+e6 :: system eff { os.now_ms()(now:); T.ms[13] = now; }
+s7 :: system eff { os.now_ms()(now:); T.ms[14] = now; }
+e7 :: system eff { os.now_ms()(now:); T.ms[15] = now; }
+report :: system eff {
+  fmt.printf("ROW 0 %d %d\nROW 16 %d %d\nROW 32 %d %d\nROW 64 %d %d\n", T.ms[1] - T.ms[0], T.ms[3] - T.ms[2], T.ms[5] - T.ms[4], T.ms[7] - T.ms[6], T.ms[9] - T.ms[8], T.ms[11] - T.ms[10], T.ms[13] - T.ms[12], T.ms[15] - T.ms[14]);
+}
+#run seq({ seed, s0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, e0, s1, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, e1, s2, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, e2, s3, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, e3, s4, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, e4, s5, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, e5, s6, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, e6, s7, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, e7, report })
