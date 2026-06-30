@@ -275,7 +275,7 @@ static void test_lower_decl_use_skipped(void) {
 	for (int i = 0; i < ast->decl_count; i++) {
 		/* No HIR_DECL_* equivalent of a use declaration should appear */
 		int bad = (ast->decls[i]->kind != HIR_DECL_WORLD && ast->decls[i]->kind != HIR_DECL_ARCHETYPE &&
-		           ast->decls[i]->kind != HIR_DECL_PROC && ast->decls[i]->kind != HIR_DECL_MAP &&
+		           ast->decls[i]->kind != HIR_DECL_PROC && ast->decls[i]->kind != HIR_DECL_KERNEL &&
 		           ast->decls[i]->kind != HIR_DECL_FUNC && ast->decls[i]->kind != HIR_DECL_STATIC &&
 		           ast->decls[i]->kind != HIR_DECL_CONST);
 		if (bad) {

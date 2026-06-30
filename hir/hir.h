@@ -72,15 +72,13 @@ typedef enum {
 	HIR_DECL_WORLD,
 	HIR_DECL_ARCHETYPE,
 	HIR_DECL_PROC,
-	HIR_DECL_MAP,
+	HIR_DECL_KERNEL,  /* `map` / `map (Q) eff` / `system` — one decl, kind+eff select the codegen path */
 	HIR_DECL_FUNC,
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
 	HIR_DECL_CONST,
 	HIR_DECL_DEFAULT, /* `@default(<kind>, <category>, <policy>)` program default directive */
 	HIR_DECL_QUERY,   /* `Name :: query {cols}` — a named column set; emits no code, resolves collectives */
-	HIR_DECL_SYSTEM,  /* `Name :: system { body }` — the composer; a no-arg fn invoked by the schedule */
-	HIR_DECL_EACH,    /* `Name :: each(Q) { body }` — the per-element fan; a no-arg fn invoked by the schedule */
 	HIR_DECL_RUN,     /* `#run <expr>` — the program's Schedule, folded to a constant ScheduleTree */
 } HirDeclKind;
 
@@ -152,50 +150,33 @@ typedef struct {
 	SourceLoc loc;
 } HirProcDecl;
 
+/* The two kernel kinds of the unified model. MAP = handed each element individually (per-entity); a pure
+ * `map` is MAP with `eff==0`, the effectful per-entity fan (`map (Q) eff`, the old `each`) is MAP with
+ * `eff==1`. SYSTEM = handed whole columns / a run-once composer. */
+typedef enum {
+	HIR_KERNEL_MAP,
+	HIR_KERNEL_SYSTEM,
+} HirKernelKind;
+
+/* One kernel declaration for all of `map` / `map (Q) eff` / `system` (collapsed from the former
+ * HirMapDecl / HirEachDecl / HirSystemDecl). The (kind, eff) pair selects the codegen path:
+ *   MAP    && !eff → pure per-element transform (branch-free; @gpu-eligible)
+ *   MAP    &&  eff → per-element effectful fan (the old `each`; control flow + effects)
+ *   SYSTEM         → whole-column / run-once composer (param_count==0 ⇒ run-once). */
 typedef struct {
 	char *name;
-	HirParam **params;
+	HirKernelKind kind;
+	HirParam **params; /* query columns, flattened; SYSTEM with param_count==0 is run-once */
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
-	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
-	int eff;    /* 1 if the `eff` permission was declared: the kernel may run effects */
+	int eff;          /* 1 if the `eff` permission was declared: the kernel may run effects */
+	int is_gpu;       /* 1 if `@gpu`: emitted as a GPU compute shader (pure MAP only) */
 	char **writes;    /* the declared `(writes)` permission list: bound columns the body may assign */
-	int write_count;  /* 0 ⇒ no `(writes)` declared (a read-only kernel) */
+	int write_count;  /* 0 ⇒ no `(writes)` declared */
+	char *row_var;    /* MAP+eff `as w` row-handle binding (`handle(driver)` local), else NULL */
 	SourceLoc loc;
-} HirMapDecl;
-
-typedef struct {
-	char *name;
-	/* A query-bearing `system(Q)` is COLUMNAR: `params` are its query columns (flattened, like a map's),
-	 * bound as whole columns (no per-element row loop). param_count == 0 ⇒ a plain run-once `system { }`. */
-	HirParam **params;
-	int param_count;
-	HirStmt **stmts;
-	int stmt_count;
-	int eff; /* 1 if the `eff` permission was declared: the system may run effects */
-	char **writes;   /* the declared `(writes)` permission list: bound columns the body may assign */
-	int write_count; /* 0 ⇒ no `(writes)` declared */
-	SourceLoc loc;
-} HirSystemDecl;
-
-typedef struct {
-	char *name;
-	/* `each(Q)` is the PER-ELEMENT fan: `params` are its query columns (flattened), bound as SCALARS at the
-	 * current row inside an explicit row loop. Body permits control flow + effects. A `[1]` singleton in a
-	 * join broadcasts. Always query-bearing (param_count > 0). */
-	HirParam **params;
-	int param_count;
-	/* `each (query {…} as w)`: the matched row's generation-checked handle bound to `w` in the body (a
-	 * `handle(driver)` local) — for `delete(w)(ok:)` / relationship filters. NULL when no `as` clause. */
-	char *row_var;
-	HirStmt **stmts;
-	int stmt_count;
-	int eff; /* 1 if the `eff` permission was declared (always set for `map (Q) eff` lowered to each) */
-	char **writes;   /* the declared `(writes)` permission list: bound columns the body may assign */
-	int write_count; /* 0 ⇒ no `(writes)` declared */
-	SourceLoc loc;
-} HirEachDecl;
+} HirKernelDecl;
 
 typedef struct {
 	ScheduleTree *tree; /* the folded Schedule (owns it) */
@@ -295,15 +276,13 @@ struct HirDecl {
 		HirWorldDecl *world;
 		HirArchetypeDecl *archetype;
 		HirProcDecl *proc;
-		HirMapDecl *map;
+		HirKernelDecl *kernel; /* map / map+eff / system (kind+eff select the path) */
 		HirQueryDecl *query;
 		HirFuncDecl *func;
 		HirFuncGroupDecl *func_group;
 		HirStaticDecl *static_decl;
 		HirConstDecl *constant;
 		HirDefaultDecl *default_decl;
-		HirSystemDecl *system;
-		HirEachDecl *each;
 		HirRunDecl *run;
 	} data;
 };
@@ -420,7 +399,7 @@ struct HirStmt {
 		HirReturnStmt return_stmt;
 		HirMultiBindStmt multi_bind;
 		HirEachFieldStmt each_field;
-		HirEachDecl *each_stmt; /* HIR_STMT_EACH — the inline fan (name == NULL); reuses the decl payload */
+		HirKernelDecl *each_stmt; /* HIR_STMT_EACH — the inline fan (MAP+eff, name == NULL); reuses the decl payload */
 		HirBlockStmt block;
 	} data;
 };

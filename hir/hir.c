@@ -155,7 +155,7 @@ void hir_expr_free(HirExpr *expr) {
 	free(expr);
 }
 
-static void hir_each_decl_free(HirEachDecl *each);
+static void hir_kernel_decl_free(HirKernelDecl *k);
 
 void hir_stmt_free(HirStmt *stmt) {
 	if (!stmt)
@@ -224,7 +224,7 @@ void hir_stmt_free(HirStmt *stmt) {
 		free(stmt->data.each_field.body);
 		break;
 	case HIR_STMT_EACH:
-		hir_each_decl_free(stmt->data.each_stmt);
+		hir_kernel_decl_free(stmt->data.each_stmt);
 		break;
 	case HIR_STMT_BLOCK:
 		for (int i = 0; i < stmt->data.block.count; i++)
@@ -252,37 +252,21 @@ static void hir_proc_decl_free(HirProcDecl *proc) {
 	free(proc);
 }
 
-static void hir_map_decl_free(HirMapDecl *map) {
-	if (!map)
+static void hir_kernel_decl_free(HirKernelDecl *k) {
+	if (!k)
 		return;
-	free(map->name);
-	for (int i = 0; i < map->param_count; i++)
-		hir_param_free(map->params[i]);
-	free(map->params);
-	for (int i = 0; i < map->stmt_count; i++)
-		hir_stmt_free(map->stmts[i]);
-	free(map->stmts);
-	free(map);
-}
-
-static void hir_system_decl_free(HirSystemDecl *sys) {
-	if (!sys)
-		return;
-	free(sys->name);
-	for (int i = 0; i < sys->stmt_count; i++)
-		hir_stmt_free(sys->stmts[i]);
-	free(sys->stmts);
-	free(sys);
-}
-
-static void hir_each_decl_free(HirEachDecl *each) {
-	if (!each)
-		return;
-	free(each->name);
-	for (int i = 0; i < each->stmt_count; i++)
-		hir_stmt_free(each->stmts[i]);
-	free(each->stmts);
-	free(each);
+	free(k->name);
+	for (int i = 0; i < k->param_count; i++)
+		hir_param_free(k->params[i]);
+	free(k->params);
+	for (int i = 0; i < k->stmt_count; i++)
+		hir_stmt_free(k->stmts[i]);
+	free(k->stmts);
+	for (int i = 0; i < k->write_count; i++)
+		free(k->writes[i]);
+	free(k->writes);
+	free(k->row_var);
+	free(k);
 }
 
 void schedule_tree_free(ScheduleTree *t) {
@@ -377,8 +361,8 @@ void hir_decl_free(HirDecl *decl) {
 			free(decl->data.query);
 		}
 		break;
-	case HIR_DECL_MAP:
-		hir_map_decl_free(decl->data.map);
+	case HIR_DECL_KERNEL:
+		hir_kernel_decl_free(decl->data.kernel);
 		break;
 	case HIR_DECL_FUNC:
 		hir_func_decl_free(decl->data.func);
@@ -410,12 +394,6 @@ void hir_decl_free(HirDecl *decl) {
 			free(decl->data.default_decl->policy);
 			free(decl->data.default_decl);
 		}
-		break;
-	case HIR_DECL_SYSTEM:
-		hir_system_decl_free(decl->data.system);
-		break;
-	case HIR_DECL_EACH:
-		hir_each_decl_free(decl->data.each);
 		break;
 	case HIR_DECL_RUN:
 		hir_run_decl_free(decl->data.run);

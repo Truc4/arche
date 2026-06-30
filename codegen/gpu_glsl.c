@@ -50,7 +50,7 @@ static void gb_free(GBuf *b) {
 }
 
 /* Is `name` one of the map's column parameters? */
-static int is_column(HirMapDecl *map, const char *name) {
+static int is_column(HirKernelDecl *map, const char *name) {
 	for (int i = 0; i < map->param_count; i++)
 		if (map->params[i]->name && strcmp(map->params[i]->name, name) == 0)
 			return 1;
@@ -93,7 +93,7 @@ static int op_is_compare(Operator op) {
  * otherwise a `float` value is produced (a comparison in value position is wrapped `float(...)` so it
  * stays well-typed, matching arche's "comparison is 0/1" semantics). Clears `b->ok` on anything the v1
  * emitter can't lower. */
-static void emit_expr(GBuf *b, HirMapDecl *map, HirExpr *e, int want_bool) {
+static void emit_expr(GBuf *b, HirKernelDecl *map, HirExpr *e, int want_bool) {
 	if (!b->ok || !e) {
 		b->ok = 0;
 		return;
@@ -161,7 +161,7 @@ static void emit_expr(GBuf *b, HirMapDecl *map, HirExpr *e, int want_bool) {
 }
 
 /* Emit one assignment `col = expr` (or `col op= expr`) as a GLSL statement. */
-static void emit_assign(GBuf *b, HirMapDecl *map, HirAssignStmt *a) {
+static void emit_assign(GBuf *b, HirKernelDecl *map, HirAssignStmt *a) {
 	if (!a->target || a->target->kind != HIR_EXPR_NAME || !is_column(map, a->target->data.name.name)) {
 		b->ok = 0;
 		return;
@@ -183,7 +183,7 @@ static void emit_assign(GBuf *b, HirMapDecl *map, HirAssignStmt *a) {
 	gb_putf(b, ";\n");
 }
 
-static void emit_stmts(GBuf *b, HirMapDecl *map, HirStmt **stmts, int count) {
+static void emit_stmts(GBuf *b, HirKernelDecl *map, HirStmt **stmts, int count) {
 	for (int i = 0; i < count && b->ok; i++) {
 		HirStmt *s = stmts[i];
 		if (!s)
@@ -198,7 +198,7 @@ static void emit_stmts(GBuf *b, HirMapDecl *map, HirStmt **stmts, int count) {
 }
 
 /* Does archetype `arch` contain every column the map needs, and are they all float? (v1 constraint.) */
-static int arch_matches_float(HirMapDecl *map, HirArchetypeDecl *arch) {
+static int arch_matches_float(HirKernelDecl *map, HirArchetypeDecl *arch) {
 	for (int p = 0; p < map->param_count; p++) {
 		const char *pn = map->params[p]->name;
 		int found = 0;
@@ -218,7 +218,7 @@ static int arch_matches_float(HirMapDecl *map, HirArchetypeDecl *arch) {
 
 /* Build the full shader text for (map, arch). Returns a malloc'd string on success, NULL if the body is
  * not GPU-emittable in v1. */
-char *gpu_glsl_build_src(HirMapDecl *map, HirArchetypeDecl *arch) {
+char *gpu_glsl_build_src(HirKernelDecl *map, HirArchetypeDecl *arch) {
 	GBuf body;
 	gb_init(&body);
 	emit_stmts(&body, map, map->stmts, map->stmt_count);
@@ -258,10 +258,11 @@ static void mark_gpu_runs_in(HirProgram *prog, HirStmt **stmts, int count) {
 			continue;
 		if (s->kind == HIR_STMT_RUN && s->data.run_stmt.is_gpu && s->data.run_stmt.map_name) {
 			for (int d = 0; d < prog->decl_count; d++)
-				if (prog->decls[d] && prog->decls[d]->kind == HIR_DECL_MAP && prog->decls[d]->data.map &&
-				    prog->decls[d]->data.map->name &&
-				    strcmp(prog->decls[d]->data.map->name, s->data.run_stmt.map_name) == 0)
-					prog->decls[d]->data.map->is_gpu = 1;
+				if (prog->decls[d] && prog->decls[d]->kind == HIR_DECL_KERNEL &&
+				    prog->decls[d]->data.kernel && prog->decls[d]->data.kernel->kind == HIR_KERNEL_MAP &&
+				    prog->decls[d]->data.kernel->name &&
+				    strcmp(prog->decls[d]->data.kernel->name, s->data.run_stmt.map_name) == 0)
+					prog->decls[d]->data.kernel->is_gpu = 1;
 		} else if (s->kind == HIR_STMT_BLOCK) {
 			mark_gpu_runs_in(prog, s->data.block.stmts, s->data.block.count);
 		}
@@ -278,7 +279,7 @@ void gpu_glsl_mark_runs(HirProgram *prog) {
 	}
 }
 
-HirArchetypeDecl *gpu_glsl_first_float_arch(HirProgram *prog, HirMapDecl *map) {
+HirArchetypeDecl *gpu_glsl_first_float_arch(HirProgram *prog, HirKernelDecl *map) {
 	if (!prog || !map)
 		return NULL;
 	for (int i = 0; i < prog->decl_count; i++) {
@@ -306,9 +307,10 @@ int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
 
 	for (int i = 0; i < prog->decl_count; i++) {
 		HirDecl *d = prog->decls[i];
-		if (!d || d->kind != HIR_DECL_MAP || !d->data.map || !d->data.map->is_gpu)
+		if (!d || d->kind != HIR_DECL_KERNEL || !d->data.kernel ||
+		    d->data.kernel->kind != HIR_KERNEL_MAP || !d->data.kernel->is_gpu)
 			continue;
-		HirMapDecl *map = d->data.map;
+		HirKernelDecl *map = d->data.kernel;
 		gpu_maps++;
 		int emitted_for_map = 0;
 		for (int a = 0; a < narch; a++) {

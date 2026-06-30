@@ -194,7 +194,7 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 
 static HirExpr *lower_expr_cst(SyntaxView e);
 static HirStmt *lower_stmt_cst(SyntaxView s);
-static HirEachDecl *lower_each_payload(SyntaxView f, char *name);
+static HirKernelDecl *lower_each_payload(SyntaxView f, char *name);
 static char *dupz(const char *s);
 
 /* Lower an expression in a constant-required position (pool capacity / init length / field default /
@@ -1914,24 +1914,16 @@ static void tuple_collapse_decl(HirDecl *d) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			tuple_collapse_stmt(d->data.proc->stmts[i]);
 		break;
-	case HIR_DECL_MAP:
-		for (int i = 0; i < d->data.map->stmt_count; i++)
-			tuple_collapse_stmt(d->data.map->stmts[i]);
+	case HIR_DECL_KERNEL:
+		/* A kernel body (map / map+eff fan / system) accesses pool columns just like a proc — collapse its
+		 * `arch.pos.x` tuple-subcolumn accesses to the flattened `arch.pos_x` too, or codegen leaks the bare
+		 * subcomponent name as the column base and drops column-init scatter stores. */
+		for (int i = 0; i < d->data.kernel->stmt_count; i++)
+			tuple_collapse_stmt(d->data.kernel->stmts[i]);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)
 			tuple_collapse_stmt(d->data.func->stmts[i]);
-		break;
-	case HIR_DECL_SYSTEM:
-		/* A system body accesses pool columns just like a proc — collapse its `arch.pos.x` tuple-subcolumn
-		 * accesses to the flattened `arch.pos_x` too, or codegen leaks the bare subcomponent name as the
-		 * column base (`getelementptr i32, i32* x`) and drops column-init scatter stores. */
-		for (int i = 0; i < d->data.system->stmt_count; i++)
-			tuple_collapse_stmt(d->data.system->stmts[i]);
-		break;
-	case HIR_DECL_EACH:
-		for (int i = 0; i < d->data.each->stmt_count; i++)
-			tuple_collapse_stmt(d->data.each->stmts[i]);
 		break;
 	default:
 		break;
@@ -2315,7 +2307,7 @@ static void group_suffix_names(HirExpr *e, const char *suffix) {
  * the user writes the vector once instead of hand-expanding each axis. Each component clones the RHS and
  * suffixes its bare group references. Statements are replaced in place by a BLOCK (codegen + the later
  * tuple_rewrite pass both recurse into blocks). */
-static void expand_group_assigns(HirMapDecl *as) {
+static void expand_group_assigns(HirKernelDecl *as) {
 	for (int sx = 0; sx < as->stmt_count; sx++) {
 		HirStmt *s = as->stmts[sx];
 		if (!s || s->kind != HIR_STMT_ASSIGN)
@@ -2380,7 +2372,7 @@ static HirDecl *lower_query_from(SyntaxView f, char *name) {
 }
 
 /* `Name :: system { body }` — the composer. No query, no params; the body is plain statements
- * (control flow, `run <map>`, proc/func/extern calls). Lowers to a no-arg HIR_DECL_SYSTEM. */
+ * (control flow, `run <map>`, proc/func/extern calls). Lowers to a no-arg HIR_DECL_KERNEL (kind SYSTEM). */
 /* Resolve a query's columns (inline `query{…}` child, or a named `(Name)` via the registry) into FLATTENED
  * HirParams, rewriting tuple-group accesses (`pos.x`→`pos_x`) in `stmts`. Shared by map and query-system
  * lowering ("same logic as map"). No query present ⇒ 0 params. */
@@ -2474,29 +2466,31 @@ static void lower_writes(SyntaxView f, char ***out_writes, int *out_count) {
 }
 
 static HirDecl *lower_system_from(SyntaxView f, char *name) {
-	HirDecl *ad = hir_decl_create(HIR_DECL_SYSTEM);
-	HirSystemDecl *as = calloc(1, sizeof(HirSystemDecl));
+	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
 	as->name = name;
+	as->kind = HIR_KERNEL_SYSTEM;
 	as->eff = sv_has_eff(f);
 	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* `system(Q)` carries query columns (the effectful fan); a run-once `system { }` resolves to 0. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
-	ad->data.system = as;
+	ad->data.kernel = as;
 	return ad;
 }
 
-/* Build the `each` fan payload (columns + body) from an SN_EACH_EXPR view. `name` is the decl name, or NULL
- * for an anonymous inline `each` used as a statement (HIR_STMT_EACH). */
-static HirEachDecl *lower_each_payload(SyntaxView f, char *name) {
-	HirEachDecl *as = calloc(1, sizeof(HirEachDecl));
+/* Build the per-entity effectful-fan payload (`map (Q) eff`, the old `each`) from an SN_EACH_EXPR view:
+ * a MAP kernel with eff=1. `name` is the decl name, or NULL for an anonymous inline fan (HIR_STMT_EACH). */
+static HirKernelDecl *lower_each_payload(SyntaxView f, char *name) {
+	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
 	as->name = name;
-	as->eff = 1; /* the each fan (and `map (Q) eff`) is the effectful per-entity kind by construction */
+	as->kind = HIR_KERNEL_MAP;
+	as->eff = 1; /* the per-entity fan (`map (Q) eff`) is effectful by construction */
 	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
-	/* `each(Q)` carries its query columns (flattened), bound per-element in codegen's row loop. */
+	/* the fan carries its query columns (flattened), bound per-element in codegen's row loop. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
-	/* `each (query {…} as w)`: the matched row's handle binds to `w` in the body. */
+	/* `map (query {…} as w) eff`: the matched row's handle binds to `w` in the body. */
 	SyntaxView bind = sv_child_at(f, SN_QUERY_BIND, 0);
 	if (sv_present(bind))
 		as->row_var = txt_dup(sv_token(bind, TOK_IDENT));
@@ -2504,24 +2498,25 @@ static HirEachDecl *lower_each_payload(SyntaxView f, char *name) {
 }
 
 static HirDecl *lower_each_from(SyntaxView f, char *name) {
-	HirDecl *ad = hir_decl_create(HIR_DECL_EACH);
-	ad->data.each = lower_each_payload(f, name);
+	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+	ad->data.kernel = lower_each_payload(f, name);
 	return ad;
 }
 
 static HirDecl *lower_map_from(SyntaxView f, char *name) {
 	/* A plain `map` is the pure branch-free column transform. `map (Q) eff` is the effectful per-entity fan
 	 * and parses directly to SN_EACH_EXPR (the each machinery), so it never reaches here. */
-	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
-	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
+	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
 	as->name = name;
+	as->kind = HIR_KERNEL_MAP;
 	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
 	 * `pos.x`→`pos_x` rewrite, so the produced scalar columns match the flattened params. */
 	expand_group_assigns(as);
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
-	ad->data.map = as;
+	ad->data.kernel = as;
 	return ad;
 }
 
@@ -2798,8 +2793,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		return ad;
 	}
 	case SN_MAP_DECL: {
-		HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
-		HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
+		HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+		HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
+		as->kind = HIR_KERNEL_MAP;
 		as->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		/* Lower the body first; a tuple-group param then expands into one scalar param
 		 * per component (`pos` → `pos_x`, `pos_y`) and its `pos.x` body accesses are
@@ -2839,7 +2835,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			free(pn);
 		}
-		ad->data.map = as;
+		ad->data.kernel = as;
 		return ad;
 	}
 	case SN_FUNC_DECL: {
@@ -2931,8 +2927,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					/* GPU dispatch is a `@gpu` decorator on the map decl: the schedule emits a compute shader
 					 * and dispatches on the GPU (CPU fallback). */
 					HirDecl *md = lower_map_from(rhs, nm);
-					if (md && md->kind == HIR_DECL_MAP && md->data.map && syntax_decl_has_gpu_decorator(d))
-						md->data.map->is_gpu = 1;
+					if (md && md->kind == HIR_DECL_KERNEL && md->data.kernel &&
+					    md->data.kernel->kind == HIR_KERNEL_MAP && syntax_decl_has_gpu_decorator(d))
+						md->data.kernel->is_gpu = 1;
 					return md;
 				}
 				case SN_SYSTEM_EXPR:
@@ -3477,22 +3474,15 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			hir_rn_stmt(d->data.proc->stmts[i], prefix, set, count);
 		break;
-	case HIR_DECL_MAP:
-		rn_owned(&d->data.map->name, prefix, set, count);
-		for (int i = 0; i < d->data.map->param_count; i++)
-			hir_rn_type(d->data.map->params[i]->type, prefix, set, count);
-		for (int i = 0; i < d->data.map->stmt_count; i++)
-			hir_rn_stmt(d->data.map->stmts[i], prefix, set, count);
-		break;
-	case HIR_DECL_SYSTEM:
-		rn_owned(&d->data.system->name, prefix, set, count);
-		for (int i = 0; i < d->data.system->stmt_count; i++)
-			hir_rn_stmt(d->data.system->stmts[i], prefix, set, count);
-		break;
-	case HIR_DECL_EACH:
-		rn_owned(&d->data.each->name, prefix, set, count);
-		for (int i = 0; i < d->data.each->stmt_count; i++)
-			hir_rn_stmt(d->data.each->stmts[i], prefix, set, count);
+	case HIR_DECL_KERNEL:
+		rn_owned(&d->data.kernel->name, prefix, set, count);
+		/* The pure-map path renames its flattened-column param types (the system/fan paths historically do
+		 * not — preserved). */
+		if (d->data.kernel->kind == HIR_KERNEL_MAP && !d->data.kernel->eff)
+			for (int i = 0; i < d->data.kernel->param_count; i++)
+				hir_rn_type(d->data.kernel->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.kernel->stmt_count; i++)
+			hir_rn_stmt(d->data.kernel->stmts[i], prefix, set, count);
 		break;
 	case HIR_DECL_RUN:
 		/* Entry-file only; never inlined as a module, so no module-local rename. */
@@ -3549,12 +3539,8 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.archetype->name;
 	case HIR_DECL_PROC:
 		return d->data.proc->name;
-	case HIR_DECL_MAP:
-		return d->data.map->name;
-	case HIR_DECL_SYSTEM:
-		return d->data.system->name;
-	case HIR_DECL_EACH:
-		return d->data.each->name;
+	case HIR_DECL_KERNEL:
+		return d->data.kernel->name;
 	case HIR_DECL_RUN:
 		return NULL; /* a region, not a named decl */
 	case HIR_DECL_QUERY:
@@ -3755,17 +3741,9 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			hir_q_stmt(d->data.proc->stmts[i], q);
 		break;
-	case HIR_DECL_MAP:
-		for (int i = 0; i < d->data.map->stmt_count; i++)
-			hir_q_stmt(d->data.map->stmts[i], q);
-		break;
-	case HIR_DECL_SYSTEM:
-		for (int i = 0; i < d->data.system->stmt_count; i++)
-			hir_q_stmt(d->data.system->stmts[i], q);
-		break;
-	case HIR_DECL_EACH:
-		for (int i = 0; i < d->data.each->stmt_count; i++)
-			hir_q_stmt(d->data.each->stmts[i], q);
+	case HIR_DECL_KERNEL:
+		for (int i = 0; i < d->data.kernel->stmt_count; i++)
+			hir_q_stmt(d->data.kernel->stmts[i], q);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)
@@ -4184,10 +4162,11 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		for (int d = 0; d < ast->decl_count; d++) {
 			HirDecl *dd = ast->decls[d];
 			hir_rn_decl(dd, "", NULL, 0); /* count=0 → only g_impl substitutions fire (names + body refs) */
-			/* Column-binding names that the traversal skips: map params, archetype fields. */
-			if (dd->kind == HIR_DECL_MAP)
-				for (int p = 0; p < dd->data.map->param_count; p++)
-					subst_name(&dd->data.map->params[p]->name);
+			/* Column-binding names that the traversal skips: pure-map params, archetype fields. (The fan/system
+			 * paths historically aren't substituted here — preserved.) */
+			if (dd->kind == HIR_DECL_KERNEL && dd->data.kernel->kind == HIR_KERNEL_MAP && !dd->data.kernel->eff)
+				for (int p = 0; p < dd->data.kernel->param_count; p++)
+					subst_name(&dd->data.kernel->params[p]->name);
 			else if (dd->kind == HIR_DECL_ARCHETYPE)
 				for (int f = 0; f < dd->data.archetype->field_count; f++)
 					subst_name(&dd->data.archetype->fields[f]->name);

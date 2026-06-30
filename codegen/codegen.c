@@ -1142,10 +1142,10 @@ static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern
 static int query_match_archs(CodegenContext *ctx, const char **cols, int ncol, const char **out, int max);
 static int query_foreign_pools(CodegenContext *ctx, const char **cols, int ncol, HirStmt **stmts, int nstmt,
                                const char **out, int max);
-static int map_query_cols(HirMapDecl *map, const char **cols, int max);
+static int map_query_cols(HirKernelDecl *map, const char **cols, int max);
 /* Archetypes covering a map's params (map ABI param list) — thin wrappers over the evaluator above. */
-static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
-static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
+static int collect_map_matching_archs(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max);
+static int collect_map_foreign_pools(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max);
 
 /* Is the proc/func named `name` an extern (#foreign, C-ABI)? A `@drop` destructor may be either an
  * arche proc (mangled under per-unit) or an extern (keeps its C name) — the dtor call must match. */
@@ -1372,18 +1372,19 @@ static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const ch
 	return prog ? prog : "reject";
 }
 
-static HirMapDecl *find_map_decl(CodegenContext *ctx, const char *name) {
+static HirKernelDecl *find_map_decl(CodegenContext *ctx, const char *name) {
 	const char *rdot = strrchr(name, '.');
 	const char *rtail = rdot ? rdot + 1 : name;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
-		if (decl->kind != HIR_DECL_MAP)
+		/* the scheduled PURE map (HIR_STMT_RUN target); the effectful fan + system run via `call void`. */
+		if (decl->kind != HIR_DECL_KERNEL || decl->data.kernel->kind != HIR_KERNEL_MAP || decl->data.kernel->eff)
 			continue;
-		const char *n = decl->data.map->name;
+		const char *n = decl->data.kernel->name;
 		const char *ndot = strrchr(n, '.');
 		const char *ntail = ndot ? ndot + 1 : n;
 		if (strcmp(n, name) == 0 || strcmp(ntail, rtail) == 0)
-			return decl->data.map;
+			return decl->data.kernel;
 	}
 	return NULL;
 }
@@ -9771,7 +9772,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		const char *map_name = stmt->data.run_stmt.map_name;
 
 		/* Find the map definition */
-		HirMapDecl *map = find_map_decl(ctx, map_name);
+		HirKernelDecl *map = find_map_decl(ctx, map_name);
 		if (!map) {
 			/* A query named in `#run` is a domain, not a runnable kernel — give the precise diagnostic
 			 * (a query is what a map/each/system runs OVER, not a thing you schedule). */
@@ -10014,7 +10015,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	case HIR_STMT_EACH: {
 		/* An inline anonymous `each(Q) { … }`: emit the per-element fan IN PLACE (same path as the decl) so
 		 * its body captures the enclosing scope. Nested fans nest as ordinary loops. */
-		HirEachDecl *e = stmt->data.each_stmt;
+		HirKernelDecl *e = stmt->data.each_stmt;
 		codegen_each_fan(ctx, e->params, e->param_count, e->stmts, e->stmt_count, e->row_var);
 		break;
 	}
@@ -11589,7 +11590,7 @@ static void bind_singleton_col(CodegenContext *ctx, const char *param_name, cons
 	}
 }
 
-static void codegen_system_decl(CodegenContext *ctx, HirSystemDecl *sys, int decl_unit) {
+static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int decl_unit) {
 	/* Per-unit: a system is emitted in the unit that DECLARED it (whole-program emits all). Without this a
 	 * system defined in the entry file is emitted into every unit → "symbol multiply defined" at link. */
 	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
@@ -11899,7 +11900,7 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 	}
 }
 
-static void codegen_each_decl(CodegenContext *ctx, HirEachDecl *each, int decl_unit) {
+static void codegen_each_decl(CodegenContext *ctx, HirKernelDecl *each, int decl_unit) {
 	/* Per-unit: emitted only in its declaring unit (whole-program emits all) — see codegen_system_decl. */
 	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
 		return;
@@ -11932,13 +11933,7 @@ static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
 	const char *tail = dot ? dot + 1 : name;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *d = ctx->ast->decls[i];
-		const char *n = NULL;
-		if (d->kind == HIR_DECL_SYSTEM)
-			n = d->data.system->name;
-		else if (d->kind == HIR_DECL_EACH)
-			n = d->data.each->name;
-		else if (d->kind == HIR_DECL_MAP)
-			n = d->data.map->name;
+		const char *n = (d->kind == HIR_DECL_KERNEL) ? d->data.kernel->name : NULL;
 		if (n && (strcmp(n, name) == 0 || strcmp(n, tail) == 0))
 			return d;
 	}
@@ -11957,18 +11952,18 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 		break;
 	case SCHED_RUN: {
 		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
-		if (d && d->kind == HIR_DECL_SYSTEM) {
+		/* A `system` and an effectful per-entity fan (`map (Q) eff`) are invoked as no-arg functions; a pure
+		 * `map` runs via HIR_STMT_RUN (whole-column / GPU-dispatchable). */
+		if (d && d->kind == HIR_DECL_KERNEL &&
+		    (d->data.kernel->kind == HIR_KERNEL_SYSTEM || d->data.kernel->eff)) {
 			char sym[512];
-			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.system->name, 0, sym, sizeof(sym)));
-		} else if (d && d->kind == HIR_DECL_EACH) {
-			char sym[512];
-			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.each->name, 0, sym, sizeof(sym)));
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.kernel->name, 0, sym, sizeof(sym)));
 		} else {
 			HirStmt rs = {0};
 			rs.kind = HIR_STMT_RUN;
 			rs.data.run_stmt.map_name = t->sym;
 			/* a `@gpu` map scheduled by name dispatches on the GPU (CPU fallback) — carry its flag through */
-			rs.data.run_stmt.is_gpu = (d && d->kind == HIR_DECL_MAP && d->data.map) ? d->data.map->is_gpu : 0;
+			rs.data.run_stmt.is_gpu = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel->is_gpu : 0;
 			codegen_statement(ctx, &rs);
 		}
 		break;
@@ -12083,7 +12078,7 @@ static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_map_decl(CodegenContext *ctx, HirMapDecl *map, int decl_unit) {
+static void codegen_map_decl(CodegenContext *ctx, HirKernelDecl *map, int decl_unit) {
 	/* Per-unit: a map is emitted in the unit that DECLARED it (a device's map lives in that device's
 	 * unit), so editing a device's map body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
 	 * A `run` from another unit (the driver) reaches it via a cross-unit declare (release) or reload
@@ -12592,7 +12587,7 @@ static int query_match_archs(CodegenContext *ctx, const char **cols, int ncol, c
 
 /* A map's columns (its query) as a name list. Matches the old guard: empty if the first param is
  * missing (then query_match_archs also returns empty). */
-static int map_query_cols(HirMapDecl *map, const char **cols, int max) {
+static int map_query_cols(HirKernelDecl *map, const char **cols, int max) {
 	if (!(map->param_count > 0 && map->params[0] && map->params[0]->name))
 		return 0;
 	int n = 0;
@@ -12602,7 +12597,7 @@ static int map_query_cols(HirMapDecl *map, const char **cols, int max) {
 }
 
 /* Archetypes covering a map's params (the map's ABI param list) — a thin wrapper over the evaluator. */
-static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+static int collect_map_matching_archs(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max) {
 	const char *cols[256];
 	int ncol = map_query_cols(map, cols, 256);
 	return query_match_archs(ctx, cols, ncol, out, max);
@@ -12737,7 +12732,7 @@ static int query_foreign_pools(CodegenContext *ctx, const char **cols, int ncol,
 }
 
 /* The foreign pools a map reads — a thin wrapper deriving the query (its columns) and body from the map. */
-static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+static int collect_map_foreign_pools(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max) {
 	const char *cols[256];
 	int ncol = map_query_cols(map, cols, 256);
 	return query_foreign_pools(ctx, cols, ncol, map->stmts, map->stmt_count, out, max);
@@ -12876,20 +12871,20 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *d = ctx->ast->decls[i];
 		char sym[512];
-		if (d->kind == HIR_DECL_MAP) {
-			/* A map is defined in its DECLARING unit (so editing a device's map rebuilds its .so);
+		if (d->kind == HIR_DECL_KERNEL && d->data.kernel->kind == HIR_KERNEL_MAP && !d->data.kernel->eff) {
+			/* A pure map is defined in its DECLARING unit (so editing a device's map rebuilds its .so);
 			 * any OTHER unit that `run`s it needs a cross-unit declare (or a hot trampoline). */
 			if (d->unit == ctx->emit_only_unit)
 				continue; /* defined here */
 			const char *archs[256];
-			int na = collect_map_matching_archs(ctx, d->data.map, archs, 256);
+			int na = collect_map_matching_archs(ctx, d->data.kernel, archs, 256);
 			if (na == 0)
 				continue; /* no matching shape → no definition emitted → nothing to declare */
 			/* Append the foreign read-set pools, so the trampoline/declare ABI matches the define + run. */
-			na += collect_map_foreign_pools(ctx, d->data.map, archs + na, 256 - na);
-			cg_fnsym(ctx, d->data.map->name, 0, sym, sizeof(sym));
+			na += collect_map_foreign_pools(ctx, d->data.kernel, archs + na, 256 - na);
+			cg_fnsym(ctx, d->data.kernel->name, 0, sym, sizeof(sym));
 			if (ctx->hot) {
-				emit_hot_map_trampoline(ctx, sym, d->data.map->name, d->unit, archs, na);
+				emit_hot_map_trampoline(ctx, sym, d->data.kernel->name, d->unit, archs, na);
 			} else {
 				buffer_append_fmt(ctx, "declare void @%s(", sym);
 				for (int a = 0; a < na; a++)
@@ -12898,13 +12893,14 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 			}
 			continue;
 		}
-		if (d->kind == HIR_DECL_SYSTEM || d->kind == HIR_DECL_EACH) {
-			/* A system/each is a no-arg `void @name()` emitted in its DECLARING unit (the per-unit filter in
-			 * codegen_system_decl/each_decl). The entry unit's `@arche_run` schedules it BY NAME, so any other
-			 * unit needs a cross-unit declare (release) or a reload trampoline (dev). */
+		if (d->kind == HIR_DECL_KERNEL) {
+			/* A system or effectful per-entity fan is a no-arg `void @name()` emitted in its DECLARING unit
+			 * (the per-unit filter in codegen_system_decl/each_decl). The entry unit's `@arche_run` schedules
+			 * it BY NAME, so any other unit needs a cross-unit declare (release) or a reload trampoline (dev).
+			 * (A pure map was handled above.) */
 			if (d->unit == ctx->emit_only_unit)
 				continue;
-			const char *nm = d->kind == HIR_DECL_SYSTEM ? d->data.system->name : d->data.each->name;
+			const char *nm = d->data.kernel->name;
 			cg_fnsym(ctx, nm, 0, sym, sizeof(sym));
 			if (ctx->hot)
 				emit_hot_map_trampoline(ctx, sym, nm, d->unit, NULL, 0);
@@ -13125,8 +13121,14 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			}
 			codegen_proc_decl(ctx, decl->data.proc);
 			break;
-		case HIR_DECL_MAP:
-			codegen_map_decl(ctx, decl->data.map, decl->unit);
+		case HIR_DECL_KERNEL:
+			/* (kind, eff) selects the path: SYSTEM → composer; MAP+eff → per-entity fan; MAP → pure map. */
+			if (decl->data.kernel->kind == HIR_KERNEL_SYSTEM)
+				codegen_system_decl(ctx, decl->data.kernel, decl->unit);
+			else if (decl->data.kernel->eff)
+				codegen_each_decl(ctx, decl->data.kernel, decl->unit);
+			else
+				codegen_map_decl(ctx, decl->data.kernel, decl->unit);
 			break;
 		case HIR_DECL_CONST:
 			/* Value consts are inlined at their use sites (semantic_get_const_value); type
@@ -13138,12 +13140,6 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		case HIR_DECL_DEFAULT:
 			/* A `@default` directive only sets a resolution table (read by cg_policy_for /
 			 * cg_insert_handler); it emits no code. */
-			break;
-		case HIR_DECL_SYSTEM:
-			codegen_system_decl(ctx, decl->data.system, decl->unit);
-			break;
-		case HIR_DECL_EACH:
-			codegen_each_decl(ctx, decl->data.each, decl->unit);
 			break;
 		case HIR_DECL_RUN:
 			/* The #run tree drives the synthesized @arche_run (emitted beside @main, below). */

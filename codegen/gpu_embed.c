@@ -96,9 +96,10 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 	if (have_glslc) {
 		for (int i = 0; i < prog->decl_count; i++) {
 			HirDecl *d = prog->decls[i];
-			if (!d || d->kind != HIR_DECL_MAP || !d->data.map || !d->data.map->is_gpu)
+			if (!d || d->kind != HIR_DECL_KERNEL || !d->data.kernel ||
+			    d->data.kernel->kind != HIR_KERNEL_MAP || !d->data.kernel->is_gpu)
 				continue;
-			HirMapDecl *map = d->data.map;
+			HirKernelDecl *map = d->data.kernel;
 			HirArchetypeDecl *arch = gpu_glsl_first_float_arch(prog, map);
 			if (!arch)
 				continue; /* no GPU form (e.g. non-float columns) → CPU-only */
