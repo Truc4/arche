@@ -37,25 +37,39 @@ static double now_s(void) {
 	return (double)t.tv_sec + (double)t.tv_nsec * 1e-9;
 }
 
-/* Time independent fused-multiply-adds → CPU Gflop/s. Eight parallel accumulators keep the FP units busy
- * (a single dependent chain would measure latency, not throughput). `volatile` sink defeats DCE. */
+/* Time independent fused-multiply-adds → CPU Gflop/s. Eight parallel scalar accumulators keep the FP units
+ * busy (a single dependent chain would measure latency, not throughput); `volatile` sink defeats DCE.
+ *
+ * CRITICAL: the arche binary itself is built at -O0 (the Makefile CFLAGS carry no -O), so an un-optimized C
+ * loop here would understate the CPU by ~30x — while the arche-GENERATED map code this number is meant to
+ * model is LLVM-optimized. Force -O3 on just this function so it measures optimized FP throughput, matching
+ * the code the cost model is actually reasoning about. */
+#pragma GCC push_options
+#pragma GCC optimize("O3")
 static double measure_cpu_gflops(void) {
 	volatile double sink = 0;
-	double a = 1.0000001, b = 0.9999999;
-	double x[8] = {1.0, 1.1, 1.2, 1.3, 1.4, 1.5, 1.6, 1.7};
-	long iters = 40000000; /* × 8 lanes × 2 flops = 6.4e8 flops */
+	const double a = 1.0000001, b = 0.9999999;
+	double x0 = 1.0, x1 = 1.1, x2 = 1.2, x3 = 1.3, x4 = 1.4, x5 = 1.5, x6 = 1.6, x7 = 1.7;
+	long iters = 100000000; /* × 8 lanes × 2 flops = 1.6e9 flops */
 	double t0 = now_s();
-	for (long i = 0; i < iters; i++)
-		for (int j = 0; j < 8; j++)
-			x[j] = x[j] * a + b;
+	for (long i = 0; i < iters; i++) {
+		x0 = x0 * a + b;
+		x1 = x1 * a + b;
+		x2 = x2 * a + b;
+		x3 = x3 * a + b;
+		x4 = x4 * a + b;
+		x5 = x5 * a + b;
+		x6 = x6 * a + b;
+		x7 = x7 * a + b;
+	}
 	double dt = now_s() - t0;
-	for (int j = 0; j < 8; j++)
-		sink += x[j];
+	sink = x0 + x1 + x2 + x3 + x4 + x5 + x6 + x7;
 	(void)sink;
 	if (dt <= 0)
 		return 0;
 	return (2.0 * 8.0 * (double)iters) / (dt * 1e9);
 }
+#pragma GCC pop_options
 
 /* The probe schedule repeats each `@gpu` map K times between timer reads; build the seq leaves. */
 static void append_reps(char *buf, size_t cap, const char *name, int k) {
