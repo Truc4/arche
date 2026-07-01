@@ -88,11 +88,24 @@ sync placement, so it matches rather than beats. (`ARCHE_COH_DEBUG=1` on the der
 `resident GR` + `sync GR before show` it inserts; on the hand build it prints nothing — the annotations are
 honored and not duplicated.)
 
+## Integer columns (`derive_int.arche`)
+
+The GPU path is no longer float-only. `derive_int.arche` is the same shape as `derive_residency.arche` but
+over an **`int`** column — a compute map (inlined `int` consts + integer `%`) run 40× over a resident int
+pool. It emits an `int` SSBO, keeps the pool resident, and produces a result **bit-identical to the CPU**
+(integer arithmetic and truncation/modulo match), while winning by the same amortization: on a GTX 1650,
+**CPU ≈ 995 ms vs GPU ≈ 434 ms (~2.3×)**. Only same-typed 32-bit columns are emittable; mixed int/float,
+non-32-bit widths, and integer division by a non-constant divisor stay on the CPU.
+
 ## Regression
 
 `make test-derived-gpu` — a no-`@gpu` map forced onto the GPU must produce a real `gpu dispatch` (it must
 embed the shader for a derived placement, not only for `@gpu`-annotated maps), using an explicit `@gpu`
 fixture as the device-presence oracle so it fails rather than skips when a device is present.
+
+`make test-gpu-int` — an `int`-column map (named const + integer division) must dispatch on the GPU and
+compute the same truncating-integer result as the CPU (`v0=48 v3=48`), guarding the type-aware emitter (int
+SSBO, constant inlining, i32 dispatch). `make test-gpu` also validates the emitted int shader through glslc.
 
 `make test-derived-residency` — a pool written by consecutive GPU maps then read on the host, with no
 annotations, must derive both residency and a `gpu.sync` before the host read. It asserts the derivation at

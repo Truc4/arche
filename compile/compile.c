@@ -681,12 +681,13 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	if (opts && opts->gpu && emit == EMIT_LINK) {
 		codegen_set_gpu(1);
 		codegen_force_whole_program();
-		/* Derived placement (Slice 4): load this machine's cached cost profile so the build can decide
-		 * CPU/GPU per eligible map. Absent ⇒ the CPU-only default (un-annotated maps stay CPU, no behavior
-		 * change) until `arche calibrate` / a calibrated build writes the profile. */
-		const char *cdir = getenv("ARCHE_CACHE_DIR");
+		/* Derived placement: load this MACHINE's cost profile so the build can decide CPU/GPU per eligible
+		 * map. The profile is machine-global — discovered via $ARCHE_CACHE_DIR (override) → the per-user cache
+		 * → the install-global lib/arche (arche_machine_profile_dir). Absent ⇒ the CPU-only default (un-
+		 * annotated maps stay CPU, no behavior change) until `arche calibrate` (or `make install`) writes it. */
+		char pdir[1024];
 		MachineProfile mp;
-		if (cdir && codegen_load_machine_profile(cdir, &mp))
+		if (arche_machine_profile_dir(pdir, sizeof(pdir)) && codegen_load_machine_profile(pdir, &mp))
 			codegen_set_machine_profile(&mp);
 		else
 			codegen_set_machine_profile(NULL);

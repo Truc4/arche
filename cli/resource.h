@@ -1,6 +1,8 @@
 #ifndef ARCHE_CLI_RESOURCE_H
 #define ARCHE_CLI_RESOURCE_H
 
+#include <stddef.h> /* size_t */
+
 /* Resource (core/stdlib/runtime/explain) directory discovery, so an installed `arche` finds its
  * support files without source-tree-baked absolute paths. Every call site that needs one of these
  * directories goes through arche_resource_dir() instead of the raw ARCHE_*_DIR defines.
@@ -21,6 +23,15 @@ typedef enum {
 } ArcheResource;
 
 const char *arche_resource_dir(ArcheResource which);
+
+/* The per-user arche cache dir ($XDG_CACHE_HOME/arche, else ~/.cache/arche). Fills `out`, returns 1; 0 if
+ * the environment has no home. Does not create it. Used as `arche calibrate`'s default write target. */
+int arche_user_cache_dir(char *out, size_t cap);
+
+/* The directory holding a readable machine.profile — $ARCHE_CACHE_DIR, then the per-user cache, then the
+ * install-global $ARCHE_SYSROOT/lib/arche or exe-relative <bindir>/../lib/arche. Fills `out` (the dir; append
+ * "/machine.profile"), returns 1; 0 if none exists (the caller keeps the CPU-only default). */
+int arche_machine_profile_dir(char *out, size_t cap);
 
 /* True when `path` is the core prelude itself, so prepending core would double-define every
  * prelude symbol. Matches by (device, inode) against the resolved prelude AND by the canonical

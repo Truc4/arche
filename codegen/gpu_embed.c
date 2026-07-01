@@ -100,9 +100,9 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 			    d->data.kernel->kind != HIR_KERNEL_MAP || !d->data.kernel->is_gpu)
 				continue;
 			HirKernelDecl *map = d->data.kernel;
-			HirArchetypeDecl *arch = gpu_glsl_first_float_arch(prog, map);
+			HirArchetypeDecl *arch = gpu_glsl_first_emittable_arch(prog, map);
 			if (!arch)
-				continue; /* no GPU form (e.g. non-float columns) → CPU-only */
+				continue; /* no GPU form (mixed/non-32-bit columns) → CPU-only */
 			/* Names ride into fixed buffers (sym/comp/spv) and a C identifier; an absurdly long one would
 			 * truncate-and-collide. Guard explicitly and leave the map CPU-only with a note. */
 			if (!map->name || strlen(map->name) > 200) {
@@ -113,7 +113,7 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 				fprintf(stderr, "arche: note: more than 256 `@gpu` maps; the rest run on CPU\n");
 				break;
 			}
-			char *src = gpu_glsl_build_src(map, arch);
+			char *src = gpu_glsl_build_src(prog, map, arch);
 			if (!src)
 				continue;
 

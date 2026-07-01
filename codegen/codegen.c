@@ -1512,6 +1512,20 @@ static HirKernelDecl *find_map_decl(CodegenContext *ctx, const char *name) {
 	return NULL;
 }
 
+/* A GPU-emittable column type → its LLVM element type ("float" or "i32"), else NULL. Mirrors the shader
+ * emitter's `glsl_scalar_type` (gpu_glsl.c): 32-bit float or int only (both 4 bytes, so dispatch elem_size
+ * stays 4). i32 covers signed and unsigned — the bitcast is sign-agnostic. Keeps the eligibility gate, the
+ * column-pointer bitcast, and the shader's SSBO type consistent by construction. */
+static const char *cg_gpu_col_llty(const HirType *t) {
+	if (!t)
+		return NULL;
+	if (t->tag == HIR_TYPE_FLOAT)
+		return "float";
+	if (t->tag == HIR_TYPE_INT && (t->int_width == 0 || t->int_width == 32))
+		return "i32";
+	return NULL;
+}
+
 /* 1 iff the pure map `k` is placed on the GPU under the current profile — the SAME eligibility gate and
  * decision the HIR_STMT_RUN emit site uses (single matching static all-float pool, then cg_placement_decide).
  * Fills *out_pool (canonical) with that pool when eligible. Read-only (no side effects, unlike the emit site
@@ -1554,12 +1568,12 @@ static int cg_map_placed_gpu(CodegenContext *ctx, HirKernelDecl *k, const char *
 		int fi = -1;
 		for (int f = 0; pn && f < ga->field_count; f++)
 			if (ga->fields[f]->kind == FIELD_COLUMN && strcmp(ga->fields[f]->name, pn) == 0) {
-				if (ga->fields[f]->type && ga->fields[f]->type->tag == HIR_TYPE_FLOAT)
-					fi = f;
+				if (cg_gpu_col_llty(ga->fields[f]->type))
+					fi = f; /* 32-bit float/int column → GPU-able */
 				break;
 			}
 		if (fi < 0)
-			return 0; /* a non-float / missing column → no GPU form */
+			return 0; /* a non-emittable / missing column → no GPU form */
 	}
 	if (!cg_placement_decide(ctx, k, get_arch_static_capacity(ctx, an)))
 		return 0;
@@ -10062,18 +10076,23 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			HirArchetypeDecl *ga = find_archetype_decl(ctx, an);
 			int ok = ga != NULL && get_arch_static_capacity(ctx, an) > 0;
 			int field_idx[64];
+			const char *col_llty[64]; /* per-column LLVM element type ("float"/"i32") for the pointer bitcast */
 			for (int p = 0; ok && p < map->param_count; p++) {
 				const char *pn = map->params[p] ? map->params[p]->name : NULL;
 				int fi = -1;
+				col_llty[p] = NULL;
 				for (int f = 0; pn && f < ga->field_count; f++)
 					if (ga->fields[f]->kind == FIELD_COLUMN && strcmp(ga->fields[f]->name, pn) == 0) {
-						if (ga->fields[f]->type && ga->fields[f]->type->tag == HIR_TYPE_FLOAT)
-							fi = f; /* float column → GPU-able */
+						const char *llty = cg_gpu_col_llty(ga->fields[f]->type);
+						if (llty) {
+							fi = f; /* 32-bit float/int column → GPU-able */
+							col_llty[p] = llty;
+						}
 						break;
 					}
 				field_idx[p] = fi;
 				if (fi < 0)
-					ok = 0; /* a non-float / missing column → no GPU form for this map */
+					ok = 0; /* a non-emittable / missing column → no GPU form for this map */
 			}
 			/* Profitability: the layered decision (force → measured → estimate). If it prefers the CPU, drop
 			 * the GPU form and fall through to the direct CPU call below (the always-legal home). */
@@ -10100,7 +10119,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n",
 					                  cp, an, an, an, field_idx[p]);
 					char *cp8 = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = bitcast float* %s to i8*\n", cp8, cp);
+					buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", cp8, col_llty[p], cp);
 					char *slot = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot,
 					                  ncol, ncol, cols, p);
@@ -12196,10 +12215,10 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 		break;
 	}
 	case SCHED_GPU_SYNC: {
-		/* `gpu.sync(Pool)` — download the pool's GPU-resident columns back to host. Gather the pool's float
-		 * column base pointers + live count and call arche_gpu_sync; the runtime downloads only those that
-		 * are actually resident + dirty (non-resident cols are a no-op). A no-op outside `--gpu` builds:
-		 * without GPU dispatch there is no residency and the host copy is already current. */
+		/* `gpu.sync(Pool)` — download the pool's GPU-resident columns back to host. Gather the pool's
+		 * GPU-emittable (32-bit float/int) column base pointers + live count and call arche_gpu_sync; the
+		 * runtime downloads only those actually resident + dirty (non-resident cols are a no-op). A no-op
+		 * outside `--gpu` builds: without GPU dispatch there is no residency and the host copy is current. */
 		if (!ctx->gpu)
 			break;
 		const char *arch = t->sym ? canonical_arch_name(ctx, t->sym) : NULL;
@@ -12207,11 +12226,17 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 		if (!ga || get_arch_static_capacity(ctx, arch) <= 0)
 			break;
 		int col_field[64];
+		const char *col_llty[64];
 		int ncol = 0;
 		for (int f = 0; f < ga->field_count && ncol < 64; f++)
-			if (ga->fields[f]->kind == FIELD_COLUMN && ga->fields[f]->type &&
-			    ga->fields[f]->type->tag == HIR_TYPE_FLOAT)
-				col_field[ncol++] = f;
+			if (ga->fields[f]->kind == FIELD_COLUMN) {
+				const char *llty = cg_gpu_col_llty(ga->fields[f]->type);
+				if (llty) {
+					col_field[ncol] = f;
+					col_llty[ncol] = llty;
+					ncol++;
+				}
+			}
 		if (ncol == 0)
 			break;
 		char *cols = gen_value_name(ctx);
@@ -12221,7 +12246,7 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n", cp,
 			                  arch, arch, arch, col_field[p]);
 			char *cp8 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = bitcast float* %s to i8*\n", cp8, cp);
+			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", cp8, col_llty[p], cp);
 			char *slot = gen_value_name(ctx);
 			buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot, ncol,
 			                  ncol, cols, p);
@@ -13066,6 +13091,10 @@ void codegen_set_machine_profile(const MachineProfile *p) {
 	}
 }
 
+#ifndef ARCHE_VERSION
+#define ARCHE_VERSION "0.0.0-dev"
+#endif
+
 int codegen_load_machine_profile(const char *cache_dir, MachineProfile *out) {
 	if (!cache_dir || !out)
 		return 0;
@@ -13079,9 +13108,18 @@ int codegen_load_machine_profile(const char *cache_dir, MachineProfile *out) {
 	                  "gpu_gflops %lf",
 	               &p.gpu_present, &p.gpu_launch_us, &p.pcie_up_gbps, &p.pcie_down_gbps, &p.cpu_gflops,
 	               &p.gpu_gflops);
-	fclose(f);
-	if (n != 6)
+	if (n != 6) {
+		fclose(f);
 		return 0;
+	}
+	/* Optional trailing `arche_version` stamp: a mismatch means the profile was calibrated by a different
+	 * arche (its measurement methodology may have shifted) — note it, but still use it (a stale profile only
+	 * risks a suboptimal placement, never a wrong result). Absent on legacy profiles → accepted silently. */
+	char ver[64] = "";
+	if (fscanf(f, " arche_version %63s", ver) == 1 && strcmp(ver, ARCHE_VERSION) != 0)
+		fprintf(stderr, "arche: note: machine profile calibrated with arche %s (now %s) — consider `arche calibrate`\n",
+		        ver, ARCHE_VERSION);
+	fclose(f);
 	*out = p;
 	return 1;
 }
@@ -13096,8 +13134,9 @@ int codegen_save_machine_profile(const char *cache_dir, const MachineProfile *p)
 		return 0;
 	fprintf(f,
 	        "gpu_present %d\ngpu_launch_us %.6f\npcie_up_gbps %.6f\npcie_down_gbps %.6f\ncpu_gflops %.6f\n"
-	        "gpu_gflops %.6f\n",
-	        p->gpu_present, p->gpu_launch_us, p->pcie_up_gbps, p->pcie_down_gbps, p->cpu_gflops, p->gpu_gflops);
+	        "gpu_gflops %.6f\narche_version %s\n",
+	        p->gpu_present, p->gpu_launch_us, p->pcie_up_gbps, p->pcie_down_gbps, p->cpu_gflops, p->gpu_gflops,
+	        ARCHE_VERSION);
 	fclose(f);
 	return 1;
 }

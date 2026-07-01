@@ -332,6 +332,26 @@ test-derived-gpu: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 		|| { echo "test-derived-gpu: FAIL — device present (oracle dispatched) but DERIVED map fell back to CPU (shader not embedded for a non-@gpu placement)"; exit 1; }; \
 	echo "test-derived-gpu: PASS — derived (no @gpu) map dispatched on GPU, output [x0=0 x3=30]"
 
+# INTEGER GPU shader gate (regression). An `int`-column map (not float) with a named const + integer
+# division must dispatch on the GPU and compute the SAME truncating-integer result as the CPU. Guards the
+# type-aware emitter: an int SSBO, constant inlining, the i32 column bitcast/dispatch. Device-gated via the
+# same oracle as test-derived-gpu; SKIPs cleanly with no device (CPU fallback stays correct either way).
+test-gpu-int: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-int: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-gpu-int: SKIP (--gpu link failed for oracle; likely no libvulkan)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-gpu-int: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@# Device present: build the int map (@gpu) and require a real dispatch producing the integer result.
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/int.exe tests/unit/gpu/int_scale.arche >$(BUILD_DIR)/gpu/int.build 2>&1 \
+		|| { echo "test-gpu-int: FAIL — --gpu build of int map failed:"; cat $(BUILD_DIR)/gpu/int.build; exit 1; }
+	@out=$$(ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/int.exe 2>$(BUILD_DIR)/gpu/int.err); \
+	echo "$$out" | grep -qF "v0=48 v3=48" || { echo "test-gpu-int: FAIL — output [$$out] != [v0=48 v3=48] (int arithmetic/division wrong on GPU)"; exit 1; }; \
+	grep -q "gpu dispatch 'grind'" $(BUILD_DIR)/gpu/int.err \
+		|| { echo "test-gpu-int: FAIL — device present but int map fell back to CPU (int shader not emitted?)"; exit 1; }; \
+	echo "test-gpu-int: PASS — int map dispatched on GPU, integer result matches CPU [v0=48 v3=48]"
+
 # DERIVED-RESIDENCY gate (regression). A pool written by 2+ consecutive GPU maps then read on the host, with
 # NO `@resident` / `gpu.sync` — both are derived by the coherence pass. Two halves:
 #  (1) build-time (glslc-gated): the pass must DERIVE residency for the pool AND a sync before the host read
@@ -585,16 +605,30 @@ install: all
 	@if command -v fish >/dev/null 2>&1; then \
 		d="$(DESTDIR)$(FISHCOMP_DIR)"; install -d "$$d" && $(TARGET) completion fish > "$$d/arche.fish" && echo "  fish  -> $$d/arche.fish"; \
 	fi
+	@# Calibrate this machine's CPU/GPU cost profile INTO the install (machine-global lib/arche), so
+	@# `arche build --gpu` derives placement with no env juggling — ATLAS/FFTW "tune at install" style.
+	@# Skipped for staged/packaged installs (DESTDIR set: the profile belongs to the TARGET machine, not the
+	@# build host) and via ARCHE_NO_CALIBRATE=1. Non-fatal: a box with no device writes a CPU-only profile,
+	@# and any failure only leaves the GPU un-derived — never breaks the install.
+	@if [ -z "$(DESTDIR)" ] && [ -z "$$ARCHE_NO_CALIBRATE" ]; then \
+		echo "calibrating machine profile into $(ARCHE_LIBDIR) (ARCHE_NO_CALIBRATE=1 to skip)..."; \
+		ARCHE_CACHE_DIR="$(ARCHE_LIBDIR)" "$(ARCHE_BINDIR)/arche" calibrate \
+			|| echo "  calibration skipped/failed — run 'arche calibrate' later to enable GPU placement"; \
+		chmod a+r "$(ARCHE_LIBDIR)/machine.profile" 2>/dev/null || true; \
+	else \
+		echo "skipping calibration (staged DESTDIR or ARCHE_NO_CALIBRATE) — run 'arche calibrate' on the target machine"; \
+	fi
 	@echo "installed arche $(ARCHE_VERSION) to $(DESTDIR)$(PREFIX) — open a new shell for completion"
 
 # Smoke-test relocatability: install to a throwaway prefix and compile+run from an unrelated cwd,
 # so the binary must resolve core/stdlib/runtime via the exe-relative layout (no in-tree paths).
+# ARCHE_NO_CALIBRATE=1: this checks resource resolution, not hardware probing — keep it fast + hermetic.
 test-install: all
-	@root=$$(mktemp -d); $(MAKE) -s install PREFIX=$$root BASHCOMP_DIR=$$root/bashcomp ZSHCOMP_DIR=$$root/zshcomp FISHCOMP_DIR=$$root/fishcomp >/dev/null; \
-	printf '#import { fmt }\nentry :: system { fmt.printf("install-ok\\n"); }\n#run entry\n' > $$root/t.arche; \
+	@root=$$(mktemp -d); ARCHE_NO_CALIBRATE=1 $(MAKE) -s install PREFIX=$$root BASHCOMP_DIR=$$root/bashcomp ZSHCOMP_DIR=$$root/zshcomp FISHCOMP_DIR=$$root/fishcomp >/dev/null; \
+	printf '#import { fmt }\nentry :: system eff { fmt.printf("install-ok\\n"); }\n#run entry\n' > $$root/t.arche; \
 	out=$$(cd /tmp && $$root/bin/arche run $$root/t.arche); \
 	rm -rf $$root; \
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install

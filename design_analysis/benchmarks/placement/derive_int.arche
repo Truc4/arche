@@ -1,0 +1,14 @@
+// Integer version of derive_residency.arche: an int-column compute map run 40x over a resident int pool.
+// Shows the int GPU path end-to-end — int SSBO, inlined consts (A/B/M), integer % — winning by residency
+// amortization exactly like the float case, with a result bit-identical to the CPU.
+#import { fmt }
+A :: 7;
+B :: 13;
+M :: 1000003;
+v :: int;
+P :: arche { v }
+[8000000]P(8000000);
+grind :: map (query { v }) (v) { v = (v * A + B) % M; v = (v * A + B) % M; v = (v * A + B) % M; v = (v * A + B) % M; v = (v * A + B) % M; v = (v * A + B) % M; v = (v * A + B) % M; v = (v * A + B) % M;  }
+seed :: system { P.v = { 1 }; }
+show :: system eff { fmt.printf("v0=%d\n", P.v[0]); }
+#run seq({ seed, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, grind, show })

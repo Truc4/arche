@@ -5,9 +5,10 @@
  * per column, the row count in a push constant, and one invocation per element guarded by the standard
  * grid bound check. `select(cond, a, b)` lowers to a GLSL ternary (a branch-free GPU select).
  *
- * v1 supports the common case — float columns, arithmetic, comparisons, and `select`. Anything else
- * (non-float columns, consts/singletons, other calls) makes the map non-emittable; it is skipped (its
- * CPU path is untouched) and reported. See docs/OPEN_ITEMS.md. */
+ * Supports same-typed 32-bit columns (all `float`, or all `int`/`uint`), arithmetic, comparisons,
+ * `select`, and inlined compile-time constants. Integer `/` and `%` are emitted only with a statically
+ * nonzero divisor (div-by-zero is UB on the GPU). Anything else — mixed or non-32-bit columns, singletons,
+ * other calls — makes the map non-emittable; it is skipped (its CPU path is untouched) and reported. */
 
 #include "gpu_glsl.h"
 #include <stdarg.h>
@@ -89,49 +90,129 @@ static int op_is_compare(Operator op) {
 	return op >= OP_EQ && op <= OP_GTE;
 }
 
-/* Emit a map-body expression as GLSL. `want_bool` requests a boolean (for a `select` condition);
- * otherwise a `float` value is produced (a comparison in value position is wrapped `float(...)` so it
+/* GPU emit context: the kernel, the program (for resolving compile-time constants), and the shader's
+ * SCALAR element type. Every column of a GPU-emittable map is the SAME 32-bit type (float, int, or uint),
+ * so one type describes the whole shader — SSBOs, literals, and comparison-as-value casts all render in it. */
+typedef struct {
+	HirKernelDecl *map;
+	HirProgram *prog; /* for resolving `NAME` references to compile-time constants; may be NULL */
+	const char *ety;  /* GLSL scalar type: "float", "int", or "uint" */
+	int is_float;     /* ety == "float" — controls integer-literal float-izing and division safety */
+} EmitCtx;
+
+/* The GLSL scalar type for an arche column type, or NULL if not GPU-emittable in v1 (only 32-bit float /
+ * int / uint — other widths need a different SSBO stride and dispatch elem_size, a follow-on). */
+static const char *glsl_scalar_type(const HirType *t) {
+	if (!t)
+		return NULL;
+	if (t->tag == HIR_TYPE_FLOAT)
+		return "float";
+	if (t->tag == HIR_TYPE_INT && (t->int_width == 0 || t->int_width == 32))
+		return t->int_signed ? "int" : "uint"; /* arche's default `int` is signed 32-bit */
+	return NULL;
+}
+
+/* The literal lexeme of a scalar compile-time constant `name` (`STIFFNESS :: 24`), or NULL if `name` is
+ * not such a constant (unknown, or a non-literal const the v1 emitter can't inline). */
+static const char *gpu_const_lexeme(HirProgram *prog, const char *name) {
+	if (!prog || !name)
+		return NULL;
+	for (int i = 0; i < prog->decl_count; i++) {
+		HirDecl *d = prog->decls[i];
+		if (d && d->kind == HIR_DECL_CONST && d->data.constant && d->data.constant->name &&
+		    strcmp(d->data.constant->name, name) == 0) {
+			HirExpr *v = d->data.constant->value;
+			return (v && v->kind == HIR_EXPR_LITERAL) ? v->data.literal.lexeme : NULL;
+		}
+	}
+	return NULL;
+}
+
+/* Is `e` a statically nonzero INTEGER (literal or int constant)? GPU integer `/` and `%` are UB on a zero
+ * divisor and there is no failure policy on the GPU, so we only emit them when the divisor is provably
+ * nonzero; otherwise the map stays on the CPU, where its `!` divide policy applies. */
+static int gpu_nonzero_int_const(HirProgram *prog, HirExpr *e) {
+	if (!e)
+		return 0;
+	const char *lx = NULL;
+	if (e->kind == HIR_EXPR_LITERAL)
+		lx = e->data.literal.lexeme;
+	else if (e->kind == HIR_EXPR_NAME)
+		lx = gpu_const_lexeme(prog, e->data.name.name);
+	if (!lx || strchr(lx, '.'))
+		return 0; /* absent, or a float — not an integer divisor */
+	return strtol(lx, NULL, 0) != 0;
+}
+
+/* Emit a scalar literal lexeme in the shader's element type: float-ize a bare integer for a float shader;
+ * for an int shader emit the integer as-is and REJECT a fractional lexeme (a type mismatch the homogeneous
+ * v1 emitter can't represent). NULL lexeme (unresolved const / singleton) → non-emittable. */
+static void emit_scalar_lexeme(GBuf *b, EmitCtx *ec, const char *lx) {
+	if (!lx) {
+		b->ok = 0;
+		return;
+	}
+	int frac = strchr(lx, '.') || strchr(lx, 'e') || strchr(lx, 'E');
+	if (ec->is_float) {
+		gb_putf(b, "%s", lx);
+		if (!frac)
+			gb_putf(b, ".0"); /* float-ize an integer literal for a float column */
+	} else if (frac) {
+		b->ok = 0; /* a fractional literal in an int shader — unrepresentable in v1 */
+	} else {
+		gb_putf(b, "%s", lx);
+	}
+}
+
+/* Emit a map-body expression as GLSL. `want_bool` requests a boolean (for a `select` condition); otherwise
+ * a value of the shader's element type is produced (a comparison in value position is wrapped `T(...)` so it
  * stays well-typed, matching arche's "comparison is 0/1" semantics). Clears `b->ok` on anything the v1
  * emitter can't lower. */
-static void emit_expr(GBuf *b, HirKernelDecl *map, HirExpr *e, int want_bool) {
+static void emit_expr(GBuf *b, EmitCtx *ec, HirExpr *e, int want_bool) {
 	if (!b->ok || !e) {
 		b->ok = 0;
 		return;
 	}
 	switch (e->kind) {
 	case HIR_EXPR_NAME:
-		if (is_column(map, e->data.name.name)) {
+		if (is_column(ec->map, e->data.name.name)) {
 			gb_putf(b, "%s[i]", e->data.name.name); /* a column read at this element */
 		} else {
-			b->ok = 0; /* a const / singleton / unknown scalar — not supported in v1 */
+			/* not a column — inline a compile-time constant (`STIFFNESS`); else unsupported (singleton/…) */
+			emit_scalar_lexeme(b, ec, gpu_const_lexeme(ec->prog, e->data.name.name));
 		}
 		break;
-	case HIR_EXPR_LITERAL: {
-		const char *lx = e->data.literal.lexeme ? e->data.literal.lexeme : "0";
-		gb_putf(b, "%s", lx);
-		if (!strchr(lx, '.') && !strchr(lx, 'e') && !strchr(lx, 'E'))
-			gb_putf(b, ".0"); /* float-ize an integer literal for a float column */
+	case HIR_EXPR_LITERAL:
+		emit_scalar_lexeme(b, ec, e->data.literal.lexeme ? e->data.literal.lexeme : "0");
 		break;
-	}
 	case HIR_EXPR_UNARY:
 		gb_putf(b, "(-(");
-		emit_expr(b, map, e->data.unary.operand, 0);
+		emit_expr(b, ec, e->data.unary.operand, 0);
 		gb_putf(b, "))");
 		break;
 	case HIR_EXPR_BINARY: {
 		Operator op = e->data.binary.op;
-		const char *o = binop_glsl(op);
-		if (!o || op == OP_MOD || op == OP_AND || op == OP_OR) {
+		const char *o = (op == OP_MOD) ? "%" : binop_glsl(op);
+		if (!o) { /* unsupported operator (`&&`, `||`, …) */
 			b->ok = 0;
+			break;
+		}
+		if (op == OP_MOD && ec->is_float) { /* float `%` has no GLSL form */
+			b->ok = 0;
+			break;
+		}
+		if ((op == OP_DIV || op == OP_MOD) && !ec->is_float &&
+		    !gpu_nonzero_int_const(ec->prog, e->data.binary.right)) {
+			b->ok = 0; /* unsafe integer div/mod (non-constant divisor) — keep on the CPU */
 			break;
 		}
 		int cmp = op_is_compare(op);
 		if (cmp && !want_bool)
-			gb_putf(b, "float("); /* comparison used as a 0/1 value */
+			gb_putf(b, "%s(", ec->ety); /* comparison used as a 0/1 value, in the shader's element type */
 		gb_putf(b, "(");
-		emit_expr(b, map, e->data.binary.left, 0);
+		emit_expr(b, ec, e->data.binary.left, 0);
 		gb_putf(b, " %s ", o);
-		emit_expr(b, map, e->data.binary.right, 0);
+		emit_expr(b, ec, e->data.binary.right, 0);
 		gb_putf(b, ")");
 		if (cmp && !want_bool)
 			gb_putf(b, ")");
@@ -143,11 +224,11 @@ static void emit_expr(GBuf *b, HirKernelDecl *map, HirExpr *e, int want_bool) {
 		                     : NULL;
 		if (fn && strcmp(fn, "select") == 0 && e->data.call.arg_count == 3) {
 			gb_putf(b, "((");
-			emit_expr(b, map, e->data.call.args[0], 1); /* condition → bool */
+			emit_expr(b, ec, e->data.call.args[0], 1); /* condition → bool */
 			gb_putf(b, ") ? (");
-			emit_expr(b, map, e->data.call.args[1], 0);
+			emit_expr(b, ec, e->data.call.args[1], 0);
 			gb_putf(b, ") : (");
-			emit_expr(b, map, e->data.call.args[2], 0);
+			emit_expr(b, ec, e->data.call.args[2], 0);
 			gb_putf(b, "))");
 		} else {
 			b->ok = 0; /* a func/proc call in a GPU kernel — not supported in v1 */
@@ -161,67 +242,84 @@ static void emit_expr(GBuf *b, HirKernelDecl *map, HirExpr *e, int want_bool) {
 }
 
 /* Emit one assignment `col = expr` (or `col op= expr`) as a GLSL statement. */
-static void emit_assign(GBuf *b, HirKernelDecl *map, HirAssignStmt *a) {
-	if (!a->target || a->target->kind != HIR_EXPR_NAME || !is_column(map, a->target->data.name.name)) {
+static void emit_assign(GBuf *b, EmitCtx *ec, HirAssignStmt *a) {
+	if (!a->target || a->target->kind != HIR_EXPR_NAME || !is_column(ec->map, a->target->data.name.name)) {
 		b->ok = 0;
 		return;
 	}
 	const char *t = a->target->data.name.name;
 	gb_putf(b, "  %s[i] = ", t);
 	if (a->op != OP_NONE) {
-		const char *o = binop_glsl(a->op);
-		if (!o || op_is_compare(a->op) || a->op == OP_MOD) {
+		const char *o = (a->op == OP_MOD) ? "%" : binop_glsl(a->op);
+		if (!o || op_is_compare(a->op)) {
 			b->ok = 0;
 			return;
 		}
+		if (a->op == OP_MOD && ec->is_float) {
+			b->ok = 0;
+			return;
+		}
+		if ((a->op == OP_DIV || a->op == OP_MOD) && !ec->is_float && !gpu_nonzero_int_const(ec->prog, a->value)) {
+			b->ok = 0; /* unsafe integer div/mod (non-constant divisor) — keep on the CPU */
+			return;
+		}
 		gb_putf(b, "%s[i] %s (", t, o);
-		emit_expr(b, map, a->value, 0);
+		emit_expr(b, ec, a->value, 0);
 		gb_putf(b, ")");
 	} else {
-		emit_expr(b, map, a->value, 0);
+		emit_expr(b, ec, a->value, 0);
 	}
 	gb_putf(b, ";\n");
 }
 
-static void emit_stmts(GBuf *b, HirKernelDecl *map, HirStmt **stmts, int count) {
+static void emit_stmts(GBuf *b, EmitCtx *ec, HirStmt **stmts, int count) {
 	for (int i = 0; i < count && b->ok; i++) {
 		HirStmt *s = stmts[i];
 		if (!s)
 			continue;
 		if (s->kind == HIR_STMT_ASSIGN)
-			emit_assign(b, map, &s->data.assign_stmt);
+			emit_assign(b, ec, &s->data.assign_stmt);
 		else if (s->kind == HIR_STMT_BLOCK)
-			emit_stmts(b, map, s->data.block.stmts, s->data.block.count);
+			emit_stmts(b, ec, s->data.block.stmts, s->data.block.count);
 		else
 			b->ok = 0; /* control flow shouldn't reach here (the map whitelist forbids it), but be safe */
 	}
 }
 
-/* Does archetype `arch` contain every column the map needs, and are they all float? (v1 constraint.) */
-static int arch_matches_float(HirKernelDecl *map, HirArchetypeDecl *arch) {
+/* Every column of `map` present in `arch`, all the SAME 32-bit scalar type → that GLSL type ("float" /
+ * "int" / "uint"); NULL if a column is missing, an unsupported type/width, or the map MIXES types (mixed
+ * int/float in one map needs per-expression casts — a follow-on). One type describes the whole shader. */
+static const char *map_glsl_elem_type(HirKernelDecl *map, HirArchetypeDecl *arch) {
+	const char *ety = NULL;
 	for (int p = 0; p < map->param_count; p++) {
 		const char *pn = map->params[p]->name;
-		int found = 0;
-		for (int f = 0; f < arch->field_count; f++) {
+		const char *ct = NULL;
+		for (int f = 0; f < arch->field_count; f++)
 			if (arch->fields[f]->kind == FIELD_COLUMN && strcmp(arch->fields[f]->name, pn) == 0) {
-				if (!arch->fields[f]->type || arch->fields[f]->type->tag != HIR_TYPE_FLOAT)
-					return 0; /* v1: float columns only */
-				found = 1;
+				ct = glsl_scalar_type(arch->fields[f]->type);
 				break;
 			}
-		}
-		if (!found)
-			return 0;
+		if (!ct)
+			return NULL; /* missing column or unsupported type/width */
+		if (!ety)
+			ety = ct;
+		else if (strcmp(ety, ct) != 0)
+			return NULL; /* homogeneous only in v1 */
 	}
-	return 1;
+	return ety;
 }
 
 /* Build the full shader text for (map, arch). Returns a malloc'd string on success, NULL if the body is
- * not GPU-emittable in v1. */
-char *gpu_glsl_build_src(HirKernelDecl *map, HirArchetypeDecl *arch) {
+ * not GPU-emittable in v1. `prog` supplies compile-time constants referenced in the body. */
+char *gpu_glsl_build_src(HirProgram *prog, HirKernelDecl *map, HirArchetypeDecl *arch) {
+	const char *ety = map_glsl_elem_type(map, arch);
+	if (!ety)
+		return NULL;
+	EmitCtx ec = {.map = map, .prog = prog, .ety = ety, .is_float = (strcmp(ety, "float") == 0)};
+
 	GBuf body;
 	gb_init(&body);
-	emit_stmts(&body, map, map->stmts, map->stmt_count);
+	emit_stmts(&body, &ec, map->stmts, map->stmt_count);
 	if (!body.ok || body.len == 0) {
 		gb_free(&body);
 		return NULL;
@@ -236,7 +334,7 @@ char *gpu_glsl_build_src(HirKernelDecl *map, HirArchetypeDecl *arch) {
 	int binding = 0;
 	for (int p = 0; p < map->param_count; p++) {
 		const char *pn = map->params[p]->name;
-		gb_putf(&out, "layout(std430, binding = %d) buffer B_%s { float %s[]; };\n", binding++, pn, pn);
+		gb_putf(&out, "layout(std430, binding = %d) buffer B_%s { %s %s[]; };\n", binding++, pn, ety, pn);
 	}
 	gb_putf(&out, "layout(push_constant) uniform Params { uint count; };\n");
 	gb_putf(&out, "void main() {\n");
@@ -279,12 +377,12 @@ void gpu_glsl_mark_runs(HirProgram *prog) {
 	}
 }
 
-HirArchetypeDecl *gpu_glsl_first_float_arch(HirProgram *prog, HirKernelDecl *map) {
+HirArchetypeDecl *gpu_glsl_first_emittable_arch(HirProgram *prog, HirKernelDecl *map) {
 	if (!prog || !map)
 		return NULL;
 	for (int i = 0; i < prog->decl_count; i++) {
 		HirDecl *d = prog->decls[i];
-		if (d && d->kind == HIR_DECL_ARCHETYPE && d->data.archetype && arch_matches_float(map, d->data.archetype))
+		if (d && d->kind == HIR_DECL_ARCHETYPE && d->data.archetype && map_glsl_elem_type(map, d->data.archetype))
 			return d->data.archetype;
 	}
 	return NULL;
@@ -314,9 +412,9 @@ int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
 		gpu_maps++;
 		int emitted_for_map = 0;
 		for (int a = 0; a < narch; a++) {
-			if (!arch_matches_float(map, archs[a]))
+			if (!map_glsl_elem_type(map, archs[a]))
 				continue;
-			char *src = gpu_glsl_build_src(map, archs[a]);
+			char *src = gpu_glsl_build_src(prog, map, archs[a]);
 			if (!src)
 				continue;
 			char path[1024];
@@ -336,8 +434,8 @@ int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
 		}
 		if (!emitted_for_map)
 			fprintf(stderr,
-			        "arche: note: `@gpu` map `%s` not GPU-emittable in v1 (needs float columns, "
-			        "arithmetic/select only); CPU path unaffected.\n",
+			        "arche: note: `@gpu` map `%s` not GPU-emittable in v1 (needs same-typed 32-bit "
+			        "float/int columns, arithmetic/select only); CPU path unaffected.\n",
 			        map->name);
 	}
 	free(archs);

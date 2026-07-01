@@ -11,10 +11,25 @@
 #include "../codegen/codegen.h"
 #include "../compile/compile.h"
 #include "cli.h"
+#include "resource.h"
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
+
+/* Best-effort recursive mkdir (like `mkdir -p`); ignores already-exists. */
+static void mkdir_p(const char *path) {
+	char tmp[1024];
+	snprintf(tmp, sizeof(tmp), "%s", path);
+	for (char *p = tmp + 1; *p; p++)
+		if (*p == '/') {
+			*p = '\0';
+			mkdir(tmp, 0755);
+			*p = '/';
+		}
+	mkdir(tmp, 0755);
+}
 
 static double now_s(void) {
 	struct timespec t;
@@ -149,12 +164,19 @@ int calibrate_run(int argc, char **argv, const GlobalOpts *g) {
 	(void)argc;
 	(void)argv;
 	(void)g;
+	/* Write target: $ARCHE_CACHE_DIR when set (install points it at the machine-global lib/arche; tests use
+	 * their own dir); otherwise the per-user cache (~/.cache/arche), which `arche build` discovers by default.
+	 * So a bare `arche calibrate` "just works" — no env juggling. */
 	const char *cdir = getenv("ARCHE_CACHE_DIR");
+	char udir[1024];
 	if (!cdir || !cdir[0]) {
-		fprintf(stderr, "arche calibrate: set ARCHE_CACHE_DIR to the directory the profile should be written "
-		                "to (the same one `arche build` reads)\n");
-		return ARCHE_ERR;
+		if (!arche_user_cache_dir(udir, sizeof(udir))) {
+			fprintf(stderr, "arche calibrate: no ARCHE_CACHE_DIR set and no HOME/XDG_CACHE_HOME to default to\n");
+			return ARCHE_ERR;
+		}
+		cdir = udir;
 	}
+	mkdir_p(cdir);
 
 	MachineProfile mp;
 	codegen_default_machine_profile(&mp);

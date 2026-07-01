@@ -1,0 +1,27 @@
+// Integer GPU shader (regression for the type-aware emitter, gpu_glsl.c). This map is over an `int`
+// column — not float — and uses a named compile-time constant (`K`) plus an integer division that must
+// TRUNCATE the same on the GPU as on the CPU. It exercises: an `int` SSBO (not `float`), constant inlining
+// (`K` → 3), and the i32 column-pointer bitcast / dispatch path. `make test-gpu` validates the emitted
+// shader through glslc + spirv-val; `make test-gpu-int` runs it on a device and checks the integer result.
+//
+// CPU build (no --gpu) falls back to the CPU and is correct either way — seed 10, three times v=(v*3+7)/2:
+// 10 → 18 → 30 → 48 (integer division truncates 37/2, 61/2, 97/2). All four rows are identical.
+// RUN: %arche build -o %t %s && %t | grep -qF "v0=48 v3=48"
+#import { fmt }
+K :: 3;
+v :: int;
+P :: arche { v }
+[4]P(4);
+
+@gpu
+grind :: map (query { v }) (v) {
+  v = (v * K + 7) / 2;
+}
+
+seed :: system { P.v = { 10, 10, 10, 10 }; }
+
+verify :: system eff {
+  fmt.printf("v0=%d v3=%d\n", P.v[0], P.v[3]);
+}
+
+#run seq({ seed, grind, grind, grind, gpu.sync(P), verify })
