@@ -85,7 +85,16 @@ typedef enum {
 /* A compile-time-folded Schedule node (Approach A: `#run`'s value-CTFE result). The runtime never sees
  * this — codegen walks it to emit a direct-dispatch function (@arche_run). `sym` is a system/map name
  * (SCHED_RUN) or a predicate func name (SCHED_WHEN); children are sub-schedules. No function pointers. */
-typedef enum { SCHED_RUN, SCHED_SEQ, SCHED_PAR, SCHED_LOOP, SCHED_WHEN, SCHED_HALT, SCHED_GPU_SYNC } SchedKind;
+typedef enum {
+	SCHED_RUN,
+	SCHED_SEQ,
+	SCHED_PAR,
+	SCHED_LOOP,
+	SCHED_WHEN,
+	SCHED_HALT,
+	SCHED_GPU_SYNC,
+	SCHED_GPU_UPLOAD
+} SchedKind;
 typedef struct ScheduleTree {
 	SchedKind kind;
 	char *sym; /* SCHED_RUN: system/map name; SCHED_WHEN: predicate func name; SCHED_GPU_SYNC: pool name; else NULL */

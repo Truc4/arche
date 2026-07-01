@@ -484,6 +484,25 @@ void arche_gpu_sync(void **cols, unsigned ncol, unsigned elem_size, unsigned cou
 	}
 }
 
+/* Refresh resident buffers FROM host — the mirror of arche_gpu_sync, for a pool the host wrote after it went
+ * resident (the runtime uploads a resident buffer only once, at its first dispatch, so a later host write
+ * would otherwise be invisible to the GPU). No-op for non-resident columns (they auto-upload at dispatch). */
+void arche_gpu_upload(void **cols, unsigned ncol, unsigned elem_size, unsigned count) {
+	(void)elem_size;
+	(void)count;
+	if (!cols)
+		return;
+	for (unsigned b = 0; b < ncol; b++) {
+		ResidentBuf *r = resident_find(cols[b]);
+		if (r) {
+			gpu_staged_copy(cols[b], r->buf, r->bytes, /*to_device=*/1); /* upload host -> VRAM via staging */
+			r->gpu_dirty = 0;                                            /* device now current with host */
+			if (gpu_debug())
+				fprintf(stderr, "arche: gpu upload col (%zu bytes, VRAM)\n", (size_t)r->bytes);
+		}
+	}
+}
+
 #else /* no <vulkan/vulkan.h> at build time: always fall back to CPU */
 
 int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count,
@@ -497,6 +516,14 @@ int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned el
 
 void arche_gpu_sync(void **cols, unsigned ncol, unsigned elem_size, unsigned count) {
 	/* No GPU: the CPU-fallback dispatch already wrote host columns, so there is nothing to download. */
+	(void)cols;
+	(void)ncol;
+	(void)elem_size;
+	(void)count;
+}
+
+void arche_gpu_upload(void **cols, unsigned ncol, unsigned elem_size, unsigned count) {
+	/* No GPU: nothing is resident, so there is nothing to refresh on the device. */
 	(void)cols;
 	(void)ncol;
 	(void)elem_size;

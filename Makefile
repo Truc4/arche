@@ -380,6 +380,28 @@ test-derived-residency: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 	echo "$$stale" | grep -qF "g=1" || { echo "test-derived-residency: FAIL — sync suppressed but output [$$stale] != stale g=1 (sync not load-bearing?)"; exit 1; }
 	@echo "test-derived-residency: PASS — derived @resident + gpu.sync (g=4 with sync, stale g=1 without)"
 
+# UPLOAD-SYNC gate (regression). A GPU-resident pool the host writes MID-STREAM must be refreshed on the
+# device (a derived arche_gpu_upload) before the next GPU read — the runtime uploads a resident buffer only
+# once, so without it the kernel reads stale VRAM. Device-gated via the same oracle as test-derived-gpu.
+# One-shot (no loop): seed→inc→inc→poke(CPU reset to 100)→inc→show. With the upload: 101. Without it
+# (ARCHE_COH_NO_UPLOAD, downloads kept): the 3rd inc reads the stale device value 3 → 4.
+test-upload-resident: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-upload-resident: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-upload-resident: SKIP (--gpu link failed for oracle)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-upload-resident: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/upl.exe tests/unit/gpu/upload_resident.arche >$(BUILD_DIR)/gpu/upl.build 2>&1 \
+		|| { echo "test-upload-resident: FAIL — --gpu build failed:"; cat $(BUILD_DIR)/gpu/upl.build; exit 1; }
+	@ok=$$(ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/upl.exe 2>$(BUILD_DIR)/gpu/upl.err); \
+	echo "$$ok" | grep -qF "g=101" || { echo "test-upload-resident: FAIL — derived upload present but output [$$ok] != g=101"; exit 1; }; \
+	grep -q "gpu upload" $(BUILD_DIR)/gpu/upl.err || { echo "test-upload-resident: FAIL — no gpu upload happened (host write not pushed to the resident buffer)"; exit 1; }
+	@ARCHE_COH_NO_UPLOAD=1 ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/upl_no.exe tests/unit/gpu/upload_resident.arche >/dev/null 2>&1; \
+	stale=$$($(BUILD_DIR)/gpu/upl_no.exe 2>/dev/null); \
+	echo "$$stale" | grep -qF "g=4" || { echo "test-upload-resident: FAIL — upload suppressed but output [$$stale] != stale g=4 (upload not load-bearing?)"; exit 1; }
+	@echo "test-upload-resident: PASS — derived upload refreshes the resident pool (g=101 with it, stale g=4 without)"
+
 # LOOP-RESIDENCY gate (regression). A pool the GPU touches every loop iteration must be kept resident ACROSS
 # the back-edge, with the download derived as a `gpu.sync` inside the loop body (not a barrier flush before
 # the loop). BUILD-ONLY — the fixture is a `forever` loop that never returns, so this asserts the derivation
@@ -645,4 +667,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-upload-resident test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install

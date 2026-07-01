@@ -12156,6 +12156,64 @@ static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
 
 /* Emit one ScheduleTree node into the current @arche_run body. Direct calls only — no fn pointers.
  * `halt` is `ret void` (exits the loop); `loop` is a back-edge; `when` guards on a predicate direct-call. */
+/* Emit a host↔device transfer of a pool's GPU-emittable (32-bit float/int) columns: gather their base
+ * pointers + live count into an [ncol x i8*] and call the given runtime fn (`arche_gpu_sync` to download,
+ * `arche_gpu_upload` to refresh from host). The runtime acts only on columns that are actually resident, so
+ * this is a no-op for non-resident pools. `--gpu`-only (no residency without dispatch). */
+static void emit_gpu_xfer(CodegenContext *ctx, const char *sym, const char *runtime_fn) {
+	if (!ctx->gpu)
+		return;
+	const char *arch = sym ? canonical_arch_name(ctx, sym) : NULL;
+	HirArchetypeDecl *ga = arch ? find_archetype_decl(ctx, arch) : NULL;
+	if (!ga || get_arch_static_capacity(ctx, arch) <= 0)
+		return;
+	int col_field[64];
+	const char *col_llty[64];
+	int ncol = 0;
+	for (int f = 0; f < ga->field_count && ncol < 64; f++)
+		if (ga->fields[f]->kind == FIELD_COLUMN) {
+			const char *llty = cg_gpu_col_llty(ga->fields[f]->type);
+			if (llty) {
+				col_field[ncol] = f;
+				col_llty[ncol] = llty;
+				ncol++;
+			}
+		}
+	if (ncol == 0)
+		return;
+	char *cols = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca [%d x i8*]\n", cols, ncol);
+	for (int p = 0; p < ncol; p++) {
+		char *cp = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n", cp, arch,
+		                  arch, arch, col_field[p]);
+		char *cp8 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", cp8, col_llty[p], cp);
+		char *slot = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot, ncol, ncol,
+		                  cols, p);
+		buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", cp8, slot);
+		free(cp);
+		free(cp8);
+		free(slot);
+	}
+	char *cols0 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 0\n", cols0, ncol, ncol, cols);
+	char *cgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n", cgep, arch, arch,
+	                  arch, ga->field_count);
+	char *cnt64 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt64, cgep);
+	char *cnt32 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cnt32, cnt64);
+	buffer_append_fmt(ctx, "  call void @%s(i8** %s, i32 %d, i32 4, i32 %s)\n", runtime_fn, cols0, ncol, cnt32);
+	free(cols);
+	free(cols0);
+	free(cgep);
+	free(cnt64);
+	free(cnt32);
+}
+
 static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 	if (!t || ctx->block_terminated)
 		return;
@@ -12214,65 +12272,17 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 		ctx->block_terminated = 0;
 		break;
 	}
-	case SCHED_GPU_SYNC: {
-		/* `gpu.sync(Pool)` — download the pool's GPU-resident columns back to host. Gather the pool's
-		 * GPU-emittable (32-bit float/int) column base pointers + live count and call arche_gpu_sync; the
-		 * runtime downloads only those actually resident + dirty (non-resident cols are a no-op). A no-op
-		 * outside `--gpu` builds: without GPU dispatch there is no residency and the host copy is current. */
-		if (!ctx->gpu)
-			break;
-		const char *arch = t->sym ? canonical_arch_name(ctx, t->sym) : NULL;
-		HirArchetypeDecl *ga = arch ? find_archetype_decl(ctx, arch) : NULL;
-		if (!ga || get_arch_static_capacity(ctx, arch) <= 0)
-			break;
-		int col_field[64];
-		const char *col_llty[64];
-		int ncol = 0;
-		for (int f = 0; f < ga->field_count && ncol < 64; f++)
-			if (ga->fields[f]->kind == FIELD_COLUMN) {
-				const char *llty = cg_gpu_col_llty(ga->fields[f]->type);
-				if (llty) {
-					col_field[ncol] = f;
-					col_llty[ncol] = llty;
-					ncol++;
-				}
-			}
-		if (ncol == 0)
-			break;
-		char *cols = gen_value_name(ctx);
-		emit_alloca(ctx, "  %s = alloca [%d x i8*]\n", cols, ncol);
-		for (int p = 0; p < ncol; p++) {
-			char *cp = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n", cp,
-			                  arch, arch, arch, col_field[p]);
-			char *cp8 = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", cp8, col_llty[p], cp);
-			char *slot = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot, ncol,
-			                  ncol, cols, p);
-			buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", cp8, slot);
-			free(cp);
-			free(cp8);
-			free(slot);
-		}
-		char *cols0 = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 0\n", cols0, ncol, ncol,
-		                  cols);
-		char *cgep = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n", cgep, arch,
-		                  arch, arch, ga->field_count);
-		char *cnt64 = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt64, cgep);
-		char *cnt32 = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cnt32, cnt64);
-		buffer_append_fmt(ctx, "  call void @arche_gpu_sync(i8** %s, i32 %d, i32 4, i32 %s)\n", cols0, ncol, cnt32);
-		free(cols);
-		free(cols0);
-		free(cgep);
-		free(cnt64);
-		free(cnt32);
+	case SCHED_GPU_SYNC:
+		/* `gpu.sync(Pool)` — download the pool's GPU-resident columns back to host (a no-op for non-resident
+		 * cols, and outside `--gpu` builds). */
+		emit_gpu_xfer(ctx, t->sym, "arche_gpu_sync");
 		break;
-	}
+	case SCHED_GPU_UPLOAD:
+		/* Derived upload — refresh the pool's resident device columns from host (a no-op for non-resident
+		 * cols, and outside `--gpu` builds). Inserted by the coherence pass before a GPU read of data the
+		 * host wrote after the pool went resident. */
+		emit_gpu_xfer(ctx, t->sym, "arche_gpu_upload");
+		break;
 	}
 }
 
@@ -12466,8 +12476,12 @@ static void cg_kernel_footprint(CodegenContext *ctx, HirKernelDecl *k, CgFootpri
 /* Per-pool coherence state carried across the forward walk. */
 typedef struct {
 	const char *pools[128];
-	int dirty_gpu[128]; /* GPU holds the authoritative copy; the host is stale */
-	int gpu_run[128];   /* consecutive GPU touches with no intervening host read (residency signal) */
+	int dirty_gpu[128];  /* GPU wrote → GPU holds the authoritative copy; the host is stale (→ download) */
+	int dirty_host[128]; /* host wrote → host holds the authoritative copy; the resident device copy is stale
+	                        (→ upload before a GPU read) */
+	int gpu_seen[128];   /* the pool has been GPU-dispatched, so a resident device buffer may exist (an upload
+	                        before the FIRST dispatch would be a no-op — the dispatch auto-uploads) */
+	int gpu_run[128];    /* consecutive GPU touches with no intervening host read (residency signal) */
 	int n;
 } CgCoh;
 
@@ -12479,6 +12493,8 @@ static int cg_coh_idx(CgCoh *c, const char *pool) {
 		return -1;
 	c->pools[c->n] = pool;
 	c->dirty_gpu[c->n] = 0;
+	c->dirty_host[c->n] = 0;
+	c->gpu_seen[c->n] = 0;
 	c->gpu_run[c->n] = 0;
 	return c->n++;
 }
@@ -12491,6 +12507,15 @@ static ScheduleTree *cg_sched_node(SchedKind k) {
 
 static ScheduleTree *cg_sched_sync(const char *pool) {
 	ScheduleTree *t = cg_sched_node(SCHED_GPU_SYNC);
+	if (pool) {
+		t->sym = malloc(strlen(pool) + 1);
+		strcpy(t->sym, pool);
+	}
+	return t;
+}
+
+static ScheduleTree *cg_sched_upload(const char *pool) {
+	ScheduleTree *t = cg_sched_node(SCHED_GPU_UPLOAD);
 	if (pool) {
 		t->sym = malloc(strlen(pool) + 1);
 		strcpy(t->sym, pool);
@@ -12526,13 +12551,6 @@ static void cg_loopset_add(const char **arr, int *n, const char *pool) {
 			return;
 	if (*n < 128)
 		arr[(*n)++] = pool;
-}
-
-static int cg_loopset_has(const char **arr, int n, const char *pool) {
-	for (int j = 0; j < n; j++)
-		if (strcmp(arr[j], pool) == 0)
-			return 1;
-	return 0;
 }
 
 static void cg_coh_collect_loop_sets(CodegenContext *ctx, ScheduleTree *t, CgLoopSets *s) {
@@ -12584,23 +12602,32 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 		cg_kernel_footprint(ctx, k, &fp);
 		const char *gpupool = NULL;
 		int gpu = cg_map_placed_gpu(ctx, k, &gpupool);
-		/* A host (CPU) step reading a GPU-dirty pool must download it first — insert the sync before it.
-		 * ARCHE_COH_NO_SYNC suppresses ONLY the insertion (state still tracked) — a test lever to prove the
-		 * derived sync is load-bearing: with it set, a derived-resident pool read on the host goes stale. */
-		if (!gpu) {
-			int nosync = getenv("ARCHE_COH_NO_SYNC") != NULL;
-			for (int p = 0; p < fp.n; p++) {
-				if (!fp.is_read[p])
-					continue;
-				int idx = cg_coh_idx(c, fp.pools[p]);
-				if (idx >= 0 && c->dirty_gpu[idx]) {
-					if (dbg)
-						fprintf(stderr, "COHERENCE sync %s before %s\n", fp.pools[p], ch->sym ? ch->sym : "?");
-					if (!nosync)
-						cg_coh_append(out, nout, cg_sched_sync(fp.pools[p]));
-					c->dirty_gpu[idx] = 0;
-					c->gpu_run[idx] = 0;
-				}
+		int nosync = getenv("ARCHE_COH_NO_SYNC") != NULL;
+		int noupload = getenv("ARCHE_COH_NO_UPLOAD") != NULL; /* suppress ONLY uploads (isolates the upload test) */
+		/* Insert the transfer this step's reads require. Symmetric: a HOST step reading a GPU-dirty pool needs
+		 * a DOWNLOAD (sync) first; a GPU step reading a HOST-dirty resident pool needs an UPLOAD first (the
+		 * runtime uploads a resident buffer only once, so a later host write is otherwise invisible — gated on
+		 * gpu_seen so the pre-first-dispatch upload, which the dispatch does itself, is skipped). ARCHE_COH_NO_SYNC
+		 * suppresses ONLY the insertion (state still tracked) — the lever proving the transfer is load-bearing. */
+		for (int p = 0; p < fp.n; p++) {
+			if (!fp.is_read[p])
+				continue;
+			int idx = cg_coh_idx(c, fp.pools[p]);
+			if (idx < 0)
+				continue;
+			if (!gpu && c->dirty_gpu[idx]) {
+				if (dbg)
+					fprintf(stderr, "COHERENCE sync %s before %s\n", fp.pools[p], ch->sym ? ch->sym : "?");
+				if (!nosync)
+					cg_coh_append(out, nout, cg_sched_sync(fp.pools[p]));
+				c->dirty_gpu[idx] = 0;
+				c->gpu_run[idx] = 0;
+			} else if (gpu && c->dirty_host[idx] && c->gpu_seen[idx]) {
+				if (dbg)
+					fprintf(stderr, "COHERENCE upload %s before %s\n", fp.pools[p], ch->sym ? ch->sym : "?");
+				if (!nosync && !noupload)
+					cg_coh_append(out, nout, cg_sched_upload(fp.pools[p]));
+				c->dirty_host[idx] = 0;
 			}
 		}
 		cg_coh_append(out, nout, ch);
@@ -12610,18 +12637,23 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 			if (idx < 0)
 				continue;
 			if (gpu) {
+				c->gpu_seen[idx] = 1;
 				c->gpu_run[idx]++;
 				if (c->gpu_run[idx] >= 2) {
 					if (dbg && !cg_arch_is_resident(ctx, fp.pools[p]))
 						fprintf(stderr, "COHERENCE resident %s\n", fp.pools[p]);
 					cg_arch_set_resident(ctx, fp.pools[p]);
 				}
-				if (fp.is_write[p])
+				if (fp.is_write[p]) {
 					c->dirty_gpu[idx] = 1;
+					c->dirty_host[idx] = 0; /* device now holds the authoritative copy */
+				}
 			} else {
-				if (fp.is_write[p])
-					c->dirty_gpu[idx] = 0; /* host now holds the authoritative copy */
-				c->gpu_run[idx] = 0;       /* a host touch breaks the resident run */
+				if (fp.is_write[p]) {
+					c->dirty_host[idx] = 1; /* host now holds the authoritative copy */
+					c->dirty_gpu[idx] = 0;
+				}
+				c->gpu_run[idx] = 0; /* a host touch breaks the resident run */
 			}
 		}
 		break;
@@ -12639,24 +12671,42 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 		cg_coh_append(out, nout, ch);
 		break;
 	}
+	case SCHED_GPU_UPLOAD: {
+		/* An upload (one we inserted upstream) refreshes the device from host → the device copy is current. */
+		const char *pool = ch->sym ? canonical_arch_name(ctx, ch->sym) : NULL;
+		if (pool) {
+			int idx = cg_coh_idx(c, pool);
+			if (idx >= 0)
+				c->dirty_host[idx] = 0;
+		}
+		cg_coh_append(out, nout, ch);
+		break;
+	}
 	case SCHED_LOOP: {
 		/* Residency-carrying fixpoint (NOT a barrier): a pool the GPU touches every iteration should live in
 		 * VRAM across the back-edge, not be re-uploaded per frame. Do NOT flush before the loop — carry the
-		 * pre-loop dirty state in; the body's own sync insertion covers pre-loop-dirty and loop-carried-dirty
-		 * host reads. Seed `entry_dirty ⊇ gwrite` (a pool GPU-written anywhere in the body is dirty at the top
-		 * of every iteration ≥ 2) so a loop-carried host read always gets a sync — the conservative one-step
-		 * fixpoint (over-syncs iteration 1 at worst; never under-syncs). Keep residency for GPU-touched pools
-		 * that the host does NOT write (host writes need a device re-upload we don't have → would go stale). */
+		 * pre-loop dirty state in; the body's own transfer insertion covers loop-carried host reads (download)
+		 * AND host writes (upload). Seed the conservative one-step fixpoint symmetrically: `dirty_gpu ⊇ gwrite`
+		 * and `dirty_host ⊇ hwrite` (a pool GPU-/host-written anywhere in the body is dirty at the top of every
+		 * iteration ≥ 2), plus `gpu_seen` for gtouch (a resident buffer exists by iteration 2, so a loop-carried
+		 * host-write→GPU-read gets an upload). Over-syncs iteration 1 at worst; never under-syncs. EVERY
+		 * GPU-touched pool is kept resident now — host-written ones stay coherent via the derived upload. */
 		CgLoopSets ls = {0};
 		cg_coh_collect_loop_sets(ctx, ch, &ls);
 		for (int j = 0; j < ls.ngwrite; j++) {
 			int idx = cg_coh_idx(c, ls.gwrite[j]);
 			if (idx >= 0)
-				c->dirty_gpu[idx] = 1; /* union gwrite into the carried dirty state */
+				c->dirty_gpu[idx] = 1;
+		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1;
 		}
 		for (int j = 0; j < ls.ngtouch; j++) {
-			if (cg_loopset_has(ls.hwrite, ls.nhwrite, ls.gtouch[j]))
-				continue; /* host-written → not residency-safe */
+			int idx = cg_coh_idx(c, ls.gtouch[j]);
+			if (idx >= 0)
+				c->gpu_seen[idx] = 1; /* touched by iteration 1 → resident buffer may exist for a carried upload */
 			if (dbg && !cg_arch_is_resident(ctx, ls.gtouch[j]))
 				fprintf(stderr, "COHERENCE resident %s\n", ls.gtouch[j]);
 			cg_arch_set_resident(ctx, ls.gtouch[j]);
@@ -12670,6 +12720,11 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 			int idx = cg_coh_idx(c, ls.gwrite[j]);
 			if (idx >= 0)
 				c->dirty_gpu[idx] = 1; /* GPU-written in the loop → dirty afterwards (post-loop coherence) */
+		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1;
 		}
 		break;
 	}
@@ -12691,6 +12746,11 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 			if (idx >= 0)
 				c->dirty_gpu[idx] = 1;
 		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1; /* maybe-run host write → device maybe stale (upload before a later GPU read) */
+		}
 		for (int i = 0; i < c->n; i++)
 			c->gpu_run[i] = 0;
 		if (ch->child_count > 0)
@@ -12700,6 +12760,11 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 			int idx = cg_coh_idx(c, ls.gwrite[j]);
 			if (idx >= 0)
 				c->dirty_gpu[idx] = 1;
+		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1;
 		}
 		break;
 	}
@@ -13771,6 +13836,7 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	if (ctx->gpu) {
 		buffer_append(ctx, "declare i32 @arche_gpu_dispatch(i8*, i32, i8**, i32, i32, i32)\n");
 		buffer_append(ctx, "declare void @arche_gpu_sync(i8**, i32, i32, i32)\n");
+		buffer_append(ctx, "declare void @arche_gpu_upload(i8**, i32, i32, i32)\n");
 	}
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */

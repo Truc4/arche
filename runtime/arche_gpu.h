@@ -34,4 +34,10 @@ int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned el
  * the dirty flag. No-op for non-resident cols and in the no-Vulkan build. Provided by gpu_runtime.c. */
 void arche_gpu_sync(void **cols, unsigned ncol, unsigned elem_size, unsigned count);
 
+/* Refresh resident device buffers FROM host — the mirror of arche_gpu_sync, for a pool the host wrote after
+ * it went resident (the runtime uploads a resident buffer only once, at first dispatch). For each `cols[b]`
+ * that is a resident buffer, copies host data to the device. No-op for non-resident cols and in the
+ * no-Vulkan build. Provided by gpu_runtime.c. */
+void arche_gpu_upload(void **cols, unsigned ncol, unsigned elem_size, unsigned count);
+
 #endif

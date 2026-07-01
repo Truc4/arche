@@ -1,0 +1,29 @@
+// Upload sync (regression). A GPU-resident pool the host writes MID-STREAM — after the pool has gone resident
+// — must be refreshed on the device before the next GPU read, via a derived `arche_gpu_upload`. The runtime
+// uploads a resident buffer only ONCE (at the first dispatch), so a later host write is invisible to the GPU
+// without the derived upload → the kernel would read stale VRAM.
+//
+// Trace: seed 1 → inc → 2 → inc → 3 (resident) → poke resets P to 100 on the CPU → inc reads 100 → 101 →
+// show. Correct = 101. Without the upload, the 3rd inc reads the stale device value 3 → 4. `make
+// test-upload-resident` proves the derived upload is load-bearing on a device (101 with it, stale 4 under
+// ARCHE_COH_NO_UPLOAD). On the CPU (this RUN, no --gpu) there is no residency and the value is 101 anyway.
+// RUN: %arche build -o %t %s && %t | grep -qF "g=101"
+#import { fmt }
+g :: float;
+P :: arche { g }
+[8]P(8);
+
+seed :: system { P.g = { 1.0 }; }
+
+@gpu
+inc :: map (query { g }) (g) {
+  g = g + 1.0;
+}
+
+poke :: system { P.g = { 100.0 }; }
+
+show :: system eff {
+  fmt.printf("g=%.0f\n", P.g[0]);
+}
+
+#run seq({ seed, inc, inc, poke, inc, show })
