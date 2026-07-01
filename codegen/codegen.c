@@ -12328,9 +12328,10 @@ static void cg_fp_add(CgFootprint *fp, const char *pool, int write, int read) {
 	fp->n++;
 }
 
-/* Record a pool-QUALIFIED access (`Pool.col`, `Pool.col[i]`) reachable from `e`. `write_ctx` marks that `e`
- * is an assignment target; a written pool is recorded read+write (conservative — a compound `+=` or an
- * ignored miss then still forces the download). Selector-bound bare columns are handled by the caller. */
+/* Record a pool-QUALIFIED access (`Pool.col`, `Pool.col[i]`) reachable from `e`. `write_ctx`: 0 = read,
+ * 1 = read+write (a partial or compound write — the prior contents survive, so it also reads), 2 = write-only
+ * (a plain whole-column overwrite `Pool.col = {…}` — the prior contents are discarded, so NO read/download is
+ * needed before it). Selector-bound bare columns are handled by the caller. */
 static void cg_fp_expr(CodegenContext *ctx, HirExpr *e, int write_ctx, CgFootprint *fp) {
 	if (!e)
 		return;
@@ -12338,13 +12339,16 @@ static void cg_fp_expr(CodegenContext *ctx, HirExpr *e, int write_ctx, CgFootpri
 	case HIR_EXPR_FIELD:
 		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
 		    e->data.field.base->data.name.name && find_archetype_decl(ctx, e->data.field.base->data.name.name)) {
-			cg_fp_add(fp, canonical_arch_name(ctx, e->data.field.base->data.name.name), write_ctx, 1);
+			cg_fp_add(fp, canonical_arch_name(ctx, e->data.field.base->data.name.name),
+			          /*write*/ write_ctx >= 1, /*read*/ write_ctx != 2);
 			return; /* the base names the pool; nothing deeper to walk */
 		}
 		cg_fp_expr(ctx, e->data.field.base, 0, fp);
 		break;
 	case HIR_EXPR_INDEX:
-		cg_fp_expr(ctx, e->data.index.base, write_ctx, fp); /* `Pool.col[i] = …` keeps write ctx on the base */
+		/* `Pool.col[i] = …` writes ONE element and preserves the rest — a partial write, so read+write even
+		 * for a plain assign (downgrade write-only → read+write on the base). */
+		cg_fp_expr(ctx, e->data.index.base, write_ctx == 2 ? 1 : write_ctx, fp);
 		for (int i = 0; i < e->data.index.index_count; i++)
 			cg_fp_expr(ctx, e->data.index.indices[i], 0, fp);
 		break;
@@ -12393,10 +12397,13 @@ static void cg_fp_stmt(CodegenContext *ctx, HirStmt *s, CgFootprint *fp) {
 	if (!s)
 		return;
 	switch (s->kind) {
-	case HIR_STMT_ASSIGN:
-		cg_fp_expr(ctx, s->data.assign_stmt.target, 1, fp);
+	case HIR_STMT_ASSIGN: {
+		/* A plain `=` overwrites (write-only, 2); a compound `+=`/… reads the target too (read+write, 1). */
+		int wc = (s->data.assign_stmt.op == OP_NONE) ? 2 : 1;
+		cg_fp_expr(ctx, s->data.assign_stmt.target, wc, fp);
 		cg_fp_expr(ctx, s->data.assign_stmt.value, 0, fp);
 		break;
+	}
 	case HIR_STMT_BIND:
 		cg_fp_expr(ctx, s->data.bind_stmt.value, 0, fp);
 		break;
