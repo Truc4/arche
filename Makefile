@@ -380,6 +380,20 @@ test-derived-residency: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 	echo "$$stale" | grep -qF "g=1" || { echo "test-derived-residency: FAIL — sync suppressed but output [$$stale] != stale g=1 (sync not load-bearing?)"; exit 1; }
 	@echo "test-derived-residency: PASS — derived @resident + gpu.sync (g=4 with sync, stale g=1 without)"
 
+# LOOP-RESIDENCY gate (regression). A pool the GPU touches every loop iteration must be kept resident ACROSS
+# the back-edge, with the download derived as a `gpu.sync` inside the loop body (not a barrier flush before
+# the loop). BUILD-ONLY — the fixture is a `forever` loop that never returns, so this asserts the derivation
+# at build time (ARCHE_COH_DEBUG) and never executes it. glslc-gated (a GPU-placed map embeds a shader).
+test-loop-residency: $(TARGET)
+	@command -v glslc >/dev/null 2>&1 || { echo "test-loop-residency: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@dbg=$$(ARCHE_COH_DEBUG=1 ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/loopres.exe tests/unit/gpu/loop_residency.arche 2>&1) \
+		|| { echo "test-loop-residency: SKIP (--gpu build failed; likely no libvulkan)"; exit 0; }; \
+	echo "$$dbg" | grep -qF "COHERENCE resident P" || { echo "test-loop-residency: FAIL — pool not kept resident across the loop"; echo "$$dbg" | grep COHERENCE; exit 1; }; \
+	echo "$$dbg" | grep -qF "COHERENCE sync P before show" || { echo "test-loop-residency: FAIL — sync not derived inside the loop before the host read"; echo "$$dbg" | grep COHERENCE; exit 1; }; \
+	if echo "$$dbg" | grep -q "before control-flow"; then echo "test-loop-residency: FAIL — still flushing at a barrier (residency not carried across the loop)"; exit 1; fi; \
+	echo "test-loop-residency: PASS — pool resident across the loop; sync derived inside the body (no barrier flush)"
+
 # Derived-placement decision check (Slice 4): under a balanced synthetic machine profile, the build must
 # DERIVE heavy→GPU and membound→CPU (no annotations) for design_analysis/benchmarks/placement. Needs glslc
 # (a GPU-placed map embeds a shader); SKIP without it. The decision is a build-time fact (ARCHE_PLACE_DEBUG).
@@ -631,4 +645,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install

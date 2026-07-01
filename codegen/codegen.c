@@ -12506,34 +12506,61 @@ static void cg_coh_append(ScheduleTree ***a, int *n, ScheduleTree *node) {
 static void cg_coh_process_seq(CodegenContext *ctx, ScheduleTree *seq, CgCoh *c);
 static void cg_coh_process_slot(CodegenContext *ctx, ScheduleTree **slot, CgCoh *c);
 
-/* Collect the pools that any GPU-placed RUN inside `t` writes — used to seed a control-flow body's dirty set
- * (loop-carry / maybe-run safety). */
-static void cg_coh_collect_gpu_writes(CodegenContext *ctx, ScheduleTree *t, const char **pools, int *n, int max) {
+/* The pool sets a control-flow (loop/when) body touches, gathered in one walk:
+ *  - gwrite: pools a GPU-placed map WRITES  (→ seed dirty at body entry: loop-carry / maybe-run safety);
+ *  - gtouch: pools a GPU-placed map reads OR writes (→ loop-residency candidates);
+ *  - hwrite: pools a HOST (CPU) step writes (→ EXCLUDED from residency — no host→device re-upload exists,
+ *            so a resident pool the host writes then the GPU reads would read stale VRAM). */
+typedef struct {
+	const char *gwrite[128];
+	int ngwrite;
+	const char *gtouch[128];
+	int ngtouch;
+	const char *hwrite[128];
+	int nhwrite;
+} CgLoopSets;
+
+static void cg_loopset_add(const char **arr, int *n, const char *pool) {
+	for (int j = 0; j < *n; j++)
+		if (strcmp(arr[j], pool) == 0)
+			return;
+	if (*n < 128)
+		arr[(*n)++] = pool;
+}
+
+static int cg_loopset_has(const char **arr, int n, const char *pool) {
+	for (int j = 0; j < n; j++)
+		if (strcmp(arr[j], pool) == 0)
+			return 1;
+	return 0;
+}
+
+static void cg_coh_collect_loop_sets(CodegenContext *ctx, ScheduleTree *t, CgLoopSets *s) {
 	if (!t)
 		return;
 	if (t->kind == SCHED_RUN) {
 		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
 		HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+		if (!k)
+			return;
+		CgFootprint fp = {0};
+		cg_kernel_footprint(ctx, k, &fp);
 		const char *gp = NULL;
-		if (k && cg_map_placed_gpu(ctx, k, &gp)) {
-			CgFootprint fp = {0};
-			cg_kernel_footprint(ctx, k, &fp);
-			for (int p = 0; p < fp.n; p++)
-				if (fp.is_write[p]) {
-					int seen = 0;
-					for (int j = 0; j < *n; j++)
-						if (strcmp(pools[j], fp.pools[p]) == 0) {
-							seen = 1;
-							break;
-						}
-					if (!seen && *n < max)
-						pools[(*n)++] = fp.pools[p];
-				}
+		int gpu = cg_map_placed_gpu(ctx, k, &gp);
+		for (int p = 0; p < fp.n; p++) {
+			if (gpu) {
+				if (fp.is_write[p])
+					cg_loopset_add(s->gwrite, &s->ngwrite, fp.pools[p]);
+				if (fp.is_read[p] || fp.is_write[p])
+					cg_loopset_add(s->gtouch, &s->ngtouch, fp.pools[p]);
+			} else if (fp.is_write[p]) {
+				cg_loopset_add(s->hwrite, &s->nhwrite, fp.pools[p]);
+			}
 		}
 		return;
 	}
 	for (int i = 0; i < t->child_count; i++)
-		cg_coh_collect_gpu_writes(ctx, t->children[i], pools, n, max);
+		cg_coh_collect_loop_sets(ctx, t->children[i], s);
 }
 
 /* Process one schedule child, appending it (and any syncs it needs before it) to the parent sequence's new
@@ -12612,11 +12639,44 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 		cg_coh_append(out, nout, ch);
 		break;
 	}
-	case SCHED_LOOP:
+	case SCHED_LOOP: {
+		/* Residency-carrying fixpoint (NOT a barrier): a pool the GPU touches every iteration should live in
+		 * VRAM across the back-edge, not be re-uploaded per frame. Do NOT flush before the loop — carry the
+		 * pre-loop dirty state in; the body's own sync insertion covers pre-loop-dirty and loop-carried-dirty
+		 * host reads. Seed `entry_dirty ⊇ gwrite` (a pool GPU-written anywhere in the body is dirty at the top
+		 * of every iteration ≥ 2) so a loop-carried host read always gets a sync — the conservative one-step
+		 * fixpoint (over-syncs iteration 1 at worst; never under-syncs). Keep residency for GPU-touched pools
+		 * that the host does NOT write (host writes need a device re-upload we don't have → would go stale). */
+		CgLoopSets ls = {0};
+		cg_coh_collect_loop_sets(ctx, ch, &ls);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1; /* union gwrite into the carried dirty state */
+		}
+		for (int j = 0; j < ls.ngtouch; j++) {
+			if (cg_loopset_has(ls.hwrite, ls.nhwrite, ls.gtouch[j]))
+				continue; /* host-written → not residency-safe */
+			if (dbg && !cg_arch_is_resident(ctx, ls.gtouch[j]))
+				fprintf(stderr, "COHERENCE resident %s\n", ls.gtouch[j]);
+			cg_arch_set_resident(ctx, ls.gtouch[j]);
+		}
+		for (int i = 0; i < c->n; i++)
+			c->gpu_run[i] = 0; /* the straight-line run counter doesn't span the boundary */
+		if (ch->child_count > 0)
+			cg_coh_process_slot(ctx, &ch->children[0], c);
+		cg_coh_append(out, nout, ch);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1; /* GPU-written in the loop → dirty afterwards (post-loop coherence) */
+		}
+		break;
+	}
 	case SCHED_WHEN: {
-		/* BARRIER (v1): flush every dirty pool before the node, seed the body's GPU-writes as dirty (covers a
-		 * loop back-edge and a maybe-taken branch), process the body for its internal coherence, then leave
-		 * those pools dirty afterwards. No residency is carried across the boundary. */
+		/* BARRIER (conservative): a conditional body isn't the every-iteration repetition that justifies
+		 * residency, so keep the safe form — flush dirty before, seed the body's GPU-writes as dirty (maybe-run
+		 * safety), process, leave them dirty. No residency forced across the boundary. */
 		for (int i = 0; i < c->n; i++)
 			if (c->dirty_gpu[i]) {
 				if (dbg)
@@ -12624,11 +12684,10 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 				cg_coh_append(out, nout, cg_sched_sync(c->pools[i]));
 				c->dirty_gpu[i] = 0;
 			}
-		const char *bw[128];
-		int nbw = 0;
-		cg_coh_collect_gpu_writes(ctx, ch, bw, &nbw, 128);
-		for (int j = 0; j < nbw; j++) {
-			int idx = cg_coh_idx(c, bw[j]);
+		CgLoopSets ls = {0};
+		cg_coh_collect_loop_sets(ctx, ch, &ls);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
 			if (idx >= 0)
 				c->dirty_gpu[idx] = 1;
 		}
@@ -12637,8 +12696,8 @@ static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c
 		if (ch->child_count > 0)
 			cg_coh_process_slot(ctx, &ch->children[0], c);
 		cg_coh_append(out, nout, ch);
-		for (int j = 0; j < nbw; j++) {
-			int idx = cg_coh_idx(c, bw[j]);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
 			if (idx >= 0)
 				c->dirty_gpu[idx] = 1;
 		}

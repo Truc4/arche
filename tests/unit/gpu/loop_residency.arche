@@ -1,0 +1,28 @@
+// Loop residency (regression). A pool the GPU touches EVERY iteration of a loop must be kept RESIDENT across
+// the back-edge — uploaded once, not re-uploaded per frame — with the device→host download derived as a
+// `gpu.sync` INSIDE the loop body before the host read, NOT flushed at a barrier before the loop. Before this,
+// the coherence pass treated a loop as a barrier (flush + no residency carried across), so the pool was
+// re-uploaded every iteration.
+//
+// This is a `forever` loop, so it is BUILD-ONLY (running it never returns). `make test-loop-residency` asserts
+// the derivation at build time via ARCHE_COH_DEBUG: `resident P` + `sync P before show` (inside the loop) and
+// NO `before control-flow` flush. The load-bearing-ness of the derived sync itself is covered by
+// `test-derived-residency` (same SCHED_GPU_SYNC mechanism, straight-line).
+// RUN: %arche build -o %t %s
+#import { fmt }
+g :: float;
+P :: arche { g }
+[8]P(8);
+
+seed :: system { P.g = { 1.0 }; }
+
+@gpu
+inc :: map (query { g }) (g) {
+  g = g + 1.0;
+}
+
+show :: system eff {
+  fmt.printf("g=%.0f\n", P.g[0]);
+}
+
+#run seq({ seed, forever(seq({ inc, show })) })
