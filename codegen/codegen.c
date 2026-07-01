@@ -1330,7 +1330,8 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	return 0;
 }
 
-/* 1 if the archetype's pool was declared `@resident` (GPU-resident columns). */
+/* 1 if the archetype's pool was declared `@resident` (GPU-resident columns) OR the coherence pass derived
+ * residency for it (cg_arch_set_resident). Read at the dispatch site to keep the pool on-device across maps. */
 static int cg_arch_is_resident(CodegenContext *ctx, const char *arch_name) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
@@ -1342,6 +1343,21 @@ static int cg_arch_is_resident(CodegenContext *ctx, const char *arch_name) {
 			return s->is_resident;
 	}
 	return 0;
+}
+
+/* DERIVE residency: mark the pool's static decl `@resident` from the coherence pass. `is_resident` is the
+ * union of the user's `@resident` annotation (set in lowering) and this — the annotation is a manual override,
+ * never cleared. Idempotent; sets every static decl of the (canonical) shape. */
+static void cg_arch_set_resident(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
+			continue;
+		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->is_requirement || s->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0)
+			s->is_resident = 1;
+	}
 }
 
 /* The program `@default` policy for a (effect_kind 0=proc/1=func, category 1/2/3) cell, or NULL. */
@@ -1494,6 +1510,62 @@ static HirKernelDecl *find_map_decl(CodegenContext *ctx, const char *name) {
 			return decl->data.kernel;
 	}
 	return NULL;
+}
+
+/* 1 iff the pure map `k` is placed on the GPU under the current profile — the SAME eligibility gate and
+ * decision the HIR_STMT_RUN emit site uses (single matching static all-float pool, then cg_placement_decide).
+ * Fills *out_pool (canonical) with that pool when eligible. Read-only (no side effects, unlike the emit site
+ * which also sets is_gpu); used by the coherence pass, which runs before emit. Kept in lockstep with the gate
+ * at codegen_statement/HIR_STMT_RUN; the profitability decision itself lives in cg_placement_decide. */
+static int cg_map_placed_gpu(CodegenContext *ctx, HirKernelDecl *k, const char **out_pool) {
+	if (!ctx->gpu || !k || k->kind != HIR_KERNEL_MAP || k->eff)
+		return 0;
+	if (k->param_count <= 0 || k->param_count > 64)
+		return 0;
+	const char *cols[256];
+	int nc = map_query_cols(k, cols, 256);
+	const char *comp[256];
+	int cc = query_match_archs(ctx, cols, nc, comp, 256);
+	const char *an = NULL;
+	int nmatch = 0;
+	for (int i = 0; i < cc; i++) {
+		const char *cn = canonical_arch_name(ctx, comp[i]);
+		if (get_arch_static_capacity(ctx, cn) <= 0)
+			continue;
+		int seen = 0;
+		for (int m = 0; m < i; m++)
+			if (strcmp(canonical_arch_name(ctx, comp[m]), cn) == 0) {
+				seen = 1;
+				break;
+			}
+		if (seen)
+			continue;
+		if (nmatch == 0)
+			an = cn;
+		nmatch++;
+	}
+	if (nmatch != 1 || !an)
+		return 0;
+	HirArchetypeDecl *ga = find_archetype_decl(ctx, an);
+	if (!ga)
+		return 0;
+	for (int p = 0; p < k->param_count; p++) {
+		const char *pn = k->params[p] ? k->params[p]->name : NULL;
+		int fi = -1;
+		for (int f = 0; pn && f < ga->field_count; f++)
+			if (ga->fields[f]->kind == FIELD_COLUMN && strcmp(ga->fields[f]->name, pn) == 0) {
+				if (ga->fields[f]->type && ga->fields[f]->type->tag == HIR_TYPE_FLOAT)
+					fi = f;
+				break;
+			}
+		if (fi < 0)
+			return 0; /* a non-float / missing column → no GPU form */
+	}
+	if (!cg_placement_decide(ctx, k, get_arch_static_capacity(ctx, an)))
+		return 0;
+	if (out_pool)
+		*out_pool = an;
+	return 1;
 }
 
 static HirProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
@@ -12179,6 +12251,424 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 	}
 }
 
+/* ============================================================================
+ * Derived residency & coherence (auto `@resident` + auto `gpu.sync`)
+ *
+ * A single forward pass over the folded #run schedule tracks, per pool, which device holds the authoritative
+ * copy. Using the read/write footprint of each kernel (§ cg_kernel_footprint) and its derived placement
+ * (cg_map_placed_gpu), it (1) inserts a `gpu.sync(Pool)` before any HOST read of a pool the GPU last wrote —
+ * the mandatory, correctness-driven download — and (2) derives `@resident` for a pool touched by 2+
+ * consecutive GPU steps with no intervening host read, eliding per-dispatch downloads. This is footprint-based
+ * coherence in the tradition of PPCG / Polly-ACC / CGCM, made trivial by arche's fully static schedule.
+ *
+ * Correctness posture: conservative. A written pool is treated as also read; a control-flow node
+ * (loop/when/par) is a BARRIER (flush all dirty pools, seed the body's GPU-writes as dirty) — over-syncing is
+ * slower, under-syncing is WRONG. Only the straight-line `seq` case derives residency; that is the case the
+ * benchmark and the win live in. Explicit `@resident`/`gpu.sync` remain honored (never removed): a
+ * user-written sync clears dirty here, so no duplicate is inserted.
+ * ==========================================================================*/
+
+/* Per-kernel pool-level access footprint: which concrete pools the kernel reads / writes. */
+typedef struct {
+	const char *pools[64]; /* canonical shape names (stable for program lifetime) */
+	int is_write[64];
+	int is_read[64];
+	int n;
+} CgFootprint;
+
+static void cg_fp_add(CgFootprint *fp, const char *pool, int write, int read) {
+	if (!pool)
+		return;
+	for (int i = 0; i < fp->n; i++)
+		if (strcmp(fp->pools[i], pool) == 0) {
+			fp->is_write[i] |= write;
+			fp->is_read[i] |= read;
+			return;
+		}
+	if (fp->n >= 64)
+		return;
+	fp->pools[fp->n] = pool;
+	fp->is_write[fp->n] = write;
+	fp->is_read[fp->n] = read;
+	fp->n++;
+}
+
+/* Record a pool-QUALIFIED access (`Pool.col`, `Pool.col[i]`) reachable from `e`. `write_ctx` marks that `e`
+ * is an assignment target; a written pool is recorded read+write (conservative — a compound `+=` or an
+ * ignored miss then still forces the download). Selector-bound bare columns are handled by the caller. */
+static void cg_fp_expr(CodegenContext *ctx, HirExpr *e, int write_ctx, CgFootprint *fp) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case HIR_EXPR_FIELD:
+		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+		    e->data.field.base->data.name.name && find_archetype_decl(ctx, e->data.field.base->data.name.name)) {
+			cg_fp_add(fp, canonical_arch_name(ctx, e->data.field.base->data.name.name), write_ctx, 1);
+			return; /* the base names the pool; nothing deeper to walk */
+		}
+		cg_fp_expr(ctx, e->data.field.base, 0, fp);
+		break;
+	case HIR_EXPR_INDEX:
+		cg_fp_expr(ctx, e->data.index.base, write_ctx, fp); /* `Pool.col[i] = …` keeps write ctx on the base */
+		for (int i = 0; i < e->data.index.index_count; i++)
+			cg_fp_expr(ctx, e->data.index.indices[i], 0, fp);
+		break;
+	case HIR_EXPR_SLICE:
+		cg_fp_expr(ctx, e->data.slice.base, 0, fp);
+		cg_fp_expr(ctx, e->data.slice.lo, 0, fp);
+		cg_fp_expr(ctx, e->data.slice.hi, 0, fp);
+		break;
+	case HIR_EXPR_BINARY:
+		cg_fp_expr(ctx, e->data.binary.left, 0, fp);
+		cg_fp_expr(ctx, e->data.binary.right, 0, fp);
+		break;
+	case HIR_EXPR_UNARY:
+		cg_fp_expr(ctx, e->data.unary.operand, 0, fp);
+		break;
+	case HIR_EXPR_CALL:
+		cg_fp_expr(ctx, e->data.call.callee, 0, fp);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			cg_fp_expr(ctx, e->data.call.args[i], 0, fp);
+		break;
+	case HIR_EXPR_ALLOC:
+		if (e->data.alloc.archetype_name && find_archetype_decl(ctx, e->data.alloc.archetype_name))
+			cg_fp_add(fp, canonical_arch_name(ctx, e->data.alloc.archetype_name), 1, 1); /* insert writes the pool */
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			cg_fp_expr(ctx, e->data.alloc.field_values[i], 0, fp);
+		cg_fp_expr(ctx, e->data.alloc.init_length, 0, fp);
+		break;
+	case HIR_EXPR_ENTITY_LIT:
+		if (e->data.entity.type_name && find_archetype_decl(ctx, e->data.entity.type_name))
+			cg_fp_add(fp, canonical_arch_name(ctx, e->data.entity.type_name), 1, 1);
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			cg_fp_expr(ctx, e->data.entity.field_values[i], 0, fp);
+		break;
+	case HIR_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			cg_fp_expr(ctx, e->data.array_literal.elements[i], 0, fp);
+		break;
+	default:
+		break; /* NAME / LITERAL / STRING: no pool-qualified access */
+	}
+}
+
+static void cg_fp_stmts(CodegenContext *ctx, HirStmt **stmts, int n, CgFootprint *fp);
+
+static void cg_fp_stmt(CodegenContext *ctx, HirStmt *s, CgFootprint *fp) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case HIR_STMT_ASSIGN:
+		cg_fp_expr(ctx, s->data.assign_stmt.target, 1, fp);
+		cg_fp_expr(ctx, s->data.assign_stmt.value, 0, fp);
+		break;
+	case HIR_STMT_BIND:
+		cg_fp_expr(ctx, s->data.bind_stmt.value, 0, fp);
+		break;
+	case HIR_STMT_MULTI_BIND:
+		cg_fp_expr(ctx, s->data.multi_bind.value, 0, fp);
+		break;
+	case HIR_STMT_EXPR:
+		cg_fp_expr(ctx, s->data.expr_stmt.expr, 0, fp);
+		break;
+	case HIR_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			cg_fp_expr(ctx, s->data.return_stmt.values[i], 0, fp);
+		break;
+	case HIR_STMT_IF:
+		cg_fp_expr(ctx, s->data.if_stmt.cond, 0, fp);
+		cg_fp_stmts(ctx, s->data.if_stmt.then_body, s->data.if_stmt.then_count, fp);
+		cg_fp_stmts(ctx, s->data.if_stmt.else_body, s->data.if_stmt.else_count, fp);
+		break;
+	case HIR_STMT_FOR:
+		cg_fp_expr(ctx, s->data.for_stmt.iterable, 0, fp);
+		cg_fp_stmt(ctx, s->data.for_stmt.init, fp);
+		cg_fp_expr(ctx, s->data.for_stmt.cond, 0, fp);
+		cg_fp_stmt(ctx, s->data.for_stmt.incr, fp);
+		cg_fp_stmts(ctx, s->data.for_stmt.body, s->data.for_stmt.body_count, fp);
+		break;
+	case HIR_STMT_BLOCK:
+		cg_fp_stmts(ctx, s->data.block.stmts, s->data.block.count, fp);
+		break;
+	case HIR_STMT_EACH_FIELD:
+		cg_fp_stmts(ctx, s->data.each_field.body, s->data.each_field.body_count, fp);
+		break;
+	case HIR_STMT_EACH:
+		/* an inline per-entity fan: its selector pool is accessed, plus any pool-qualified body access. */
+		if (s->data.each_stmt) {
+			HirKernelDecl *fan = s->data.each_stmt;
+			const char *fcols[256];
+			int fnc = map_query_cols(fan, fcols, 256);
+			const char *fcomp[256];
+			int fcc = query_match_archs(ctx, fcols, fnc, fcomp, 256);
+			for (int i = 0; i < fcc; i++) {
+				const char *cn = canonical_arch_name(ctx, fcomp[i]);
+				if (get_arch_static_capacity(ctx, cn) > 0)
+					cg_fp_add(fp, cn, fan->write_count > 0, 1);
+			}
+			cg_fp_stmts(ctx, fan->stmts, fan->stmt_count, fp);
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void cg_fp_stmts(CodegenContext *ctx, HirStmt **stmts, int n, CgFootprint *fp) {
+	for (int i = 0; i < n; i++)
+		cg_fp_stmt(ctx, stmts[i], fp);
+}
+
+/* The pool-level read/write footprint of a scheduled kernel: its selector pool(s) (read if it binds columns,
+ * written if it declares `(writes)`) plus every pool-qualified access in the body. */
+static void cg_kernel_footprint(CodegenContext *ctx, HirKernelDecl *k, CgFootprint *fp) {
+	if (!k)
+		return;
+	if (k->param_count > 0) {
+		const char *cols[256];
+		int nc = map_query_cols(k, cols, 256);
+		const char *comp[256];
+		int cc = query_match_archs(ctx, cols, nc, comp, 256);
+		for (int i = 0; i < cc; i++) {
+			const char *cn = canonical_arch_name(ctx, comp[i]);
+			if (get_arch_static_capacity(ctx, cn) > 0)
+				cg_fp_add(fp, cn, k->write_count > 0, 1);
+		}
+	}
+	cg_fp_stmts(ctx, k->stmts, k->stmt_count, fp);
+}
+
+/* Per-pool coherence state carried across the forward walk. */
+typedef struct {
+	const char *pools[128];
+	int dirty_gpu[128]; /* GPU holds the authoritative copy; the host is stale */
+	int gpu_run[128];   /* consecutive GPU touches with no intervening host read (residency signal) */
+	int n;
+} CgCoh;
+
+static int cg_coh_idx(CgCoh *c, const char *pool) {
+	for (int i = 0; i < c->n; i++)
+		if (strcmp(c->pools[i], pool) == 0)
+			return i;
+	if (c->n >= 128)
+		return -1;
+	c->pools[c->n] = pool;
+	c->dirty_gpu[c->n] = 0;
+	c->gpu_run[c->n] = 0;
+	return c->n++;
+}
+
+static ScheduleTree *cg_sched_node(SchedKind k) {
+	ScheduleTree *t = calloc(1, sizeof(ScheduleTree));
+	t->kind = k;
+	return t;
+}
+
+static ScheduleTree *cg_sched_sync(const char *pool) {
+	ScheduleTree *t = cg_sched_node(SCHED_GPU_SYNC);
+	if (pool) {
+		t->sym = malloc(strlen(pool) + 1);
+		strcpy(t->sym, pool);
+	}
+	return t;
+}
+
+static void cg_coh_append(ScheduleTree ***a, int *n, ScheduleTree *node) {
+	*a = realloc(*a, (size_t)(*n + 1) * sizeof(ScheduleTree *));
+	(*a)[(*n)++] = node;
+}
+
+static void cg_coh_process_seq(CodegenContext *ctx, ScheduleTree *seq, CgCoh *c);
+static void cg_coh_process_slot(CodegenContext *ctx, ScheduleTree **slot, CgCoh *c);
+
+/* Collect the pools that any GPU-placed RUN inside `t` writes — used to seed a control-flow body's dirty set
+ * (loop-carry / maybe-run safety). */
+static void cg_coh_collect_gpu_writes(CodegenContext *ctx, ScheduleTree *t, const char **pools, int *n, int max) {
+	if (!t)
+		return;
+	if (t->kind == SCHED_RUN) {
+		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
+		HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+		const char *gp = NULL;
+		if (k && cg_map_placed_gpu(ctx, k, &gp)) {
+			CgFootprint fp = {0};
+			cg_kernel_footprint(ctx, k, &fp);
+			for (int p = 0; p < fp.n; p++)
+				if (fp.is_write[p]) {
+					int seen = 0;
+					for (int j = 0; j < *n; j++)
+						if (strcmp(pools[j], fp.pools[p]) == 0) {
+							seen = 1;
+							break;
+						}
+					if (!seen && *n < max)
+						pools[(*n)++] = fp.pools[p];
+				}
+		}
+		return;
+	}
+	for (int i = 0; i < t->child_count; i++)
+		cg_coh_collect_gpu_writes(ctx, t->children[i], pools, n, max);
+}
+
+/* Process one schedule child, appending it (and any syncs it needs before it) to the parent sequence's new
+ * child list. Recurses into nested sequences and control-flow nodes. */
+static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c, ScheduleTree ***out, int *nout) {
+	int dbg = getenv("ARCHE_COH_DEBUG") != NULL;
+	switch (ch->kind) {
+	case SCHED_SEQ:
+	case SCHED_PAR: /* PAR is emitted sequentially today — same coherence as SEQ */
+		cg_coh_process_seq(ctx, ch, c);
+		cg_coh_append(out, nout, ch);
+		break;
+	case SCHED_RUN: {
+		HirDecl *d = ch->sym ? cg_find_scheduled_decl(ctx, ch->sym) : NULL;
+		HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+		if (!k) {
+			cg_coh_append(out, nout, ch);
+			break;
+		}
+		CgFootprint fp = {0};
+		cg_kernel_footprint(ctx, k, &fp);
+		const char *gpupool = NULL;
+		int gpu = cg_map_placed_gpu(ctx, k, &gpupool);
+		/* A host (CPU) step reading a GPU-dirty pool must download it first — insert the sync before it.
+		 * ARCHE_COH_NO_SYNC suppresses ONLY the insertion (state still tracked) — a test lever to prove the
+		 * derived sync is load-bearing: with it set, a derived-resident pool read on the host goes stale. */
+		if (!gpu) {
+			int nosync = getenv("ARCHE_COH_NO_SYNC") != NULL;
+			for (int p = 0; p < fp.n; p++) {
+				if (!fp.is_read[p])
+					continue;
+				int idx = cg_coh_idx(c, fp.pools[p]);
+				if (idx >= 0 && c->dirty_gpu[idx]) {
+					if (dbg)
+						fprintf(stderr, "COHERENCE sync %s before %s\n", fp.pools[p], ch->sym ? ch->sym : "?");
+					if (!nosync)
+						cg_coh_append(out, nout, cg_sched_sync(fp.pools[p]));
+					c->dirty_gpu[idx] = 0;
+					c->gpu_run[idx] = 0;
+				}
+			}
+		}
+		cg_coh_append(out, nout, ch);
+		/* Apply the step's writes + accumulate the residency signal. */
+		for (int p = 0; p < fp.n; p++) {
+			int idx = cg_coh_idx(c, fp.pools[p]);
+			if (idx < 0)
+				continue;
+			if (gpu) {
+				c->gpu_run[idx]++;
+				if (c->gpu_run[idx] >= 2) {
+					if (dbg && !cg_arch_is_resident(ctx, fp.pools[p]))
+						fprintf(stderr, "COHERENCE resident %s\n", fp.pools[p]);
+					cg_arch_set_resident(ctx, fp.pools[p]);
+				}
+				if (fp.is_write[p])
+					c->dirty_gpu[idx] = 1;
+			} else {
+				if (fp.is_write[p])
+					c->dirty_gpu[idx] = 0; /* host now holds the authoritative copy */
+				c->gpu_run[idx] = 0;       /* a host touch breaks the resident run */
+			}
+		}
+		break;
+	}
+	case SCHED_GPU_SYNC: {
+		/* A sync (user-written, or one we inserted upstream) downloads the pool → host is current again. */
+		const char *pool = ch->sym ? canonical_arch_name(ctx, ch->sym) : NULL;
+		if (pool) {
+			int idx = cg_coh_idx(c, pool);
+			if (idx >= 0) {
+				c->dirty_gpu[idx] = 0;
+				c->gpu_run[idx] = 0;
+			}
+		}
+		cg_coh_append(out, nout, ch);
+		break;
+	}
+	case SCHED_LOOP:
+	case SCHED_WHEN: {
+		/* BARRIER (v1): flush every dirty pool before the node, seed the body's GPU-writes as dirty (covers a
+		 * loop back-edge and a maybe-taken branch), process the body for its internal coherence, then leave
+		 * those pools dirty afterwards. No residency is carried across the boundary. */
+		for (int i = 0; i < c->n; i++)
+			if (c->dirty_gpu[i]) {
+				if (dbg)
+					fprintf(stderr, "COHERENCE sync %s before control-flow\n", c->pools[i]);
+				cg_coh_append(out, nout, cg_sched_sync(c->pools[i]));
+				c->dirty_gpu[i] = 0;
+			}
+		const char *bw[128];
+		int nbw = 0;
+		cg_coh_collect_gpu_writes(ctx, ch, bw, &nbw, 128);
+		for (int j = 0; j < nbw; j++) {
+			int idx = cg_coh_idx(c, bw[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1;
+		}
+		for (int i = 0; i < c->n; i++)
+			c->gpu_run[i] = 0;
+		if (ch->child_count > 0)
+			cg_coh_process_slot(ctx, &ch->children[0], c);
+		cg_coh_append(out, nout, ch);
+		for (int j = 0; j < nbw; j++) {
+			int idx = cg_coh_idx(c, bw[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1;
+		}
+		break;
+	}
+	default:
+		cg_coh_append(out, nout, ch);
+		break;
+	}
+}
+
+static void cg_coh_process_seq(CodegenContext *ctx, ScheduleTree *seq, CgCoh *c) {
+	ScheduleTree **nc = NULL;
+	int nn = 0;
+	for (int i = 0; i < seq->child_count; i++)
+		cg_coh_process_child(ctx, seq->children[i], c, &nc, &nn);
+	free(seq->children);
+	seq->children = nc;
+	seq->child_count = nn;
+}
+
+/* Process a single child position, wrapping it in a fresh SEQ if a preceding sync had to be spliced in. */
+static void cg_coh_process_slot(CodegenContext *ctx, ScheduleTree **slot, CgCoh *c) {
+	ScheduleTree *ch = *slot;
+	if (!ch)
+		return;
+	if (ch->kind == SCHED_SEQ || ch->kind == SCHED_PAR) {
+		cg_coh_process_seq(ctx, ch, c);
+		return;
+	}
+	ScheduleTree **out = NULL;
+	int n = 0;
+	cg_coh_process_child(ctx, ch, c, &out, &n);
+	if (n == 1) {
+		*slot = out[0];
+		free(out);
+	} else if (n > 1) {
+		ScheduleTree *seq = cg_sched_node(SCHED_SEQ);
+		seq->children = out;
+		seq->child_count = n;
+		*slot = seq;
+	} else {
+		free(out);
+	}
+}
+
+/* Entry point: run the coherence pass over the folded schedule, mutating it in place (inserting gpu.sync
+ * nodes and deriving `@resident`). Only under `--gpu`; a no-op otherwise (no device ⇒ no residency). */
+static void cg_coherence_pass(CodegenContext *ctx, ScheduleTree **tree) {
+	if (!ctx->gpu || !tree || !*tree)
+		return;
+	CgCoh c = {0};
+	cg_coh_process_slot(ctx, tree, &c);
+}
+
 /* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree.
  * Walked at compile time into direct-dispatch control flow; called once from @main. */
 static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
@@ -12193,6 +12683,9 @@ static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	push_value_scope(ctx);
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
+	/* Derive residency + insert coherence syncs before lowering the schedule to control flow. Mutates `tree`
+	 * in place (or replaces the local pointer if a top-level wrapper is needed); emit_sched sees the result. */
+	cg_coherence_pass(ctx, &tree);
 	emit_sched(ctx, tree);
 	if (!ctx->block_terminated)
 		buffer_append(ctx, "  ret void\n");

@@ -1,27 +1,61 @@
-// Decision-correctness sweep: for each arithmetic intensity, a CPU arm (plain map) and a forced-GPU
-// arm (@gpu) over identical static pools, each timed over K dispatches. Prints
-// 'ROW <flops/elem> <cpu_ms> <gpu_ms>'. On a box where the GPU's throughput beats its per-dispatch
-// overhead some rows flip to GPU; on an overhead-bound box the CPU wins every row (the honest result).
+// Decision-correctness sweep: for each arithmetic intensity, a CPU arm (plain map) and a GPU arm
+// (@gpu), each over its OWN static pool, timed over K dispatches. Prints 'ROW <flops/elem> <cpu_ms>
+// <gpu_ms>'. Each arm has a private pool so derived residency/coherence never crosses arms; the GPU
+// arm is measured exactly as the compiler runs it (resident pool, transfer amortized over K).
 #import { fmt os }
-c :: float;
-P :: arche { c }
-[262144]P(262144);
+ca0 :: float;
+CA0 :: arche { ca0 }
+[262144]CA0(262144);
+cb0 :: float;
+CB0 :: arche { cb0 }
+[262144]CB0(262144);
+ca1 :: float;
+CA1 :: arche { ca1 }
+[262144]CA1(262144);
+cb1 :: float;
+CB1 :: arche { cb1 }
+[262144]CB1(262144);
+ca2 :: float;
+CA2 :: arche { ca2 }
+[262144]CA2(262144);
+cb2 :: float;
+CB2 :: arche { cb2 }
+[262144]CB2(262144);
+ca3 :: float;
+CA3 :: arche { ca3 }
+[262144]CA3(262144);
+cb3 :: float;
+CB3 :: arche { cb3 }
+[262144]CB3(262144);
+wc :: float;
+W :: arche { wc }
+[64]W(64);
+@gpu
+warm :: map (query { wc }) (wc) { wc = wc + 1.0; }
+seedw :: system { W.wc = { 1.0 }; }
 ms :: i64;
 T :: arche { ms }
 [16]T(16);
-cpu0 :: map (query { c }) (c) { c = c + 1.0; }
+cpu0 :: map (query { ca0 }) (ca0) { ca0 = ca0 + 1.0; }
 @gpu
-gpu0 :: map (query { c }) (c) { c = c + 1.0; }
-cpu1 :: map (query { c }) (c) { c = ((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+gpu0 :: map (query { cb0 }) (cb0) { cb0 = cb0 + 1.0; }
+cpu1 :: map (query { ca1 }) (ca1) { ca1 = ((((((((ca1)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
 @gpu
-gpu1 :: map (query { c }) (c) { c = ((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
-cpu2 :: map (query { c }) (c) { c = ((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+gpu1 :: map (query { cb1 }) (cb1) { cb1 = ((((((((cb1)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+cpu2 :: map (query { ca2 }) (ca2) { ca2 = ((((((((((((((((ca2)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
 @gpu
-gpu2 :: map (query { c }) (c) { c = ((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
-cpu3 :: map (query { c }) (c) { c = ((((((((((((((((((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+gpu2 :: map (query { cb2 }) (cb2) { cb2 = ((((((((((((((((cb2)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+cpu3 :: map (query { ca3 }) (ca3) { ca3 = ((((((((((((((((((((((((((((((((ca3)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
 @gpu
-gpu3 :: map (query { c }) (c) { c = ((((((((((((((((((((((((((((((((c)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
-seed :: system { P.c = { 1.0 }; }
+gpu3 :: map (query { cb3 }) (cb3) { cb3 = ((((((((((((((((((((((((((((((((cb3)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+seedca0 :: system { CA0.ca0 = { 1.0 }; }
+seedcb0 :: system { CB0.cb0 = { 1.0 }; }
+seedca1 :: system { CA1.ca1 = { 1.0 }; }
+seedcb1 :: system { CB1.cb1 = { 1.0 }; }
+seedca2 :: system { CA2.ca2 = { 1.0 }; }
+seedcb2 :: system { CB2.cb2 = { 1.0 }; }
+seedca3 :: system { CA3.ca3 = { 1.0 }; }
+seedcb3 :: system { CB3.cb3 = { 1.0 }; }
 s0 :: system eff { os.now_ms()(now:); T.ms[0] = now; }
 e0 :: system eff { os.now_ms()(now:); T.ms[1] = now; }
 s1 :: system eff { os.now_ms()(now:); T.ms[2] = now; }
@@ -41,4 +75,4 @@ e7 :: system eff { os.now_ms()(now:); T.ms[15] = now; }
 report :: system eff {
   fmt.printf("ROW 0 %d %d\nROW 16 %d %d\nROW 32 %d %d\nROW 64 %d %d\n", T.ms[1] - T.ms[0], T.ms[3] - T.ms[2], T.ms[5] - T.ms[4], T.ms[7] - T.ms[6], T.ms[9] - T.ms[8], T.ms[11] - T.ms[10], T.ms[13] - T.ms[12], T.ms[15] - T.ms[14]);
 }
-#run seq({ seed, s0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, e0, s1, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, e1, s2, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, e2, s3, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, e3, s4, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, e4, s5, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, e5, s6, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, e6, s7, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, e7, report })
+#run seq({ seedw, warm, seedca0, seedca1, seedca2, seedca3, seedcb0, seedcb1, seedcb2, seedcb3, s0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, cpu0, e0, s1, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, gpu0, e1, s2, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, cpu1, e2, s3, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, gpu1, e3, s4, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, cpu2, e4, s5, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, gpu2, e5, s6, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, cpu3, e6, s7, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, gpu3, e7, report })

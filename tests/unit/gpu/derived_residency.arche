@@ -1,0 +1,31 @@
+// REGRESSION (derived residency + coherence). No `@resident`, no `gpu.sync` — both are DERIVED. A pool is
+// written by two consecutive GPU-placed maps (so the coherence pass keeps it GPU-resident, eliding the
+// per-dispatch download), then read on the HOST by `show`. Residency makes the download NON-automatic, so a
+// `gpu.sync` MUST be derived before the host read or the host sees the stale seed value.
+//
+// The danger this guards: derived residency WITHOUT the paired derived sync = silent stale host read = wrong
+// results. `make test-derived-residency` proves both halves on a real device: with the derived sync it reads
+// g=4 (1 seed + 3 increments); with the sync suppressed (ARCHE_COH_NO_SYNC=1) it reads the stale g=1.
+//
+// The plain RUN below builds on the CPU (no --gpu), where the pass is a no-op and the value is correct anyway
+// — the derivation itself is asserted by the Makefile target under --gpu (ARCHE_COH_DEBUG).
+// RUN: %arche build -o %t %s && %t | grep -qF "g=4"
+#import { fmt }
+g :: float;
+RP :: arche { g }
+[8]RP(8);
+
+seed :: system {
+  RP.g = { 1.0 };
+}
+
+// no @gpu — placement (and thus residency) is DERIVED.
+inc :: map (query { g }) (g) {
+  g = g + 1.0;
+}
+
+show :: system eff {
+  fmt.printf("g=%.0f\n", RP.g[0] * 1.0);
+}
+
+#run seq({ seed, inc, inc, inc, show })

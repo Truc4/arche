@@ -1,0 +1,17 @@
+// Derived-residency benchmark: derive.arche with the annotations REMOVED. There is no `@resident` and no
+// `gpu.sync(GR)` — the coherence pass derives both from the schedule (GR is written by 40 consecutive
+// GPU-placed maps → kept resident; `show` reads it on the host → a sync is inserted before it). `show` is
+// the host observable that makes the download part of the measured run, so it is a fair A/B against the CPU.
+//
+// Measured on a GTX 1650: CPU ~1910 ms vs derived-GPU ~701 ms (~2.7x), identical output — the same win the
+// hand-annotated derive.arche gets, with the source untouched. Build both ways to reproduce:
+//   ARCHE_FORCE_PLACE=cpu arche build --gpu -o /tmp/cpu derive_residency.arche
+//   ARCHE_FORCE_PLACE=gpu arche build --gpu -o /tmp/gpu derive_residency.arche   # residency+sync derived
+#import { fmt }
+g :: float;
+GR :: arche { g }
+[16000000]GR(16000000);
+heavy :: map (query { g }) (g) { g = ((((((((((((((((((((((((((((((((g)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
+seed :: system { GR.g = { 1.0 }; }
+show :: system eff { fmt.printf("g0=%.4f\n", GR.g[0] * 1.0); }
+#run seq({ seed, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, show })

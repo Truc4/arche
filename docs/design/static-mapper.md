@@ -57,6 +57,31 @@ The advantage over a runtime mapper is **freeze vs live search**: both execute t
 because arche's workload is fully static, one ahead-of-time pass can freeze a single answer — no runtime
 search, no per-run adaptation, nothing left in the shipped binary.
 
+## Residency and coherence, derived
+
+Placement says *where* a kernel runs; **residency** says which columns stay in VRAM across dispatches. Keeping
+a pool GPU-resident — uploaded once, not downloaded after every map — is what turns a compute-heavy loop from
+a wash into a win: a map run 40× over a resident 16M-row pool is **~2.7× faster on the GPU** (≈700 ms vs
+≈1900 ms, GTX 1650), because the one transfer amortizes across the loop. But residency has a coherence
+obligation: once the GPU holds the authoritative copy, the host reads stale data until it is synced back.
+
+Both are **derived** from the schedule, not annotated. A single forward pass over the folded `#run` schedule
+tracks, per pool, which device last wrote it, using each kernel's read/write footprint and its placement:
+
+- a pool written by **two or more consecutive GPU-placed maps** with no host read in between is kept
+  **resident**, eliding the per-dispatch downloads;
+- a **`gpu.sync` is inserted before any host read** of a pool the GPU last wrote — the mandatory download that
+  keeps the result correct.
+
+This is footprint-based coherence in the tradition of [PPCG](https://dl.acm.org/doi/10.1145/2400682.2400713)
+(generates minimal host↔device copies from array footprints),
+[Polly-ACC](https://dl.acm.org/doi/10.1145/2925426.2926286) (keeps data resident across kernel invocations
+when no host access intervenes), and [CGCM](https://dl.acm.org/doi/10.1145/1993498.1993516) (elides redundant
+CPU↔GPU transfers) — made straightforward by arche's fully static schedule. The posture is conservative:
+over-syncing is only slower, but a missing sync is *wrong*, so the pass syncs before every host observation it
+can't prove redundant. `@resident`/`gpu.sync` remain as manual overrides (a hand-written sync is honored, and
+never duplicated), exactly as `@gpu` overrides derived placement.
+
 ## Not yet built
 
 - The measurement is a **separate manual step** (`measure.py`), not folded into `arche build`, and it times
@@ -64,5 +89,16 @@ search, no per-run adaptation, nothing left in the shipped binary.
   the build is the path to "the compiler measures it itself."
 - Non-terminating (`forever`) programs — whole-program timing needs a terminating run; a per-dispatch timer
   would lift that.
-- Residency (which columns live in VRAM) is still annotated (`@resident`/`gpu.sync`), not derived.
-- Cross-machine distribution (build host ≠ run host).
+- Residency is derived across a **straight-line schedule**; a `loop`/`when`/`par` node is a conservative
+  barrier (syncs at the boundary, no residency carried across it). Carrying residency *through* a loop
+  back-edge is the next step. Its *profitability* (is residency worth it here) is a structural heuristic today
+  — consecutive GPU steps — not yet measured the way placement is.
+
+- **Portable binaries are not supported — known limitation.** Placement and residency are frozen into the
+  build for the **build host's** hardware. A binary run on a *different* machine is still **correct** — an
+  absent or slower GPU falls back to the CPU, and derived syncs are no-ops on pools that aren't actually
+  resident — but its frozen CPU/GPU/residency choices are **not re-tuned** for that machine, so it can be far
+  from optimal (a GPU left idle, or a GPU chosen where it now loses). There is no fat/adaptive binary and no
+  launch-time re-selection yet. Ship a binary only to hardware matching the build host, or rebuild on the
+  target. The design for a `--adaptive` binary that re-picks placement at launch from a per-machine bench
+  cache is tracked in [`../wip/portable-mapped-binaries.md`](../wip/portable-mapped-binaries.md).

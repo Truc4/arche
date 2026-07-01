@@ -1,7 +1,7 @@
-// The regime where the derived placer SHOULD pick GPU (and Slice 4's per-dispatch model does not yet):
-// @resident data + many dispatches amortize the one-time transfer; the GPU's faster compute then wins.
-// Measured on a GTX 1650 (this box): GPU ~661 ms vs CPU ~1921 ms (~2.9x). Capturing this in the cost
-// model is Slice 5 (residency + amortized-transfer term).
+// The regime where the GPU wins: @resident data + many dispatches amortize the one-time transfer, so
+// the GPU's faster compute accumulates. Explicit @gpu/@resident/gpu.sync arms here PRINT the CPU-vs-GPU
+// comparison; derive_residency.arche is the same workload with those annotations DERIVED. Measured on a
+// GTX 1650: GPU ~661 ms vs CPU ~1921 ms (~2.9x).
 #import { fmt os }
 g :: float;
 GR :: arche { g }

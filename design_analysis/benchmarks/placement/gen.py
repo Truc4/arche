@@ -19,18 +19,34 @@ def horner(var, levels):
 
 
 def intensity_sweep(N=262144, K=20, levels=(0, 8, 16, 32)):
-    o = ["// Decision-correctness sweep: for each arithmetic intensity, a CPU arm (plain map) and a forced-GPU",
-         "// arm (@gpu) over identical static pools, each timed over K dispatches. Prints",
-         "// 'ROW <flops/elem> <cpu_ms> <gpu_ms>'. On a box where the GPU's throughput beats its per-dispatch",
-         "// overhead some rows flip to GPU; on an overhead-bound box the CPU wins every row (the honest result).",
-         "#import { fmt os }", "c :: float;", "P :: arche { c }", f"[{N}]P({N});",
-         "ms :: i64;", "T :: arche { ms }", f"[{4*len(levels)}]T({4*len(levels)});"]
+    # Each arm gets its OWN pool + distinct column name, so no arm shares data with any other. That matters
+    # now that residency + coherence are derived: a shared pool would make the GPU arm keep it resident and
+    # force a `gpu.sync` before the next arm read it — a download landing inside that arm's timing window,
+    # corrupting the measurement. Separate pools keep every arm independent (a GPU arm's pool is resident +
+    # never host-read → measured as the compiler really runs it; a CPU arm's pool never leaves the host).
+    o = ["// Decision-correctness sweep: for each arithmetic intensity, a CPU arm (plain map) and a GPU arm",
+         "// (@gpu), each over its OWN static pool, timed over K dispatches. Prints 'ROW <flops/elem> <cpu_ms>",
+         "// <gpu_ms>'. Each arm has a private pool so derived residency/coherence never crosses arms; the GPU",
+         "// arm is measured exactly as the compiler runs it (resident pool, transfer amortized over K).",
+         "#import { fmt os }"]
     for i, lv in enumerate(levels):
-        body = "c = c + 1.0;" if lv == 0 else f"c = {horner('c', lv)};"
-        o.append(f"cpu{i} :: map (query {{ c }}) (c) {{ {body} }}")
+        o += [f"ca{i} :: float;", f"CA{i} :: arche {{ ca{i} }}", f"[{N}]CA{i}({N});",
+              f"cb{i} :: float;", f"CB{i} :: arche {{ cb{i} }}", f"[{N}]CB{i}({N});"]
+    # A throwaway GPU pool + map dispatched once before timing, so the one-time Vulkan device/pipeline init
+    # is absorbed here instead of landing on (and inflating) whichever arm runs first.
+    o += ["wc :: float;", "W :: arche { wc }", "[64]W(64);", "@gpu",
+          "warm :: map (query { wc }) (wc) { wc = wc + 1.0; }",
+          "seedw :: system { W.wc = { 1.0 }; }"]
+    o += ["ms :: i64;", "T :: arche { ms }", f"[{4*len(levels)}]T({4*len(levels)});"]
+    for i, lv in enumerate(levels):
+        cb = f"ca{i} = ca{i} + 1.0;" if lv == 0 else f"ca{i} = {horner(f'ca{i}', lv)};"
+        gb = f"cb{i} = cb{i} + 1.0;" if lv == 0 else f"cb{i} = {horner(f'cb{i}', lv)};"
+        o.append(f"cpu{i} :: map (query {{ ca{i} }}) (ca{i}) {{ {cb} }}")
         o.append("@gpu")
-        o.append(f"gpu{i} :: map (query {{ c }}) (c) {{ {body} }}")
-    o.append("seed :: system { P.c = { 1.0 }; }")
+        o.append(f"gpu{i} :: map (query {{ cb{i} }}) (cb{i}) {{ {gb} }}")
+    for i in range(len(levels)):
+        o.append(f"seedca{i} :: system {{ CA{i}.ca{i} = {{ 1.0 }}; }}")
+        o.append(f"seedcb{i} :: system {{ CB{i}.cb{i} = {{ 1.0 }}; }}")
     narms = 2 * len(levels)
     for a in range(narms):
         o.append(f"s{a} :: system eff {{ os.now_ms()(now:); T.ms[{2*a}] = now; }}")
@@ -40,7 +56,7 @@ def intensity_sweep(N=262144, K=20, levels=(0, 8, 16, 32)):
         parts.append(f"ROW {2*levels[i]} %d %d")
         args += [f"T.ms[{2*(2*i)+1}] - T.ms[{2*(2*i)}]", f"T.ms[{2*(2*i+1)+1}] - T.ms[{2*(2*i+1)}]"]
     o.append('report :: system eff {\n  fmt.printf("' + "\\n".join(parts) + '\\n", ' + ", ".join(args) + ");\n}")
-    sched = ["seed"]
+    sched = ["seedw", "warm"] + [f"seedca{i}" for i in range(len(levels))] + [f"seedcb{i}" for i in range(len(levels))]
     for i in range(len(levels)):
         for a, nm in [(2*i, f"cpu{i}"), (2*i+1, f"gpu{i}")]:
             sched += [f"s{a}"] + [nm]*K + [f"e{a}"]
@@ -53,10 +69,10 @@ def resident_loop(N=16000000, K=40, lv=32):
     # The GPU-wins regime: a @resident pool (uploaded once, reused in VRAM) + the same map run K times, so the
     # one-time transfer amortizes and the GPU's per-flop throughput advantage accumulates. CPU arm = the same
     # body over a non-resident pool. Prints 'N=.. K=.. fpe=.. GPU_ms=.. CPU_ms=..'.
-    o = ["// The regime where the derived placer SHOULD pick GPU (and Slice 4's per-dispatch model does not yet):",
-         "// @resident data + many dispatches amortize the one-time transfer; the GPU's faster compute then wins.",
-         "// Measured on a GTX 1650 (this box): GPU ~661 ms vs CPU ~1921 ms (~2.9x). Capturing this in the cost",
-         "// model is Slice 5 (residency + amortized-transfer term).",
+    o = ["// The regime where the GPU wins: @resident data + many dispatches amortize the one-time transfer, so",
+         "// the GPU's faster compute accumulates. Explicit @gpu/@resident/gpu.sync arms here PRINT the CPU-vs-GPU",
+         "// comparison; derive_residency.arche is the same workload with those annotations DERIVED. Measured on a",
+         "// GTX 1650: GPU ~661 ms vs CPU ~1921 ms (~2.9x).",
          "#import { fmt os }",
          "g :: float;", "GR :: arche { g }", "@resident", f"[{N}]GR({N});",
          "h :: float;", "HC :: arche { h }", f"[{N}]HC({N});",

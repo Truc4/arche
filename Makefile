@@ -332,6 +332,34 @@ test-derived-gpu: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 		|| { echo "test-derived-gpu: FAIL — device present (oracle dispatched) but DERIVED map fell back to CPU (shader not embedded for a non-@gpu placement)"; exit 1; }; \
 	echo "test-derived-gpu: PASS — derived (no @gpu) map dispatched on GPU, output [x0=0 x3=30]"
 
+# DERIVED-RESIDENCY gate (regression). A pool written by 2+ consecutive GPU maps then read on the host, with
+# NO `@resident` / `gpu.sync` — both are derived by the coherence pass. Two halves:
+#  (1) build-time (glslc-gated): the pass must DERIVE residency for the pool AND a sync before the host read
+#      (asserted via ARCHE_COH_DEBUG — deterministic, no device needed).
+#  (2) run-time (device-gated via the same oracle as test-derived-gpu): with the derived sync the host reads
+#      g=4; with the sync suppressed (ARCHE_COH_NO_SYNC=1) the resident pool is never downloaded → stale g=1.
+#      This proves the derived sync is load-bearing — a derived-resident pool with no sync IS a wrong result.
+test-derived-residency: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-derived-residency: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@# (1) Build-time derivation: residency + a sync before the host read must both be derived.
+	@dbg=$$(ARCHE_COH_DEBUG=1 ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/res.exe tests/unit/gpu/derived_residency.arche 2>&1) \
+		|| { echo "test-derived-residency: SKIP (--gpu build failed; likely no libvulkan)"; exit 0; }; \
+	echo "$$dbg" | grep -qF "COHERENCE resident RP" || { echo "test-derived-residency: FAIL — residency not derived for RP"; echo "$$dbg" | grep COHERENCE; exit 1; }; \
+	echo "$$dbg" | grep -qF "COHERENCE sync RP before show" || { echo "test-derived-residency: FAIL — sync not derived before the host read"; echo "$$dbg" | grep COHERENCE; exit 1; }
+	@# Device-presence oracle (shared with test-derived-gpu): if an explicit @gpu map won't dispatch, SKIP.
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-derived-residency: SKIP (--gpu link failed for oracle)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-derived-residency: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@# (2) Runtime: derived sync → correct (g=4); sync suppressed → stale (g=1) on a resident pool.
+	@ok=$$(ARCHE_FORCE_PLACE=gpu $(BUILD_DIR)/gpu/res.exe); \
+	echo "$$ok" | grep -qF "g=4" || { echo "test-derived-residency: FAIL — derived sync present but output [$$ok] != g=4"; exit 1; }
+	@ARCHE_COH_NO_SYNC=1 ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/res_nosync.exe tests/unit/gpu/derived_residency.arche >/dev/null 2>&1; \
+	stale=$$(ARCHE_FORCE_PLACE=gpu $(BUILD_DIR)/gpu/res_nosync.exe); \
+	echo "$$stale" | grep -qF "g=1" || { echo "test-derived-residency: FAIL — sync suppressed but output [$$stale] != stale g=1 (sync not load-bearing?)"; exit 1; }
+	@echo "test-derived-residency: PASS — derived @resident + gpu.sync (g=4 with sync, stale g=1 without)"
+
 # Derived-placement decision check (Slice 4): under a balanced synthetic machine profile, the build must
 # DERIVE heavy→GPU and membound→CPU (no annotations) for design_analysis/benchmarks/placement. Needs glslc
 # (a GPU-placed map embeds a shader); SKIP without it. The decision is a build-time fact (ARCHE_PLACE_DEBUG).
@@ -569,4 +597,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install

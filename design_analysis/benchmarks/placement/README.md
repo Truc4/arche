@@ -5,26 +5,40 @@ CPU/GPU placement is derived per machine and frozen into the build (see
 decision is *right* versus hand-annotated `@gpu`, and reproduce the numbers in that doc. Measured on a
 GTX 1650.
 
+> Known limitation: these decisions are frozen for the **build host**. A binary run on other hardware stays
+> correct (CPU fallback) but is not re-tuned — portable/adaptive binaries are not supported yet
+> ([`docs/wip/portable-mapped-binaries.md`](../../../docs/wip/portable-mapped-binaries.md)).
+
 Generate the sources: `python3 gen.py`.
 
-## Where the GPU loses — single-pass kernels (`intensity_sweep.arche`)
+## The intensity crossover (`intensity_sweep.arche`)
 
-A CPU arm and a forced-`@gpu` arm per arithmetic intensity, timed over 20 dispatches:
+A CPU arm and a forced-`@gpu` arm per arithmetic intensity, each over its **own** pool (so derived
+residency/coherence never crosses arms) and timed over 20 dispatches. A warmup dispatch absorbs one-time
+device init:
 
 ```
-arche build --gpu -o /tmp/is intensity_sweep.arche && ARCHE_GPU_DEBUG=1 /tmp/is
+arche build --gpu -o /tmp/is intensity_sweep.arche && /tmp/is
 ```
 
-| flops/elem | CPU ms | forced-GPU ms | optimal | derived | blunt `@gpu` |
-|---|---|---|---|---|---|
-| ~1 (membound) | 1 | 296 | CPU | CPU ✓ | GPU ✗ |
-| 16 | 2 | 149 | CPU | CPU ✓ | GPU ✗ |
-| 32 | 5 | 148 | CPU | CPU ✓ | GPU ✗ |
-| 64 | 16 | 149 | CPU | CPU ✓ | GPU ✗ |
+| flops/elem | CPU ms | GPU ms (resident) | faster |
+|---|---|---|---|
+| 0 (membound) | ~1 | ~4 | CPU |
+| 16 | ~2 | ~3 | CPU (≈tie) |
+| 32 | ~6 | ~3 | GPU |
+| 64 | ~16 | ~3 | GPU |
 
-GPU time is flat (~150–300 ms of per-dispatch overhead); CPU scales with work. The GPU loses every single-pass
-row, and the derived placer keeps them all on the CPU (4/4) where a blunt `@gpu` is wrong 4/4. `make
-test-placement` gates this under a balanced synthetic profile.
+GPU time is roughly flat (~3 ms — per-dispatch launch overhead over 20 dispatches, once the pool is resident
+and the transfer amortizes); CPU scales with work. So the two cross over around intensity 16–32: the CPU wins
+the launch-overhead-bound low end, the GPU wins the compute-bound high end. This is a truer picture than a
+non-resident sweep, where every row was transfer-dominated (~150–300 ms) and the GPU appeared to lose
+everywhere — derived residency removes that noise.
+
+Catching the high-intensity flip in the *derived decision* (not just the forced arm) needs the cost model to
+account for residency amortization — today it does not (it estimates a per-dispatch transfer and stays
+conservative), which is the residency-aware measurement noted in
+[`static-mapper.md`](../../../docs/design/static-mapper.md) → *Not yet built*. `make test-placement` gates the
+decision on the compute-bound `derived_placement.arche` (membound→CPU, heavy→GPU) under a synthetic profile.
 
 ## Where the GPU wins — a resident loop (`derive.arche`)
 
@@ -42,8 +56,45 @@ static cost model gets this wrong (it predicts CPU): it can't see the kernel's e
 transfer amortizing across the loop. `resident_loop.arche` is the same workload with explicit CPU and GPU arms
 that print the comparison for humans.
 
+That win only lands because the pool is kept **resident** (uploaded once, not downloaded each dispatch).
+`derive_residency.arche` is `derive.arche` with the `@resident` and `gpu.sync` annotations *removed* — the
+coherence pass derives both from the schedule (see [placement](../../../docs/design/static-mapper.md) →
+*Residency and coherence*). It reproduces the same **≈1910 ms CPU vs ≈701 ms derived-GPU** with identical
+output, source fully un-annotated:
+
+```
+ARCHE_FORCE_PLACE=cpu arche build --gpu -o /tmp/cpu derive_residency.arche
+ARCHE_FORCE_PLACE=gpu arche build --gpu -o /tmp/gpu derive_residency.arche   # residency + sync derived
+```
+
+### Derived vs hand-tuned, head to head
+
+`derive.arche` (hand `@resident` + `gpu.sync`) and `derive_residency.arche` (derived) are now the **same
+workload** — same 16M rows, same 40× `heavy`, same `show` observable — differing *only* in whether residency
+is annotated or derived. Built the same way and run interleaved (best-of-5, GTX 1650):
+
+```
+ARCHE_FORCE_PLACE=gpu arche build --gpu -o /tmp/hand derive.arche
+ARCHE_FORCE_PLACE=gpu arche build --gpu -o /tmp/deriv derive_residency.arche
+```
+
+| | ms | output |
+|---|---|---|
+| hand-tuned (`@resident` + `gpu.sync`) | ~678 | `g0=1.2731` |
+| derived (no annotations) | ~672 | `g0=1.2731` |
+
+The derived schedule is **within ~1% of hand-tuned** with identical output — it derives the same residency and
+sync placement, so it matches rather than beats. (`ARCHE_COH_DEBUG=1` on the derived build prints the
+`resident GR` + `sync GR before show` it inserts; on the hand build it prints nothing — the annotations are
+honored and not duplicated.)
+
 ## Regression
 
 `make test-derived-gpu` — a no-`@gpu` map forced onto the GPU must produce a real `gpu dispatch` (it must
 embed the shader for a derived placement, not only for `@gpu`-annotated maps), using an explicit `@gpu`
 fixture as the device-presence oracle so it fails rather than skips when a device is present.
+
+`make test-derived-residency` — a pool written by consecutive GPU maps then read on the host, with no
+annotations, must derive both residency and a `gpu.sync` before the host read. It asserts the derivation at
+build time (`ARCHE_COH_DEBUG`) and, on a device, that the derived sync is *load-bearing*: with it the host
+reads the correct value, and with it suppressed (`ARCHE_COH_NO_SYNC`) the resident pool goes stale.

@@ -94,5 +94,7 @@ primitive and the column `system` op is the bulk form.
 ## Placement
 
 A pure `map`'s branchless, effect-free signature is exactly what makes it GPU-eligible — no `@gpu` needed. The
-CPU-vs-GPU choice is then derived per machine by measurement and frozen into the build; see
+CPU-vs-GPU choice is then derived per machine by measurement and frozen into the build, and GPU **residency**
+(which pools stay in VRAM across dispatches) and the coherence **syncs** back to the host are derived from the
+same read/write footprint — so `@gpu`/`@resident`/`gpu.sync` are all optional overrides. See
 [placement](static-mapper.md).
