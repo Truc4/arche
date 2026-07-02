@@ -2,7 +2,7 @@
 
 Status: **design only, not implemented.** A working doc — why rendering on the CPU blocks GPU residency for a
 rendered app, and the directions for putting the render on the GPU. Companion to
-[`joint-placement.md`](joint-placement.md): joint placement makes resident GPU *compute* pipelines work; this
+[placement (static mapper)](../design/static-mapper.md): joint placement makes resident GPU *compute* pipelines work; this
 makes a resident GPU *interactive* app work.
 
 ## The problem — a CPU consumer is a per-frame host boundary
@@ -15,7 +15,7 @@ host** and write pixels, and the buffer is blitted to the window via `XPutImage`
 That host read every frame is the wall. The coherence analysis is *correct* to refuse residency here: the
 producer (physics) may be a GPU map, but the consumer (render) reads the same data on the CPU, so the data
 must be downloaded every frame. No placement algorithm — not even the joint optimizer in
-[`joint-placement.md`](joint-placement.md) — can remove an edge whose consumer genuinely lives on the CPU.
+[placement (static mapper)](../design/static-mapper.md) — can remove an edge whose consumer genuinely lives on the CPU.
 Keeping entity data in VRAM only pays off when **both** producer and consumer are on the GPU:
 
 ```
@@ -72,7 +72,7 @@ alternative; compute-only rasterization is the incremental one and matches arche
   which the joint-placement / coherence machinery must recognize as a producer→consumer edge that stays
   on-device (no sync inserted between them).
 - **Scope.** This is a rendering subsystem, not a codegen tweak. It only matters once
-  [`joint-placement.md`](joint-placement.md) can keep the physics resident in the first place — the two
+  [placement (static mapper)](../design/static-mapper.md) can keep the physics resident in the first place — the two
   together are what make a GPU-resident game loop possible; neither alone does.
 
 ## Prior art
