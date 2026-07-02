@@ -1,0 +1,11 @@
+// GAP (idiomatic-boids-gaps.md G1): a tuple VALUE literal `(x, y)` can't be written — arche tuples are
+// column groups, not value types. A named-vector constant `CENTER(X, Y) :: (320.0, 240.0)` should work.
+// RUN: %arche build -o %t %s && %t | grep -qF "c=320 240"
+#import { fmt }
+CENTER(X, Y) :: (320.0, 240.0);
+
+show :: system eff {
+  fmt.printf("c=%.0f %.0f\n", CENTER.X, CENTER.Y);
+}
+
+#run show

@@ -1,0 +1,20 @@
+// GAP (idiomatic-boids-gaps.md G4): a FLOAT tuple sub-column hand-indexed write mis-lowers to i32. The int
+// case works (see sys_tuple_subcol_write); float does not. RED until fixed.
+// RUN: %arche build -o %t %s && %t | grep -qF "x=0 1 2"
+#import { fmt }
+pos(x, y) :: float;
+P :: arche { pos }
+[3]P(3);
+
+seed :: system eff {
+  for (i := 0; i < 3; i += 1) {
+    P.pos.x[i] = float(i);
+    P.pos.y[i] = 0.0;
+  }
+}
+
+show :: system eff {
+  fmt.printf("x=%.0f %.0f %.0f\n", P.pos.x[0], P.pos.x[1], P.pos.x[2]);
+}
+
+#run seq({ seed, show })
