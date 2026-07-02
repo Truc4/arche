@@ -14,4 +14,8 @@
  * succeeds and runs correctly (just without GPU acceleration). */
 int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet);
 
+/* 1 iff `glslc` is on PATH (needed to compile GPU shaders). Used to DERIVE whether a build/run enables the
+ * GPU, alongside the machine profile's `gpu_present`. */
+int arche_glslc_available(void);
+
 #endif

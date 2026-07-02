@@ -4,27 +4,36 @@ open :: func(w: int, h: int, own title: []char) -> Eff(window) {
   return gfx_be_open(w, h, move title);
 }
 
-/// A window's framebuffer + dimensions, as ONE Eff via the applicative product `zip` of three independent
-/// backend reads. A draw system binds all three at once: `gfx.frame(handle)(px:, w:, h:)` — no per-system
-/// 3-line capture. (`px` is the writable pixel buffer; `w`/`h` its extent.)
-frame :: func(h: window) -> Eff([]int, int, int) {
-  return zip(gfx_be_frame(h), gfx_be_w(h), gfx_be_h(h));
+/// A window's dimensions, as ONE Eff via the applicative product `zip` of two backend reads. A draw system
+/// binds both at once: `gfx.dims(handle)(w:, h:)`. The framebuffer itself is the driver-owned `Framebuffer`
+/// pool (below), sliced as `Framebuffer.pixel[0 : Framebuffer.capacity]` — not a shim-owned buffer.
+dims :: func(h: window) -> Eff(int, int) {
+  return zip(gfx_be_w(h), gfx_be_h(h));
 }
 
-/// Fill each window's framebuffer with its `bg` colour (0xRRGGBB).
+/// The framebuffer as data — one `int` column of 0xRRGGBB pixels, row-major. gfx declares the shape; the
+/// driver owns and sizes the pool (`[W*H]Framebuffer`). Rasterizers write it through a `[]int` slice.
+Framebuffer :: arche { pixel :: int }
+
+/// Fill the framebuffer with each window's `bg` colour (0xRRGGBB).
 clear :: system eff {
+  view := Framebuffer.pixel[0 : Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
   map (query { handle, bg }) eff {
-    frame(handle)(px:, w:, h:);
+    dims(handle)(w:, h:);
     n := w * h;
     for (i := 0; i < n; i += 1) {
-      px[i] = bg;
+      view[i] = bg;
     }
   };
 }
 
-/// Present the framebuffer to the window.
-present :: system (query { handle }) eff {
-  gfx_be_present(handle);
+/// Present the framebuffer (the driver-owned pool) to the window.
+present :: system eff {
+  view := Framebuffer.pixel[0 : Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
+  map (query { handle }) eff {
+    dims(handle)(w:, h:);
+    gfx_be_present(handle, view, w, h)(_:); // px is in-out (FFI borrow rule); present only reads it
+  };
 }
 
 /// A window-close event as data: empty while open, one row once closed. The driver owns `[1]Closed` and

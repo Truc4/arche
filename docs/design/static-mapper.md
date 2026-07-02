@@ -58,8 +58,12 @@ is paid *once*, at the true CPU↔GPU boundary.
 
 For arche's near-linear schedules this is exact and cheap:
 
-1. **Eligibility (free).** Under `--gpu`, every pure map over 32-bit columns is a GPU candidate with no
-   annotation. Eligible maps are single-pool by construction.
+1. **Eligibility (free).** Every pure map over 32-bit columns is a GPU candidate with no annotation. Eligible
+   maps are single-pool by construction. GPU support itself is **derived, not a flag**: `arche build`/`run`
+   enable it automatically when the machine profile reports a device (`gpu_present`, from `arche calibrate`)
+   and `glslc` is available — the same profile that drives placement. `--no-gpu` (or `ARCHE_NO_GPU=1`) forces
+   a portable CPU-only binary; `--gpu` forces it on. A program with no map actually placed on the GPU stays a
+   plain CPU binary (no Vulkan link).
 2. **Cluster.** Consecutive eligible maps over the *same* pool form a chain, bounded by any host access to
    that pool, a CPU/ineligible step, or a control-flow node — each of which is a cut edge.
 3. **Assign by DP.** Each chain is placed by a dynamic program — the exact min-cut for a linear chain — that

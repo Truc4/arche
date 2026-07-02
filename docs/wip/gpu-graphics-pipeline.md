@@ -103,7 +103,14 @@ The rendering-specific code is small and lives in `extras/gfx`; the expensive pa
 generalization that graphics is merely one client of. So the honest split is *what needs the compiler* vs
 *what doesn't* — and almost all the near-term value is on the free side.
 
-### Now — the library foundation (zero compiler change)
+### Now — the library foundation (zero compiler change) — **framebuffer-as-pool LANDED**
+
+The framebuffer is now an arche pool: gfx declares `Framebuffer :: arche { pixel }`, the driver owns
+`[W*H]Framebuffer`, the rasterizers (`clear`/`circle`/`rect`) slice it at the composer top level
+(`Framebuffer.pixel[0:capacity]` — a query fan would auto-index it) and `present(win, px, w, h)` blits from
+the slice (X11/Wayland memcpy into their blit target; headless reads in place). Verified: arche-rpg renders
+**byte-identical** headless (golden PPM), all three backends build, zero compiler change. The rasterizers stay
+CPU (expected). Everything below stays as future work.
 
 Everything that does not require an on-device *renderer* is pure library + FFI, using patterns already in
 tree. This is the maximal progress available under "no new compiler work," and it is worth doing on its own:

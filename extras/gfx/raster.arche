@@ -1,8 +1,9 @@
 /// Draw a filled disc per drawable entity — centre `pos`, radius `r`, colour `color` — into each window's
 /// framebuffer, clamped to its bounds.
 circle :: system eff {
+  view := Framebuffer.pixel[0 : Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
   map (query { handle }) eff {
-    frame(handle)(px:, w:, h:);
+    dims(handle)(w:, h:);
     map (query { pos, color, r }) eff {
       r2 := r * r;
       y0 := pos.y - r;
@@ -28,7 +29,7 @@ circle :: system eff {
           dx := xx - pos.x;
           dy := yy - pos.y;
           if (dx * dx + dy * dy <= r2) {
-            px[yy * w + xx] = color;
+            view[yy * w + xx] = color;
           }
           xx = xx + 1;
         }
@@ -42,8 +43,9 @@ circle :: system eff {
 /// `rcolor` — into each window's framebuffer, clamped to its bounds. (Components are `r`-prefixed so they
 /// don't shadow the window's `w`/`h` locals inside the fan.)
 rect :: system eff {
+  view := Framebuffer.pixel[0 : Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
   map (query { handle }) eff {
-    frame(handle)(px:, w:, h:);
+    dims(handle)(w:, h:);
     map (query { rx, ry, rw, rh, rcolor }) eff {
       y0 := ry;
       y1 := ry + rh;
@@ -65,8 +67,8 @@ rect :: system eff {
         }
         xx := x0;
         for (; xx < x1;) {
-          px[yy * w + xx] = rcolor;
-          xx              = xx + 1;
+          view[yy * w + xx] = rcolor;
+          xx                = xx + 1;
         }
         yy = yy + 1;
       }

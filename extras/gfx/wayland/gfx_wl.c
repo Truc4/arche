@@ -184,14 +184,6 @@ void *gfx_be_open(int w, int h, char *title) {
 	return g;
 }
 
-int *gfx_be_frame(void *handle) {
-	GfxWL *g = handle;
-	if (!g)
-		return NULL;
-	if (g->pending_w > 0 && (g->pending_w != g->w || g->pending_h != g->h))
-		create_buffer(g, g->pending_w, g->pending_h);
-	return g->buf;
-}
 int gfx_be_w(void *handle) {
 	GfxWL *g = handle;
 	return g ? g->w : 0;
@@ -201,10 +193,21 @@ int gfx_be_h(void *handle) {
 	return g ? g->h : 0;
 }
 
-void gfx_be_present(void *handle) {
+/* Present the CALLER's framebuffer (the driver-owned `Framebuffer` pool, `px`): copy it into the wl_shm memfd
+ * the compositor maps (a copy is mandatory — the compositor cannot see arbitrary process memory), then commit.
+ * `px` is in-out on the arche side (the FFI borrow rule) but read-only here. */
+void gfx_be_present(void *handle, int *px, int w, int h) {
 	GfxWL *g = handle;
-	if (!g || !g->buffer)
+	if (!g || !px)
 		return;
+	if (g->pending_w > 0 && (g->pending_w != g->w || g->pending_h != g->h))
+		create_buffer(g, g->pending_w, g->pending_h);
+	if (!g->buffer || !g->buf)
+		return;
+	size_t nbytes = (size_t)w * (size_t)h * 4;
+	if (nbytes > g->buf_size)
+		nbytes = g->buf_size; /* window resized smaller than the fixed pool — clamp, never overrun */
+	memcpy(g->buf, px, nbytes);
 	wl_surface_attach(g->surface, g->buffer, 0, 0);
 	wl_surface_damage_buffer(g->surface, 0, 0, g->w, g->h);
 	wl_surface_commit(g->surface);

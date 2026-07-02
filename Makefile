@@ -402,6 +402,22 @@ test-upload-resident: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 	echo "$$stale" | grep -qF "g=4" || { echo "test-upload-resident: FAIL — upload suppressed but output [$$stale] != stale g=4 (upload not load-bearing?)"; exit 1; }
 	@echo "test-upload-resident: PASS — derived upload refreshes the resident pool (g=101 with it, stale g=4 without)"
 
+# MODULE-NAME GPU shader-embed gate (regression). A module-qualified `@gpu` map (e.g. `store.bump`, `game.step`)
+# has a DOT in its name; the embedded-shader C registry must sanitize it to a valid C identifier
+# (`spv_store_bump`) while keeping the runtime lookup STRING (`"store.bump"`) intact. Before the fix, codegen
+# emitted `static const unsigned char spv_store.bump[]` → the generated arche_gpu_reg.c failed to compile.
+# Reuses the store-device driver (which schedules the module map `store.bump`), forced to GPU. glslc-gated;
+# a non-embed build failure (e.g. no libvulkan at link) SKIPs rather than fails.
+test-gpu-module-name: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-module-name: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@out=$$(ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/modname.exe tests/unit/language/devices/storage/requirement_met.arche 2>&1); rc=$$?; \
+	if echo "$$out" | grep -qE 'arche_gpu_reg\.c.*error|spv_[A-Za-z0-9_]*\.'; then \
+		echo "test-gpu-module-name: FAIL — module-qualified shader name produced an invalid C symbol:"; echo "$$out" | grep -iE 'spv_|error' | head -4; exit 1; \
+	fi; \
+	if [ $$rc -ne 0 ]; then echo "test-gpu-module-name: SKIP (--gpu build failed for a non-embed reason, e.g. no libvulkan)"; exit 0; fi; \
+	echo "test-gpu-module-name: PASS — module-qualified @gpu map embeds with a sanitized C symbol"
+
 # JOINT-PLACEMENT gate (regression). Residency-aware cluster costing: the greedy per-map estimate prices a
 # full transfer round-trip per dispatch, so a moderate map is placed on the CPU; the joint pass costs a chain
 # of consecutive maps over one pool as a UNIT (transfer once) and flips it to the GPU. A pure build-time
@@ -682,4 +698,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-upload-resident test-placement test-joint-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-upload-resident test-gpu-module-name test-placement test-joint-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install

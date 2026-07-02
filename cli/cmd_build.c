@@ -36,6 +36,7 @@ enum {
 	B_DISCARDED_OK,
 	B_EMIT_GPU,
 	B_GPU,
+	B_NO_GPU,
 	B_WNO_LSA,
 	B_WERR_LSA,
 };
@@ -86,7 +87,9 @@ static const ArgSpec k_build_specs[] = {
     {B_EMIT_GPU, "--emit-gpu", ARG_VALUE, 0, 0, "<dir>",
      "also emit a GLSL compute shader per `@gpu` map into <dir> (side artifact; CPU build unchanged)"},
     {B_GPU, "--gpu", ARG_FLAG, 0, 0, NULL,
-     "dispatch `run map @gpu` on the GPU at runtime (embeds SPIR-V; CPU fallback if no device/glslc)"},
+     "force GPU on (default: DERIVED from `arche calibrate`'s profile — on iff a device is present + glslc)"},
+    {B_NO_GPU, "--no-gpu", ARG_FLAG, 0, 0, NULL,
+     "force CPU-only (a portable, Vulkan-free binary); also via ARCHE_NO_GPU=1"},
     {B_WNO_LSA, "-Wno-large-stack-array", ARG_FLAG, 0, 0, NULL, "disable the large-stack-array lint (W0026)"},
     {B_WERR_LSA, "-Werror=large-stack-array", ARG_FLAG, 0, 0, NULL,
      "promote the large-stack-array lint (W0026) to an error"},
@@ -284,7 +287,9 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		opts.link_paths[opts.link_count++] = p.hits[i].value;
 	}
 	opts.emit_gpu_dir = args_value(&p, B_EMIT_GPU); /* NULL if not passed */
-	opts.gpu = args_has(&p, B_GPU);
+	/* GPU is DERIVED from the machine profile (like placement), not a required flag: on iff a device is
+	 * present + glslc, unless forced. `--gpu` forces on, `--no-gpu`/`ARCHE_NO_GPU` forces CPU-only. */
+	opts.gpu = compile_gpu_auto(args_has(&p, B_GPU), args_has(&p, B_NO_GPU) || getenv("ARCHE_NO_GPU") != NULL);
 
 	int rc = compile_source(source, input_file, output_file, &opts);
 	free(source);

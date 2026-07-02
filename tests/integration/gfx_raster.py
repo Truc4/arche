@@ -36,6 +36,7 @@ PROG = (
     "[1]Window ?abort;\n"
     "[1]Disc ?abort;\n"
     "[1]Rect ?abort;\n"
+    "[4096]Framebuffer;\n"  # 64*64 — the driver owns gfx's framebuffer pool (gfx declares the shape)
     "boot :: system eff {\n"
     "  gfx.open(%d, %d, \"t\")(win:);\n"
     "  insert(Window { handle: win, bg: %d });\n"

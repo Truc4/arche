@@ -10,10 +10,9 @@
 #module
 #foreign
 gfx_be_open    :: proc(w: int, h: int, own title: []char)(win: window);
-gfx_be_frame   :: proc(win: window)(px: []int);
 gfx_be_w       :: proc(win: window)(w: int);
 gfx_be_h       :: proc(win: window)(h: int);
-gfx_be_present :: proc(win: window);
+gfx_be_present :: proc(win: window, px: []int, w: int, h: int)(px: []int);
 gfx_be_poll    :: proc(win: window)(is_open: int);
 @drop(window)
 gfx_be_close :: proc(own win: window);
