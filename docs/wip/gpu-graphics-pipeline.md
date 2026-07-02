@@ -1,7 +1,9 @@
 # WIP: GPU rendering (so resident data has an on-device consumer)
 
 Status: **design only, not implemented.** A working doc — why rendering on the CPU blocks GPU residency for a
-rendered app, and the *principled* direction for putting the render on the GPU. Companion to
+rendered app, the *principled* direction (rendering as a relational join+aggregate), and — after a
+minimize-compiler cost analysis — a roadmap that splits a **zero-compiler library foundation (do now)** from a
+**deferred GPU-backend generalization (no cheap version)**. Companion to
 [placement (static mapper)](../design/static-mapper.md): joint placement makes a resident GPU *compute*
 pipeline work; this makes a resident GPU *interactive* app work.
 
@@ -84,69 +86,72 @@ then each tile's pixels gather over only that tile's entities.
 
 **Verdict: gather (A).** It is the only formulation that respects *both* standing commitments — **no atomics**
 and **no control flow in GPU kernels** (the loop becomes a reduction, the branch becomes a `select`) — while
-reusing the map+reduce algebra and keeping the framebuffer an ordinary pool. Its O(pixels × entities) is
-acceptable at arche's scale; tiling is an additive upgrade if scale ever demands it. Scatter is the more
-general/efficient primitive and worth adding *eventually* for histograms/particles — but it is a model change
-(atomics), a separate decision best made when a workload needs it, not smuggled in through rendering.
+keeping the framebuffer an ordinary pool. Its O(pixels × entities) is acceptable at arche's scale; tiling is an
+additive upgrade if scale ever demands it. Scatter is the more general/efficient primitive and worth adding
+*eventually* for histograms/particles — but it is a model change (atomics), a separate decision best made when
+a workload needs it, not smuggled in through rendering.
 
-## The general capabilities this defines (none rendering-specific)
+**Cost caveat (important).** Gather is minimal in *commitments respected*, **not** in *compiler cost*. Its GPU
+form still needs the full backend generalization below — indexed/foreign buffer access, a bounded reduction,
+multi-pool binding, and a runtime-ABI change; it only avoids *atomics*. On today's emitter neither gather nor
+scatter is close to expressible (see "What already exists"). So the roadmap below splits hard along
+compiler-cost, not along formulation.
 
-Building rendering the principled way is really "finish the data-parallel algebra + give it a GPU backend."
-Each item stands on its own merits:
+## Roadmap — split by compiler cost, not by formulation
 
-1. **2-D buffers as pools** — the framebuffer becomes an ordinary `int` pixel column (today a hidden shim
-   `int*`). Pixels are data.
-2. **Multi-pool GPU kernels** — a kernel reads one pool and writes another (entities → framebuffer). The
-   *runtime dispatch already allows this* (a flat `cols[]`); only codegen's single-pool gate
-   (`cg_map_gpu_eligible`, `nmatch==1`) forbids it.
-3. **General reductions** — a `func` monoid + identity (the ParOp already anticipates this); "topmost" is an
-   argmax carrying a color payload, beyond `+`/`min`/`max`.
-4. **Join + aggregate** — a kernel over one pool that aggregates a matched set from another pool (the pixel ×
-   scene join). The single most important addition; spatial queries, N-body, and collisions need it too.
-5. **A GPU ParOp backend** — today `SCHED_GPU` is a placeholder and the GPU path is hard-wired to the `map`
-   kernel kind, separate from the ParOp seam. A real GPU backend lets map/reduce/join run on-device generally.
-6. **Present** — the one unavoidable host touch: download the framebuffer pool and blit via the existing
-   `XPutImage`/wayland path. A Vulkan WSI swapchain is the zero-copy "real" answer but a large separate
-   integration — deferred.
+The rendering-specific code is small and lives in `extras/gfx`; the expensive part is a general GPU-backend
+generalization that graphics is merely one client of. So the honest split is *what needs the compiler* vs
+*what doesn't* — and almost all the near-term value is on the free side.
 
-Rendering then becomes: `extras/gfx` declares a framebuffer pool and a `render` kernel that maps over pixels
-and join-aggregates the scene — pure library arche, no compiler graphics knowledge. `physics(GPU) →
-render(GPU) → present`, entity data resident throughout (only the framebuffer round-trips, at present).
+### Now — the library foundation (zero compiler change)
 
-## Layering — what's library, what's compiler, and the order
+Everything that does not require an on-device *renderer* is pure library + FFI, using patterns already in
+tree. This is the maximal progress available under "no new compiler work," and it is worth doing on its own:
 
-The point of the query framing is that the **rendering-specific code is small, lives in `extras/gfx`, and is
-written once**; the effort is general compiler primitives that graphics is merely the first client of.
+- **Framebuffer as a pool.** `[W*H]Framebuffer { px: int }` — an ordinary static pool (no compiler cap;
+  precedent is the 65536-row `CharBuf` in `tests/unit/language/csv/read_chunk.arche`).
+- **Present via an FFI column slice.** Hand `Framebuffer.px[0 : W*H]` (a `[]int` view — `codegen_slice` lowers
+  a static-pool column slice to a real `{ptr,len}`) to a `proc` that does the `XPutImage`/wayland blit. Same
+  "pool column → C" pattern as `io.read_chunk`. Zero compiler change.
+- **Clear is already GPU-free.** `map (query {px}) { px = BG }` is single-pool + branchless → GPU-eligible
+  today.
+- **Coherence is automatic.** A GPU write of the framebuffer followed by a host `present` read derives the
+  `gpu.sync` download from the footprint — the `Framebuffer.px[0:N]` slice is a pool-qualified read the pass
+  records.
+- **GPU render-prep, resident, today.** Heavy *per-entity* work (projection, culling, particle/skinning
+  update) as ordinary **single-pool** GPU maps keeps that data resident via the existing machinery; the CPU
+  composites the compact per-entity result. Not "GPU rendering," but "GPU render-prep with residency," with no
+  new compiler feature.
 
-**Step 0 — framebuffer as data (library; ships on CPU today, no compiler change).** Declare the framebuffer as
-an ordinary pool (`Framebuffer { px: int }`, static max W×H), have the rasterizer write that pool instead of
-the shim's hidden `int*`, and present by blitting the pool's column. Pure library + a little FFI glue; CPU
-performance unchanged (keep today's entity-outer rasterizer — gather is a GPU strategy, Step 1). This delivers
-the structural foundation on its own: the framebuffer is *data* and the whole render path is arche code over
-pools, with zero GPU-crash risk.
+This delivers the structural win — *the framebuffer is data; the render path is arche library code over
+pools* — with zero GPU-crash risk. It does **not** make the rasterizer itself run on-device (that is below).
 
-**Step 1 — the gather query, on the GPU (compiler).** Express the render as a pixel-parallel join+aggregate
-and lift it on-device. This needs the four general primitives below — none rendering-specific:
+*Wart to note:* a 1080p framebuffer pool inlines ECS metadata sized to N (`free_list` i64·N + `gen_counters`
+i32·N) → ~33 MB for ~8 MB of pixels. Not a blocker; it motivates a *plain buffer pool* (a pool with no entity
+metadata) as a small, separate, general nicety.
 
-| capability | compiler / library | general beyond gfx? |
+### Deferred — the on-device renderer (a GPU-backend generalization, no shortcut)
+
+Running the render *itself* on the GPU (so entity data never round-trips) has **no cheap version**. Today's GPU
+emitter is a single-pool, `col[i]`-only, branch-free, call-free, loop-free straight-line transform, and
+single-pool is assumed at four layers: the eligibility gate (`cg_map_gpu_eligible`, `nmatch==1`), the dispatch
+emit (`matching_count==1`, `cols[]` from one archetype), the GLSL param→SSBO mapping (one pool, `col[i]`
+indexing), and the **runtime ABI** (one `count`/`elem_size` for all buffers). A renderer — gather *or* scatter
+— needs the same generalization:
+
+| capability | why | general beyond gfx? |
 |---|---|---|
-| framebuffer / 2-D buffer as a pool | **library** | it's just a pool |
-| the render query (coverage predicate, depth argmax) | **library** (`extras/gfx`) | written once; ~no per-shape growth |
-| present (download + blit) | **library / shim** (exists) | — |
-| multi-pool GPU kernels (read entities, write framebuffer) | **compiler** | any cross-pool transform |
-| func-monoids (a `func` combine + identity) | **compiler** | every reduce / scan |
-| join + aggregate (reduce over a foreign pool) | **compiler** | spatial queries, N-body, collisions, DB joins |
-| GPU ParOp backend | **compiler** | all parallel ops on-device |
+| indexed / foreign buffer access in the emitter (`buf[expr]`) | read the scene / write `fb[y*w+x]` | any gather/scatter kernel |
+| a bounded reduction (or an unrollable static loop) | "reduce over the scene" — there is no loop/unroll substrate today | every reduce / scan / join |
+| multi-pool kernel binding + a runtime-ABI change (per-column count) | bind entities *and* framebuffer in one dispatch | any cross-pool transform |
+| general reductions (`func` combine + identity) | "topmost" is an argmax with a payload, beyond `+`/`max` | every reduce |
 
-So the *graphics* is a handful of library kernels; the *work* is four general data-parallel capabilities. The
-gfx library doesn't grow per shape — a new shape is a new coverage `func`, not a new compiler intrinsic — and
-once the four primitives exist, the same library query runs on the CPU or the GPU by placement, with no library
-change.
-
-**Later — scale and zero-copy (deferred, additive).** Tiling (a binning pre-pass on top of the gather) when
-O(pixels × entities) actually bites; scatter + atomics as an independent primitive decision for
-histograms/particles; a Vulkan WSI swapchain to remove the present round-trip. None of these revisit Steps 0–1
-— they layer on top.
+These are **general data-parallel capabilities**, not graphics — they must be justified on their own merits
+(spatial queries, N-body, joins, histograms), and they are only *worth* it once a workload has entities ≫
+framebuffer (a CPU renderer already downloads only O(entities) per frame, so the GPU renderer's sole win —
+downloading O(framebuffer) instead — pays off only at large N). Gather stays the right *formulation* on top of
+them (no atomics), but it is a backend project, not "the next step." Tiling and a Vulkan WSI swapchain (to kill
+the present round-trip) layer on top of that, later still.
 
 ## What already exists / current restrictions (do not re-solve)
 
