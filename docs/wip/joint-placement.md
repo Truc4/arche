@@ -1,7 +1,11 @@
 # WIP: Joint placement + residency (breaking the phase-ordering trap)
 
-Status: **not implemented — approved implementation plan below.** A working doc: the problem, the researched
-direction, and the concrete plan to build it. Reader-facing placement docs: `../design/static-mapper.md`.
+Status: **landed (analytic linear-cluster pass); follow-ons open.** Part 1 (honest cost model — calibrate
+separates pure launch / fixed transfer / compute) and Part 2 (the joint-placement DP over linear single-pool
+clusters) are implemented and tested (`make test-joint-placement`, `test-placement`). Remaining: measure-to-
+decide over clusters, general max-flow min-cut, multi-pool clusters (see Non-goals). Note: the transfer/launch
+split changed the profile format — re-run `arche calibrate` so clusters actually amortize (an old profile
+still works, but folds transfer into launch, so nothing amortizes). Reader docs: `../design/static-mapper.md`.
 
 ## The problem — a circular dependency
 
@@ -111,11 +115,14 @@ A schedule pre-pass `cg_joint_placement(ctx, tree)` run in `codegen_run_decl` **
   consecutive eligible maps over the *same* pool, bounded by any host access to that pool, a non-eligible step,
   or a control-flow node. Reuse the eligibility gate (`map_query_cols`/`query_match_archs`/`cg_gpu_col_llty`),
   `cg_kernel_flops_per_elem` (codegen.c:1425), `get_arch_static_capacity`, and `cg_kernel_footprint`.
-- **Cost each cluster as a unit** (the min-cut for a linear cluster):
-  - `cpu = Σ (fpe_i · rows) / cpu_gflops`
-  - `gpu = N·launch + Σ (fpe_i · rows)/gpu_gflops + transfer(pool)`  ← **transfer counted ONCE** (one upload
-    at entry + one download at the host cut), not per map.
-  - Choose GPU for the whole cluster iff `gpu < cpu`.
+- **Cost the cluster with a DP** — the exact min-cut for a linear chain. Each map is independently CPU or GPU
+  to minimize `Σ compute + (#device-boundaries)·transfer`, where a boundary is one one-way host↔device copy
+  (`gpu_xfer_us/2`, staging-dominated). The chain's ENTRY/EXIT device is the pool's resident device at the
+  edges: **CPU** for a straight-line cluster (bounded by host accesses), **GPU** for a loop-body cluster (the
+  pool stays resident across the back-edge, so the entry/exit crossings vanish — the residency win). The DP
+  **may split** a cluster: `membound, heavy` over one pool → membound CPU, heavy GPU (the transfer for heavy
+  is paid regardless, and membound is cheaper on the CPU). A size-1 straight-line cluster reduces exactly to
+  the greedy per-map estimate.
 - **Feed the partition back.** Store per-map decisions in an in-memory table on `CodegenContext`
   (`map-name → gpu|cpu`). `cg_placement_decide` (codegen.c:1481) gains a tier: `@gpu` → `ARCHE_FORCE_PLACE` →
   `ARCHE_FORCE_PLACE_ONLY` → measured file → **joint table** → (fallback) the per-map estimate. A size-1

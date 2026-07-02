@@ -78,26 +78,27 @@ static void append_reps(char *buf, size_t cap, const char *name, int k) {
 		n += (size_t)snprintf(buf + n, cap - n, "%s, ", name);
 }
 
-/* Build + run the GPU probe. Returns 1 if a real GPU dispatch happened (a usable DEVICE is present),
- * 0 otherwise (no device / no glslc / CPU fallback). On presence, fills `launch_us` (the non-resident
- * per-dispatch overhead — launch + a round-trip, the transfer-inclusive constant the cost model uses) and
- * `gpu_gflops` (measured on a RESIDENT pool so compute is isolated from transfer; 0 if immeasurable).
+/* Build + run the GPU probe. Returns 1 if a real GPU dispatch happened (a usable DEVICE is present), 0
+ * otherwise (no device / no glslc / CPU fallback). On presence, fills THREE separate cost constants so joint
+ * placement can amortize transfer across a resident cluster:
+ *   - `launch_us`  = PURE per-dispatch launch (measured resident, no transfer);
+ *   - `xfer_us`    = per-round-trip transfer cost (from non-resident MINUS resident light) — staging-dominated
+ *                    so ~fixed, charged ONCE per resident cluster (vs per dispatch when non-resident);
+ *   - `gpu_gflops` = compute throughput (resident heavy MINUS resident light; effective fallback).
  *
- * DEVICE PRESENCE is decided by whether the GPU actually dispatched — NOT by whether the probe kernel beat
- * its overhead. A working GPU that is overhead-bound on a tiny non-resident kernel is still a usable device;
- * throughput is characterized separately, on a resident pool where a heavy kernel's compute is measurable. */
-static int measure_gpu(double *launch_us, double *gpu_gflops) {
-	/* GENTLE by design: a tiny pool and few dispatches, so the probe can't saturate a GPU that is also
-	 * driving the display. Two @gpu arms: `lnr` (light over a NON-resident pool → launch + a round-trip per
-	 * dispatch → the overhead constant) and `hr` (heavy over a @resident pool → its effective throughput).
-	 * Nanosecond timing (raw clock_mono) makes the small workload measurable without piling on dispatches. */
+ * DEVICE PRESENCE is whether the GPU actually dispatched — NOT whether the probe beat its overhead. Three
+ * @gpu arms, all gentle (a tiny pool, few dispatches, ns timing, hard timeout — never saturate the display
+ * GPU): `lnr` (light, NON-resident → launch + a round-trip), `lr` (light, @resident → pure launch), `hr`
+ * (heavy, @resident → launch + compute). */
+static int measure_gpu(double *launch_us, double *xfer_us, double *gpu_gflops) {
 	const long BIGN = 1 << 18; /* 256K rows — ~1 MB/column, a light PCIe footprint */
 	const int K = 32;
 	const double HEAVY_FLOPS = 64.0; /* the heavy arm's per-element op count (matches its body) */
 
-	char seq_lnr[2048], seq_hr[2048]; /* K × "name, " each */
-	seq_lnr[0] = seq_hr[0] = 0;
+	char seq_lnr[2048], seq_lr[2048], seq_hr[2048]; /* K × "name, " each */
+	seq_lnr[0] = seq_lr[0] = seq_hr[0] = 0;
 	append_reps(seq_lnr, sizeof(seq_lnr), "lnr", K);
+	append_reps(seq_lr, sizeof(seq_lr), "lr", K);
 	append_reps(seq_hr, sizeof(seq_hr), "hr", K);
 
 	/* The heavy body over the resident column `cr`: ONE assignment with a balanced nested Horner expression of
@@ -113,7 +114,7 @@ static int measure_gpu(double *launch_us, double *gpu_gflops) {
 	snprintf(heavy_body + n, sizeof(heavy_body) - (size_t)n, ";\n");
 
 	/* Timers read the raw monotonic timespec {sec, nsec} and store nanoseconds, so a sub-millisecond arm is
-	 * still measurable. */
+	 * still measurable. `lnr` runs over the NON-resident pool P; `lr`/`hr` over the @resident pool PR. */
 	char src[1 << 17];
 	snprintf(src, sizeof(src),
 	         "#import { fmt os }\n"
@@ -126,9 +127,11 @@ static int measure_gpu(double *launch_us, double *gpu_gflops) {
 	         "[%ld]PR(%ld);\n"
 	         "ns :: i64;\n"
 	         "T :: arche { ns }\n"
-	         "[4]T(4);\n"
+	         "[6]T(6);\n"
 	         "@gpu\n"
 	         "lnr :: map (query { c }) (c) { c = c + 1.0; }\n"
+	         "@gpu\n"
+	         "lr :: map (query { cr }) (cr) { cr = cr + 1.0; }\n"
 	         "@gpu\n"
 	         "hr :: map (query { cr }) (cr) {\n%s}\n"
 	         "seed :: system { P.c = { 1.0 }; PR.cr = { 1.0 }; }\n"
@@ -136,15 +139,17 @@ static int measure_gpu(double *launch_us, double *gpu_gflops) {
 	         "t1 :: system eff { os.clock_mono()(ts:); T.ns[1] = ts[0] * 1000000000 + ts[1]; }\n"
 	         "t2 :: system eff { os.clock_mono()(ts:); T.ns[2] = ts[0] * 1000000000 + ts[1]; }\n"
 	         "t3 :: system eff { os.clock_mono()(ts:); T.ns[3] = ts[0] * 1000000000 + ts[1]; }\n"
+	         "t4 :: system eff { os.clock_mono()(ts:); T.ns[4] = ts[0] * 1000000000 + ts[1]; }\n"
+	         "t5 :: system eff { os.clock_mono()(ts:); T.ns[5] = ts[0] * 1000000000 + ts[1]; }\n"
 	         "report :: system eff {\n"
-	         "  fmt.printf(\"PROBE %%d %%d\\n\", T.ns[1] - T.ns[0], T.ns[3] - T.ns[2]);\n"
+	         "  fmt.printf(\"PROBE %%d %%d %%d\\n\", T.ns[1] - T.ns[0], T.ns[3] - T.ns[2], T.ns[5] - T.ns[4]);\n"
 	         "}\n"
-	         "#run seq({ seed, t0, %s t1, t2, %s t3, report })\n",
-	         BIGN, BIGN, BIGN, BIGN, heavy_body, seq_lnr, seq_hr);
+	         "#run seq({ seed, t0, %s t1, t2, %s t3, t4, %s t5, report })\n",
+	         BIGN, BIGN, BIGN, BIGN, heavy_body, seq_lnr, seq_lr, seq_hr);
 
 	/* Write the probe, build it with --gpu, run it (GPU debug on, wrapped in a hard timeout so a stuck GPU
 	 * can never hang calibrate) and parse the dispatch marker (device presence) + "PROBE <nonres_ns>
-	 * <res_heavy_ns>" (the timings). */
+	 * <res_light_ns> <res_heavy_ns>" (the timings). */
 	char dir[] = "/tmp/arche_calib_XXXXXX";
 	if (!mkdtemp(dir))
 		return 0;
@@ -169,26 +174,37 @@ static int measure_gpu(double *launch_us, double *gpu_gflops) {
 	if (!p)
 		return 0;
 	int dispatched = 0;
-	long nonres_ns = -1, hr_ns = -1;
+	long nonres_ns = -1, lr_ns = -1, hr_ns = -1;
 	char line[256];
 	while (fgets(line, sizeof(line), p)) {
 		if (strstr(line, "gpu dispatch"))
 			dispatched = 1; /* a real device ran the kernel — presence is THIS, not the timing */
-		sscanf(line, "PROBE %ld %ld", &nonres_ns, &hr_ns);
+		sscanf(line, "PROBE %ld %ld %ld", &nonres_ns, &lr_ns, &hr_ns);
 	}
 	pclose(p);
 
 	if (!dispatched)
 		return 0; /* no usable device (or CPU fallback) — honestly CPU-only */
 
-	/* Overhead constant: the non-resident per-dispatch time (launch + a round-trip), microseconds. */
-	*launch_us = (nonres_ns > 0) ? (double)nonres_ns / K / 1000.0 : 0.0;
+	/* Pure launch: the resident light arm (uploaded once, then no transfer). Fall back to the non-resident arm
+	 * if the resident timing is missing. */
+	long launch_ns = (lr_ns > 0) ? lr_ns : (nonres_ns > 0 ? nonres_ns : 0);
+	*launch_us = (double)launch_ns / K / 1000.0;
 
-	/* Effective GPU throughput: total heavy flops / heavy-arm wall time (Gflop/s = flops / ns). This folds in
-	 * launch + memory (a memory-bound kernel measures lower than peak ALU), which is exactly the "effective"
-	 * number the cost model wants. 0 if the arm didn't time — device present, but the estimate won't
-	 * auto-place (only `@gpu`/measured/forced use the GPU). */
-	*gpu_gflops = (hr_ns > 0) ? (HEAVY_FLOPS * (double)BIGN * (double)K) / (double)hr_ns : 0.0;
+	/* Per-round-trip transfer cost (µs): the non-resident arm pays one host→device→host round-trip of the pool
+	 * per dispatch that the resident arm doesn't, so `(nonres − lr)/K` is one round-trip. It is
+	 * STAGING-dominated (each copy builds+destroys a staging buffer + queue-waits), hence ~fixed across pool
+	 * sizes — modeled as a fixed cost charged ONCE per resident cluster (per dispatch when non-resident), not
+	 * scaled by bytes. 0 if unmeasurable (an overhead-bound box). */
+	*xfer_us = (nonres_ns > lr_ns) ? (double)(nonres_ns - lr_ns) / K / 1000.0 : 0.0;
+
+	/* Compute throughput: resident heavy MINUS resident light isolates the flops (both pay launch + VRAM
+	 * traffic). If the delta is in the noise, fall back to the heavy arm's effective throughput. */
+	long compute_ns = hr_ns - lr_ns;
+	if (compute_ns > 0)
+		*gpu_gflops = (HEAVY_FLOPS * (double)BIGN * (double)K) / (double)compute_ns;
+	else
+		*gpu_gflops = (hr_ns > 0) ? (HEAVY_FLOPS * (double)BIGN * (double)K) / (double)hr_ns : 0.0;
 	return 1;
 }
 
@@ -217,19 +233,21 @@ int calibrate_run(int argc, char **argv, const GlobalOpts *g) {
 	printf("  cpu_gflops = %.1f\n", mp.cpu_gflops);
 
 	printf("Probing GPU (build + run a tiny @gpu kernel)...\n");
-	double launch_us = 0, gpu_gflops = 0;
-	if (measure_gpu(&launch_us, &gpu_gflops)) {
+	double launch_us = 0, xfer_us = 0, gpu_gflops = 0;
+	if (measure_gpu(&launch_us, &xfer_us, &gpu_gflops)) {
 		mp.gpu_present = 1;
-		mp.gpu_launch_us = launch_us;
-		mp.pcie_up_gbps = 1e6;   /* transfer folded into the fixed per-dispatch overhead (v1) */
+		mp.gpu_launch_us = launch_us; /* PURE launch (transfer is a separate fixed term now) */
+		mp.gpu_xfer_us = xfer_us;     /* fixed per-round-trip transfer, charged once per resident cluster */
+		mp.pcie_up_gbps = 1e6;        /* size-dependent term off — transfer is staging-dominated (gpu_xfer_us) */
 		mp.pcie_down_gbps = 1e6;
 		mp.gpu_gflops = gpu_gflops;
 		if (gpu_gflops > 0)
-			printf("  gpu_present = 1  launch_us(+transfer) = %.1f  gpu_gflops = %.1f\n", launch_us, gpu_gflops);
+			printf("  gpu_present = 1  launch_us = %.1f  xfer_us = %.1f  gpu_gflops = %.1f\n", launch_us, xfer_us,
+			       gpu_gflops);
 		else
-			printf("  gpu_present = 1  launch_us(+transfer) = %.1f  gpu_gflops = 0 (throughput not measurable; "
-			       "`@gpu`/measured maps still use the GPU, but the estimate won't auto-place)\n",
-			       launch_us);
+			printf("  gpu_present = 1  launch_us = %.1f  xfer_us = %.1f  gpu_gflops = 0 (throughput not "
+			       "measurable; `@gpu`/measured maps still use the GPU, but the estimate won't auto-place)\n",
+			       launch_us, xfer_us);
 	} else {
 		mp.gpu_present = 0;
 		printf("  gpu_present = 0 — no usable device (no dispatch), or no glslc; placement is CPU-only\n");

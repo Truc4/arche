@@ -1,0 +1,25 @@
+// Joint placement — host cut in a loop (regression). A loop whose pool is read by a HOST step every iteration
+// (here `draw`, a CPU renderer reading P) is NOT resident across the back-edge: the pool round-trips every
+// frame regardless of placement. So the joint pass must NOT treat the loop cluster as free-residency — a light
+// map over that pool stays on the CPU (the transfer per frame dwarfs its tiny compute). This is the arche-rpg
+// case: an 8-row `game.step` feeding a software renderer must be CPU, not wrongly forced to the GPU. The host
+// cut is a COST, not a ban — a heavy enough map over the same pool would still win the GPU (covered by the
+// cost model / the DP), but this light one does not. `make test-joint-placement` asserts `light` -> CPU with
+// resident=0. Build-only (a `forever` loop never returns).
+// RUN: %arche build -o %t %s
+#import { fmt }
+p :: float;
+P :: arche { p }
+[8]P(8);
+
+seed :: system { P.p = { 1.0 }; }
+
+light :: map (query { p }) (p) {
+  p = p + 1.0;
+}
+
+draw :: system eff {
+  fmt.printf("p=%.0f\n", P.p[0]);
+}
+
+#run seq({ seed, forever(seq({ light, draw })) })

@@ -1,0 +1,32 @@
+// Joint placement (residency-aware cluster costing). The greedy per-map estimate prices every GPU map with a
+// full host↔device transfer round-trip, so a moderate map that is worth the GPU only once its transfer is
+// AMORTIZED across a resident run of maps is wrongly placed on the CPU — and then never becomes resident. The
+// joint pass costs a chain of consecutive maps over ONE pool as a unit (transfer paid once at the cut),
+// flipping such a map to the GPU. Here `solo` (a size-1 cluster == the greedy estimate) stays on the CPU,
+// while the SAME body as a `chain` of many maps over one pool goes on the GPU. `make test-joint-placement`
+// asserts this build-time contrast under a synthetic GPU profile; the DP's optimal SPLIT of a mixed chain is
+// covered by `test-placement` (membound→CPU, heavy→GPU in one cluster).
+// RUN: %arche build -o %t %s
+#import { fmt }
+a :: float;
+A :: arche { a }
+[2000000]A(2000000);
+b :: float;
+B :: arche { b }
+[2000000]B(2000000);
+
+seed :: system { A.a = { 1.0 }; B.b = { 1.0 }; }
+
+solo :: map (query { a }) (a) {
+  a = (((a * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5;
+}
+
+chain :: map (query { b }) (b) {
+  b = (((b * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5;
+}
+
+show :: system eff {
+  fmt.printf("a=%.2f b=%.2f\n", A.a[0], B.b[0]);
+}
+
+#run seq({ seed, solo, chain, chain, chain, chain, chain, chain, chain, chain, show })

@@ -57,8 +57,10 @@ int codegen_gpu_enabled(void);
  * input is known at build time. `@gpu` remains a force-GPU override. */
 typedef struct {
 	int gpu_present;       /* 0 ⇒ no usable device ⇒ CPU-only placement */
-	double gpu_launch_us;  /* fixed per-dispatch overhead (microseconds) */
-	double pcie_up_gbps;   /* host→device transfer bandwidth (GB/s) */
+	double gpu_launch_us;  /* PURE per-dispatch launch overhead (microseconds), no transfer */
+	double gpu_xfer_us;    /* fixed per-round-trip host↔device transfer (µs) — charged once per resident cluster,
+	                        * per dispatch when non-resident. Staging-dominated, so ~size-independent. 0 = unset */
+	double pcie_up_gbps;   /* host→device transfer bandwidth (GB/s) — size-dependent term (1e6 ⇒ off) */
 	double pcie_down_gbps; /* device→host transfer bandwidth (GB/s) */
 	double cpu_gflops;     /* CPU arithmetic throughput (Gflop/s) */
 	double gpu_gflops;     /* GPU arithmetic throughput (Gflop/s) */

@@ -89,6 +89,12 @@ struct CodegenContext {
 	int hot;            /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
 	int gpu;            /* --gpu: `run map @gpu` dispatches the embedded shader on the GPU (CPU fallback) */
 	MachineProfile profile; /* per-machine cost profile driving the DERIVED CPU/GPU placement (Slice 4) */
+	/* Joint-placement decision table (cg_joint_placement): a residency-aware cluster decision per eligible
+	 * map, computed schedule-level before codegen and consulted by cg_placement_decide (above the greedy
+	 * per-map estimate). NULL/0 until the pass runs. */
+	char **joint_names;
+	int *joint_gpu;
+	int joint_count;
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
 	/* For tracking allocated values */
@@ -1436,20 +1442,28 @@ static double cg_kernel_flops_per_elem(const HirKernelDecl *k) {
 	return f;
 }
 
-/* The cost model: predict whether running this eligible map on the GPU beats the CPU, given the per-machine
- * profile, the body's per-element flop count, the float-column count (4 bytes each), and the static row
- * count. GPU pays a fixed launch + the PCIe round-trip; CPU pays only compute. Static pools give `rows` at
- * build time, so this is a fully build-time decision (frozen — no runtime scheduler). Returns 1 ⇒ GPU. */
-static int cg_placement_prefer_gpu(const MachineProfile *p, double flops_per_elem, int ncol, long rows) {
-	if (!p->gpu_present || p->gpu_gflops <= 0 || p->cpu_gflops <= 0 || rows <= 0)
-		return 0;
+/* GPU wall-time (seconds) for a SINGLE non-resident dispatch of an eligible map: launch + one transfer
+ * round-trip (the fixed `gpu_xfer_us` + a size-dependent PCIe term, if the profile carries one) + compute.
+ * Joint placement reuses the pieces (launch/xfer/compute) to cost a resident cluster with transfer once. */
+static double cg_gpu_map_seconds(const MachineProfile *p, double flops_per_elem, int ncol, long rows) {
 	double total_flops = flops_per_elem * (double)rows;
 	double bytes = (double)ncol * 4.0 * (double)rows; /* one column set, float */
 	double up = (p->pcie_up_gbps > 0) ? bytes / (p->pcie_up_gbps * 1e9) : 1e30;
 	double down = (p->pcie_down_gbps > 0) ? bytes / (p->pcie_down_gbps * 1e9) : 1e30;
-	double gpu_t = p->gpu_launch_us * 1e-6 + up + down + total_flops / (p->gpu_gflops * 1e9);
-	double cpu_t = total_flops / (p->cpu_gflops * 1e9);
-	return gpu_t < cpu_t;
+	return (p->gpu_launch_us + p->gpu_xfer_us) * 1e-6 + up + down + total_flops / (p->gpu_gflops * 1e9);
+}
+static double cg_cpu_map_seconds(const MachineProfile *p, double flops_per_elem, long rows) {
+	return (flops_per_elem * (double)rows) / (p->cpu_gflops * 1e9);
+}
+
+/* The cost model: predict whether running this eligible map on the GPU (non-resident, greedy) beats the CPU,
+ * given the per-machine profile, per-element flops, float-column count (4 bytes each), and static row count.
+ * GPU pays launch + a transfer round-trip; CPU pays only compute. A fully build-time decision (frozen). The
+ * joint-placement pass supersedes this per-map view with a residency-aware cluster cost. Returns 1 ⇒ GPU. */
+static int cg_placement_prefer_gpu(const MachineProfile *p, double flops_per_elem, int ncol, long rows) {
+	if (!p->gpu_present || p->gpu_gflops <= 0 || p->cpu_gflops <= 0 || rows <= 0)
+		return 0;
+	return cg_gpu_map_seconds(p, flops_per_elem, ncol, rows) < cg_cpu_map_seconds(p, flops_per_elem, rows);
 }
 
 /* A per-map MEASURED placement decision, read from <ARCHE_CACHE_DIR>/placement.decisions if present (one
@@ -1475,9 +1489,19 @@ static int cg_placement_measured(const char *name) {
 	return r;
 }
 
+/* The joint-placement pass's decision for `name`, or -1 if it has none. */
+static int cg_joint_decision(CodegenContext *ctx, const char *name) {
+	if (!name)
+		return -1;
+	for (int i = 0; i < ctx->joint_count; i++)
+		if (strcmp(ctx->joint_names[i], name) == 0)
+			return ctx->joint_gpu[i];
+	return -1;
+}
+
 /* Placement for an eligible pure map. Priority: `@gpu` force > `ARCHE_FORCE_PLACE` (a measurement build pins
- * everything one way) > the MEASURED decision (the real, build-time-timed answer) > the static estimate (a
- * cheap pre-filter only — the estimate is the thing AutoMap argues against, so it loses to measurement). */
+ * everything one way) > the MEASURED decision (the real, build-time-timed answer) > the JOINT residency-aware
+ * cluster decision > the greedy per-map estimate (fallback for maps the joint pass didn't see). */
 static int cg_placement_decide(CodegenContext *ctx, HirKernelDecl *map, long rows) {
 	if (map->is_gpu)
 		return 1;
@@ -1492,6 +1516,9 @@ static int cg_placement_decide(CodegenContext *ctx, HirKernelDecl *map, long row
 	int m = cg_placement_measured(map->name);
 	if (m >= 0)
 		return m;
+	int j = cg_joint_decision(ctx, map->name);
+	if (j >= 0)
+		return j;
 	return cg_placement_prefer_gpu(&ctx->profile, cg_kernel_flops_per_elem(map), map->param_count, rows);
 }
 
@@ -1526,12 +1553,10 @@ static const char *cg_gpu_col_llty(const HirType *t) {
 	return NULL;
 }
 
-/* 1 iff the pure map `k` is placed on the GPU under the current profile — the SAME eligibility gate and
- * decision the HIR_STMT_RUN emit site uses (single matching static all-float pool, then cg_placement_decide).
- * Fills *out_pool (canonical) with that pool when eligible. Read-only (no side effects, unlike the emit site
- * which also sets is_gpu); used by the coherence pass, which runs before emit. Kept in lockstep with the gate
- * at codegen_statement/HIR_STMT_RUN; the profitability decision itself lives in cg_placement_decide. */
-static int cg_map_placed_gpu(CodegenContext *ctx, HirKernelDecl *k, const char **out_pool) {
+/* 1 iff the pure map `k` is GPU-ELIGIBLE (a single matching static all-float/i32 pool whose touched columns
+ * are all 32-bit-emittable) — the codegen gate WITHOUT the profitability decision. Fills *out_pool (canonical)
+ * with that pool. This is the structural half shared by cg_map_placed_gpu and the joint-placement pass. */
+static int cg_map_gpu_eligible(CodegenContext *ctx, HirKernelDecl *k, const char **out_pool) {
 	if (!ctx->gpu || !k || k->kind != HIR_KERNEL_MAP || k->eff)
 		return 0;
 	if (k->param_count <= 0 || k->param_count > 64)
@@ -1575,6 +1600,19 @@ static int cg_map_placed_gpu(CodegenContext *ctx, HirKernelDecl *k, const char *
 		if (fi < 0)
 			return 0; /* a non-emittable / missing column → no GPU form */
 	}
+	if (out_pool)
+		*out_pool = an;
+	return 1;
+}
+
+/* 1 iff the pure map `k` is placed on the GPU under the current profile — GPU-eligible AND profitable (the
+ * SAME gate + decision the HIR_STMT_RUN emit site uses). Fills *out_pool (canonical) when eligible. Read-only
+ * (no side effects, unlike the emit site which also sets is_gpu); used by the coherence pass, which runs
+ * before emit. The profitability decision itself lives in cg_placement_decide. */
+static int cg_map_placed_gpu(CodegenContext *ctx, HirKernelDecl *k, const char **out_pool) {
+	const char *an = NULL;
+	if (!cg_map_gpu_eligible(ctx, k, &an))
+		return 0;
 	if (!cg_placement_decide(ctx, k, get_arch_static_capacity(ctx, an)))
 		return 0;
 	if (out_pool)
@@ -12818,6 +12856,207 @@ static void cg_coh_process_slot(CodegenContext *ctx, ScheduleTree **slot, CgCoh 
 
 /* Entry point: run the coherence pass over the folded schedule, mutating it in place (inserting gpu.sync
  * nodes and deriving `@resident`). Only under `--gpu`; a no-op otherwise (no device ⇒ no residency). */
+/* ---- Joint placement (residency-aware cluster costing) -----------------------------------------------------
+ * The greedy per-map estimate prices every GPU map as if its data must be transferred each dispatch, so a map
+ * that would win only when resident is placed on the CPU — and then never becomes resident. This pass breaks
+ * that: it walks the folded schedule, groups consecutive eligible maps over the SAME pool into a CLUSTER, and
+ * costs the cluster AS A UNIT — the transfer is paid ONCE (at the CPU↔GPU cut), not per map. It records a
+ * per-map decision that cg_placement_decide consults above the greedy estimate. Residency then falls out: a
+ * pool internal to a GPU cluster is exactly what the coherence pass keeps resident. */
+
+typedef struct {
+	const char *pool;         /* canonical pool of the forming cluster; NULL = empty */
+	long rows;                /* pool capacity (shared by all maps in the cluster) */
+	int nmaps;                /* map count in the chain */
+	int max_ncol;             /* widest column set touched (→ transfer bytes) */
+	HirKernelDecl *maps[256]; /* the cluster's maps, in schedule order (the DP chain) */
+} CgCluster;
+
+static void cg_joint_record(CodegenContext *ctx, HirKernelDecl *k, int gpu) {
+	if (!k || !k->name)
+		return;
+	char **nn = realloc(ctx->joint_names, sizeof(char *) * (size_t)(ctx->joint_count + 1));
+	int *ng = realloc(ctx->joint_gpu, sizeof(int) * (size_t)(ctx->joint_count + 1));
+	if (!nn || !ng) {
+		free(nn);
+		free(ng);
+		return;
+	}
+	ctx->joint_names = nn;
+	ctx->joint_gpu = ng;
+	ctx->joint_names[ctx->joint_count] = k->name;
+	ctx->joint_gpu[ctx->joint_count] = gpu;
+	ctx->joint_count++;
+}
+
+/* Cost the forming cluster and record each map's decision, then reset it. This is the exact min-cut for a
+ * linear chain: a DP that assigns each map CPU or GPU to minimize Σ compute + (#device-boundaries)·transfer,
+ * where a boundary is a one-way host↔device copy (`gpu_xfer_us/2`, staging-dominated, + a size term if the
+ * profile carries one). The chain's ENTRY and EXIT device are the pool's resident device at the cluster
+ * edges: CPU for a straight-line cluster (bounded by host accesses), GPU for a loop-body cluster (the pool
+ * stays resident across the back-edge, so entry/exit crossings vanish — that is the residency win). Splitting
+ * is allowed: `membound, heavy` over one pool correctly places membound on the CPU and heavy on the GPU (the
+ * transfer for heavy is paid regardless, and membound is cheaper on the CPU). */
+static void cg_joint_flush(CodegenContext *ctx, CgCluster *cl, int in_loop, const char **host_pools, int n_host) {
+	if (cl->pool && cl->nmaps > 0) {
+		const MachineProfile *p = &ctx->profile;
+		const double INF = 1e30;
+		/* A loop cluster is RESIDENT (entry/exit on the GPU, no boundary transfer — the residency win) only if
+		 * no HOST step in the loop touches its pool. If a CPU consumer reads it every iteration (e.g. a software
+		 * renderer reads the positions each frame), the pool round-trips every iteration — a hard cut the
+		 * partition can't remove — so it is costed like a straight-line cluster (CPU entry/exit, transfer paid).
+		 * That keeps an 8-row map feeding a CPU renderer on the CPU, instead of wrongly forcing it to the GPU. */
+		int resident = in_loop;
+		for (int i = 0; i < n_host && resident; i++)
+			if (host_pools[i] && strcmp(host_pools[i], cl->pool) == 0)
+				resident = 0;
+		int gpu_of[256]; /* the DP's per-map decision */
+		int decided = 0;
+		if (p->gpu_present && p->gpu_gflops > 0 && p->cpu_gflops > 0 && cl->rows > 0) {
+			/* one-way transfer cost: half the measured round-trip + a one-way size term (≈0 when pcie is off) */
+			double bytes = (double)cl->max_ncol * 4.0 * (double)cl->rows;
+			double xf = p->gpu_xfer_us * 0.5e-6 + ((p->pcie_up_gbps > 0) ? bytes / (p->pcie_up_gbps * 1e9) : INF);
+			double launch = p->gpu_launch_us * 1e-6;
+			int entry_gpu = resident, exit_gpu = resident; /* resident device at the cluster edges */
+			double dpC = entry_gpu ? INF : 0, dpG = entry_gpu ? 0 : INF;
+			int fromC[256], fromG[256]; /* backtrack: prev device chosen for this map on C / on G */
+			for (int i = 0; i < cl->nmaps; i++) {
+				double comp = cg_kernel_flops_per_elem(cl->maps[i]) * (double)cl->rows;
+				double cpu_c = comp / (p->cpu_gflops * 1e9);
+				double gpu_c = launch + comp / (p->gpu_gflops * 1e9);
+				double stayC = dpC, hopC = dpG + xf; /* end on CPU: stay, or download from GPU */
+				double nC = cpu_c + (stayC <= hopC ? stayC : hopC);
+				fromC[i] = (stayC <= hopC) ? 0 : 1;
+				double stayG = dpG, hopG = dpC + xf; /* end on GPU: stay, or upload from CPU */
+				double nG = gpu_c + (stayG <= hopG ? stayG : hopG);
+				fromG[i] = (stayG <= hopG) ? 1 : 0;
+				dpC = nC;
+				dpG = nG;
+			}
+			double endC = dpC + (exit_gpu ? xf : 0); /* exit crossing back to the resident device, if any */
+			double endG = dpG + (exit_gpu ? 0 : xf);
+			int dev = (endG < endC) ? 1 : 0;
+			for (int i = cl->nmaps - 1; i >= 0; i--) { /* backtrack the chosen device per map */
+				gpu_of[i] = dev;
+				dev = dev ? fromG[i] : fromC[i];
+			}
+			decided = 1;
+		}
+		int dbg = getenv("ARCHE_PLACE_DEBUG") != NULL;
+		for (int i = 0; i < cl->nmaps; i++) {
+			int g = decided ? gpu_of[i] : 0;
+			cg_joint_record(ctx, cl->maps[i], g);
+			if (dbg)
+				fprintf(stderr, "JOINT %s [pool=%s rows=%ld cluster=%d loop=%d resident=%d] -> %s\n",
+				        cl->maps[i]->name ? cl->maps[i]->name : "?", cl->pool, cl->rows, cl->nmaps, in_loop, resident,
+				        g ? "GPU" : "CPU");
+		}
+	}
+	cl->pool = NULL;
+	cl->rows = 0;
+	cl->nmaps = 0;
+	cl->max_ncol = 0;
+}
+
+static void cg_joint_walk(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools, int n_host);
+
+/* Collect the pools touched by HOST steps (systems, `eff` maps, non-GPU-eligible maps) anywhere in the
+ * subtree `t`. A pool in this set has a CPU consumer/producer inside the loop, so it cannot stay resident
+ * across the back-edge — its loop clusters must pay the transfer. Appends canonical pool names (deduped). */
+static void cg_joint_collect_host_pools(CodegenContext *ctx, ScheduleTree *t, const char **pools, int *n, int cap) {
+	if (!t)
+		return;
+	if (t->kind == SCHED_RUN) {
+		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
+		HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+		const char *gp = NULL;
+		if (!k || cg_map_gpu_eligible(ctx, k, &gp))
+			return; /* a GPU-eligible map is not a host cut */
+		CgFootprint fp = {0};
+		cg_kernel_footprint(ctx, k, &fp);
+		for (int i = 0; i < fp.n; i++) {
+			int seen = 0;
+			for (int j = 0; j < *n; j++)
+				if (pools[j] == fp.pools[i] || (pools[j] && fp.pools[i] && strcmp(pools[j], fp.pools[i]) == 0)) {
+					seen = 1;
+					break;
+				}
+			if (!seen && *n < cap)
+				pools[(*n)++] = fp.pools[i];
+		}
+		return;
+	}
+	for (int i = 0; i < t->child_count; i++)
+		cg_joint_collect_host_pools(ctx, t->children[i], pools, n, cap);
+}
+
+/* Walk a SEQ/PAR's children in order, forming clusters. A run of eligible maps over one pool extends the
+ * cluster; anything else (a system, a CPU map, an eligible map over a DIFFERENT pool, a control-flow node)
+ * closes it — that is exactly a cut edge (a host access or a device switch). */
+static void cg_joint_walk_seq(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools,
+                              int n_host) {
+	CgCluster cl = {0};
+	for (int i = 0; i < t->child_count; i++) {
+		ScheduleTree *ch = t->children[i];
+		if (ch && ch->kind == SCHED_RUN) {
+			HirDecl *d = ch->sym ? cg_find_scheduled_decl(ctx, ch->sym) : NULL;
+			HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+			const char *pool = NULL;
+			if (k && cg_map_gpu_eligible(ctx, k, &pool)) {
+				if (cl.pool && strcmp(cl.pool, pool) != 0)
+					cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host); /* different pool → close */
+				cl.pool = pool;
+				cl.rows = get_arch_static_capacity(ctx, pool);
+				if (k->param_count > cl.max_ncol)
+					cl.max_ncol = k->param_count;
+				if (cl.nmaps < 256)
+					cl.maps[cl.nmaps++] = k;
+			} else {
+				cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host); /* a host step — a hard cut */
+			}
+		} else {
+			cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host);
+			cg_joint_walk(ctx, ch, in_loop, host_pools, n_host); /* recurse into nested control flow */
+		}
+	}
+	cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host);
+}
+
+static void cg_joint_walk(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools, int n_host) {
+	if (!t)
+		return;
+	switch (t->kind) {
+	case SCHED_SEQ:
+	case SCHED_PAR:
+		cg_joint_walk_seq(ctx, t, in_loop, host_pools, n_host);
+		break;
+	case SCHED_LOOP: {
+		/* Entering a loop: a pool touched by a host step in the body cannot stay resident across the back-edge,
+		 * so gather that host set and hand it to the body's clusters (which drop residency for those pools). */
+		const char *hp[64];
+		int nh = 0;
+		for (int i = 0; i < t->child_count; i++)
+			cg_joint_collect_host_pools(ctx, t->children[i], hp, &nh, 64);
+		for (int i = 0; i < t->child_count; i++)
+			cg_joint_walk(ctx, t->children[i], 1, hp, nh);
+		break;
+	}
+	case SCHED_WHEN:
+		for (int i = 0; i < t->child_count; i++)
+			cg_joint_walk(ctx, t->children[i], in_loop, host_pools, n_host); /* inherit residency context */
+		break;
+	default:
+		break; /* a bare RUN is handled by its parent SEQ; SYNC/UPLOAD/HALT: nothing to place */
+	}
+}
+
+/* Compute residency-aware placement for every eligible map, before the coherence pass + emit. */
+static void cg_joint_placement(CodegenContext *ctx, ScheduleTree *tree) {
+	if (!ctx->gpu || !tree)
+		return;
+	cg_joint_walk(ctx, tree, 0, NULL, 0);
+}
+
 static void cg_coherence_pass(CodegenContext *ctx, ScheduleTree **tree) {
 	if (!ctx->gpu || !tree || !*tree)
 		return;
@@ -12839,8 +13078,10 @@ static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	push_value_scope(ctx);
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
-	/* Derive residency + insert coherence syncs before lowering the schedule to control flow. Mutates `tree`
-	 * in place (or replaces the local pointer if a top-level wrapper is needed); emit_sched sees the result. */
+	/* Joint placement: cost consecutive-map clusters as a unit (transfer once) and record residency-aware
+	 * per-map CPU/GPU decisions, so the coherence pass + emit below see them. Then derive residency + insert
+	 * coherence syncs before lowering the schedule to control flow. */
+	cg_joint_placement(ctx, tree);
 	cg_coherence_pass(ctx, &tree);
 	emit_sched(ctx, tree);
 	if (!ctx->block_terminated)
@@ -13207,6 +13448,7 @@ void codegen_default_machine_profile(MachineProfile *out) {
 	 * legal home). A real profile from calibration overrides this. */
 	out->gpu_present = 0;
 	out->gpu_launch_us = 0;
+	out->gpu_xfer_us = 0;
 	out->pcie_up_gbps = 0;
 	out->pcie_down_gbps = 0;
 	out->cpu_gflops = 0;
@@ -13243,6 +13485,10 @@ int codegen_load_machine_profile(const char *cache_dir, MachineProfile *out) {
 		fclose(f);
 		return 0;
 	}
+	/* Optional `gpu_xfer_us` (added with joint placement): the fixed per-round-trip transfer. Absent on older
+	 * or synthetic (test) profiles → 0 (the size-dependent pcie term then carries transfer, as before). */
+	p.gpu_xfer_us = 0;
+	fscanf(f, " gpu_xfer_us %lf", &p.gpu_xfer_us);
 	/* Optional trailing `arche_version` stamp: a mismatch means the profile was calibrated by a different
 	 * arche (its measurement methodology may have shifted) — note it, but still use it (a stale profile only
 	 * risks a suboptimal placement, never a wrong result). Absent on legacy profiles → accepted silently. */
@@ -13265,9 +13511,9 @@ int codegen_save_machine_profile(const char *cache_dir, const MachineProfile *p)
 		return 0;
 	fprintf(f,
 	        "gpu_present %d\ngpu_launch_us %.6f\npcie_up_gbps %.6f\npcie_down_gbps %.6f\ncpu_gflops %.6f\n"
-	        "gpu_gflops %.6f\narche_version %s\n",
+	        "gpu_gflops %.6f\ngpu_xfer_us %.6f\narche_version %s\n",
 	        p->gpu_present, p->gpu_launch_us, p->pcie_up_gbps, p->pcie_down_gbps, p->cpu_gflops, p->gpu_gflops,
-	        ARCHE_VERSION);
+	        p->gpu_xfer_us, ARCHE_VERSION);
 	fclose(f);
 	return 1;
 }
@@ -13285,6 +13531,9 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 		ctx->profile = g_machine_profile;
 	else
 		codegen_default_machine_profile(&ctx->profile);
+	ctx->joint_names = NULL;
+	ctx->joint_gpu = NULL;
+	ctx->joint_count = 0;
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
@@ -14121,6 +14370,8 @@ void codegen_free(CodegenContext *ctx) {
 		pop_value_scope(ctx);
 	}
 	free(ctx->scopes);
+	free(ctx->joint_names); /* the name strings are borrowed (owned by the HIR) — free only the arrays */
+	free(ctx->joint_gpu);
 	free(ctx->output_buffer);
 	free(ctx->globals_buffer);
 	for (int i = 0; i < ctx->interned_cap; i++) {

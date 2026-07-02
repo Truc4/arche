@@ -402,6 +402,21 @@ test-upload-resident: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 	echo "$$stale" | grep -qF "g=4" || { echo "test-upload-resident: FAIL — upload suppressed but output [$$stale] != stale g=4 (upload not load-bearing?)"; exit 1; }
 	@echo "test-upload-resident: PASS — derived upload refreshes the resident pool (g=101 with it, stale g=4 without)"
 
+# JOINT-PLACEMENT gate (regression). Residency-aware cluster costing: the greedy per-map estimate prices a
+# full transfer round-trip per dispatch, so a moderate map is placed on the CPU; the joint pass costs a chain
+# of consecutive maps over one pool as a UNIT (transfer once) and flips it to the GPU. A pure build-time
+# decision (from the profile) — no device needed, so this runs under a synthetic profile with no glslc/GPU
+# gate. Asserts the contrast: `solo` (size-1 cluster == greedy) → CPU, the same body in an 8-map `chain` → GPU.
+test-joint-placement: $(TARGET)
+	@mkdir -p $(BUILD_DIR)/joint
+	@printf 'gpu_present 1\ngpu_launch_us 138\npcie_up_gbps 1000000\npcie_down_gbps 1000000\ncpu_gflops 9.7\ngpu_gflops 170\ngpu_xfer_us 3995\n' > $(BUILD_DIR)/joint/machine.profile
+	@out=$$(ARCHE_PLACE_DEBUG=1 ARCHE_CACHE_DIR=$(BUILD_DIR)/joint ./$(TARGET) build --gpu -o $(BUILD_DIR)/joint/jp.exe tests/unit/gpu/joint_placement.arche 2>&1); \
+	echo "$$out" | grep -qE 'JOINT solo .*cluster=1 .*-> CPU' || { echo "test-joint-placement: FAIL — solo (size-1 cluster) not CPU"; echo "$$out" | grep JOINT; exit 1; }; \
+	echo "$$out" | grep -qE 'JOINT chain .*cluster=8 .*-> GPU' || { echo "test-joint-placement: FAIL — 8-map chain not amortized to GPU"; echo "$$out" | grep JOINT; exit 1; }; \
+	hc=$$(ARCHE_PLACE_DEBUG=1 ARCHE_CACHE_DIR=$(BUILD_DIR)/joint ./$(TARGET) build --gpu -o $(BUILD_DIR)/joint/hc.exe tests/unit/gpu/joint_loop_hostcut.arche 2>&1); \
+	echo "$$hc" | grep -qE 'JOINT light .*loop=1 resident=0.*-> CPU' || { echo "test-joint-placement: FAIL — light map in a loop with a host reader not kept on CPU (loop-residency ignored the host cut)"; echo "$$hc" | grep JOINT; exit 1; }; \
+	echo "test-joint-placement: PASS — greedy CPU solo vs joint GPU chain; host-cut loop keeps a light map on CPU"
+
 # LOOP-RESIDENCY gate (regression). A pool the GPU touches every loop iteration must be kept resident ACROSS
 # the back-edge, with the download derived as a `gpu.sync` inside the loop body (not a barrier flush before
 # the loop). BUILD-ONLY — the fixture is a `forever` loop that never returns, so this asserts the derivation
@@ -667,4 +682,4 @@ test-install: all
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-upload-resident test-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-upload-resident test-placement test-joint-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
