@@ -98,7 +98,17 @@ typedef struct {
 	HirProgram *prog; /* for resolving `NAME` references to compile-time constants; may be NULL */
 	const char *ety;  /* GLSL scalar type: "float", "int", or "uint" */
 	int is_float;     /* ety == "float" — controls integer-literal float-izing and division safety */
+	const char *locals[64]; /* names bound by `:=` in the body so far — emitted as GLSL scalar vars, not columns */
+	int local_count;
 } EmitCtx;
+
+/* Is `name` a `:=` local already declared in this shader body (vs a column or a constant)? */
+static int is_gpu_local(EmitCtx *ec, const char *name) {
+	for (int i = 0; i < ec->local_count; i++)
+		if (strcmp(ec->locals[i], name) == 0)
+			return 1;
+	return 0;
+}
 
 /* The GLSL scalar type for an arche column type, or NULL if not GPU-emittable in v1 (only 32-bit float /
  * int / uint — other widths need a different SSBO stride and dispatch elem_size, a follow-on). */
@@ -177,6 +187,8 @@ static void emit_expr(GBuf *b, EmitCtx *ec, HirExpr *e, int want_bool) {
 	case HIR_EXPR_NAME:
 		if (is_column(ec->map, e->data.name.name)) {
 			gb_putf(b, "%s[i]", e->data.name.name); /* a column read at this element */
+		} else if (is_gpu_local(ec, e->data.name.name)) {
+			gb_putf(b, "%s", e->data.name.name); /* a `:=` local — the GLSL scalar var */
 		} else {
 			/* not a column — inline a compile-time constant (`STIFFNESS`); else unsupported (singleton/…) */
 			emit_scalar_lexeme(b, ec, gpu_const_lexeme(ec->prog, e->data.name.name));
@@ -230,6 +242,10 @@ static void emit_expr(GBuf *b, EmitCtx *ec, HirExpr *e, int want_bool) {
 			gb_putf(b, ") : (");
 			emit_expr(b, ec, e->data.call.args[2], 0);
 			gb_putf(b, "))");
+		} else if (fn && strcmp(fn, "sqrt") == 0 && e->data.call.arg_count == 1) {
+			gb_putf(b, "sqrt(");
+			emit_expr(b, ec, e->data.call.args[0], 0);
+			gb_putf(b, ")");
 		} else {
 			b->ok = 0; /* a func/proc call in a GPU kernel — not supported in v1 */
 		}
@@ -281,8 +297,34 @@ static void emit_stmts(GBuf *b, EmitCtx *ec, HirStmt **stmts, int count) {
 			emit_assign(b, ec, &s->data.assign_stmt);
 		else if (s->kind == HIR_STMT_BLOCK)
 			emit_stmts(b, ec, s->data.block.stmts, s->data.block.count);
-		else
-			b->ok = 0; /* control flow shouldn't reach here (the map whitelist forbids it), but be safe */
+		else if (s->kind == HIR_STMT_BIND) {
+			/* A `:=` local → a GLSL scalar var of the shader's element type. Single-var only; register the name
+			 * so later reads resolve to the var (not a column/const). */
+			if (s->data.bind_stmt.name_count != 1 || !s->data.bind_stmt.value || ec->local_count >= 64) {
+				b->ok = 0;
+			} else {
+				const char *nm = s->data.bind_stmt.names[0];
+				gb_putf(b, "  %s %s = ", ec->ety, nm);
+				emit_expr(b, ec, s->data.bind_stmt.value, 0);
+				gb_putf(b, ";\n");
+				ec->locals[ec->local_count++] = nm;
+			}
+		} else if (s->kind == HIR_STMT_IF) {
+			/* `if (cond) { … } else { … }` → the native GLSL conditional (branch-free `select` is still the
+			 * value form; this is the statement form). */
+			gb_putf(b, "  if (");
+			emit_expr(b, ec, s->data.if_stmt.cond, 1);
+			gb_putf(b, ") {\n");
+			emit_stmts(b, ec, s->data.if_stmt.then_body, s->data.if_stmt.then_count);
+			gb_putf(b, "  }");
+			if (s->data.if_stmt.else_count > 0) {
+				gb_putf(b, " else {\n");
+				emit_stmts(b, ec, s->data.if_stmt.else_body, s->data.if_stmt.else_count);
+				gb_putf(b, "  }");
+			}
+			gb_putf(b, "\n");
+		} else
+			b->ok = 0; /* other control flow (loops, …) not lowered in v1 → clean CPU fallback */
 	}
 }
 

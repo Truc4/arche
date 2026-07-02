@@ -1,0 +1,23 @@
+// A `@gpu` map using the `sqrt` builtin — its compute shader must emit GLSL `sqrt` (the GPU whitelist arm in
+// gpu_glsl.c). The CPU path here must produce the same result; `make test-gpu-exe` runs it on the GPU.
+// RUN: %arche build -o %t %s && %t | grep -qF "r=2 3 4 5"
+#import { fmt }
+x :: float;
+P :: arche { x }
+[4]P(4);
+
+@gpu
+
+root :: map (query { x }) (x) {
+  x = sqrt(x);
+}
+
+seed :: system {
+  P.x = { 4.0, 9.0, 16.0, 25.0 };
+}
+
+verify :: system eff {
+  fmt.printf("r=%.0f %.0f %.0f %.0f\n", P.x[0], P.x[1], P.x[2], P.x[3]);
+}
+
+#run seq({ seed, root, verify })

@@ -2119,6 +2119,9 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 		} else if (strcmp(func_name, "reduce") == 0) {
 			/* `reduce(op, col)` folds a column to a scalar of the column's element type (arg 1). */
 			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+		} else if (strcmp(func_name, "sqrt") == 0) {
+			/* `sqrt(x)` yields the type of its argument (float). */
+			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 0));
 		} else if (strcmp(func_name, "select") == 0) {
 			/* `select(cond, a, b)` yields the type of its value branches (arg 1). */
 			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
@@ -2438,6 +2441,19 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			break;
 		}
 
+		/* `sqrt(x)` — the float square-root builtin. Pure, vectorizable, GPU-portable (GLSL `sqrt`); lowers
+		 * to LLVM's `@llvm.sqrt.f32`. Recognized here so it isn't flagged undefined. */
+		if (func_name && strcmp(func_name, "sqrt") == 0) {
+			if (argc != 1)
+				sem_emit_wrong_arity(ctx, loc, "sqrt", 1, argc);
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
 		/* `seq(a, b)` — applicative sequence of two independent Effs: run `a` then `b`, yield `b` (§5).
 		 * Recognized here so the name isn't flagged undefined; codegen runs both externs in order via the
 		 * build-func fusion. Gated on EXACTLY two args so it never shadows the Schedule combinator
@@ -2491,11 +2507,13 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 
 		/* Collectives — `reduce(op, col)` / `scan(op, col)` fold or prefix-fold a whole column over a
 		 * monoid; `sort(col)` sorts the pool by a key column. Recognized here so the op-literal first arg
-		 * and the builtin name aren't flagged undefined; only the column arg is analyzed. A collective is a
-		 * whole-column operation, so it is illegal inside a `map` (which is strictly per-element). */
+		 * and the builtin name aren't flagged undefined; only the column arg is analyzed. `reduce` IS legal in
+		 * a `map`: a per-element `reduce(+, <expr over Pool.col + this element>)` is the neighbour-reduction /
+		 * self-join (each element folds over the pool). `scan`/`sort` remain whole-column-only (they rewrite
+		 * the column / permute the pool — not a per-element result), so they stay illegal in a `map`. */
 		if (func_name &&
 		    (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0 || strcmp(func_name, "sort") == 0)) {
-			if (ctx->in_map)
+			if (ctx->in_map && strcmp(func_name, "reduce") != 0)
 				sem_emit_collective_in_map(ctx, loc, func_name);
 			int is_sort = strcmp(func_name, "sort") == 0;
 			/* sort takes 1 arg (key column) or 2 (key + `asc`/`desc`); reduce/scan take exactly 2. */
@@ -3003,32 +3021,21 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 	 * to fall through to its own, more specific `map_no_return` message.) */
 	if (ctx->in_map) {
 		SyntaxNodeKind mk = sv_kind(v);
-		if (mk != SN_ASSIGN_STMT && mk != SN_RETURN_STMT) {
+		/* A `map` is the per-element variant of a `system`, so its body permits the same control flow — `:=`
+		 * locals, `if`, `for`, `match`, `break`/`continue`. A branch-free body still vectorizes / runs on the
+		 * GPU; a branchy one runs as a scalar per-element loop (derived placement, not a hard error). Still
+		 * rejected: `run`/`each_field` (not per-element transforms) and a bare call/expression statement
+		 * (effects stay gated by `eff`; a discarded call has no place in a transform). `return` falls through
+		 * to its own `map_no_return`. */
+		if (mk != SN_ASSIGN_STMT && mk != SN_RETURN_STMT && mk != SN_BIND_STMT && mk != SN_IF_STMT &&
+		    mk != SN_FOR_STMT && mk != SN_MATCH_STMT && mk != SN_BREAK_STMT && mk != SN_CONTINUE_STMT) {
 			const char *w;
 			switch (mk) {
-			case SN_IF_STMT:
-				w = "`if`";
-				break;
-			case SN_FOR_STMT:
-				w = "`for`";
-				break;
-			case SN_MATCH_STMT:
-				w = "`match`";
-				break;
-			case SN_BREAK_STMT:
-				w = "`break`";
-				break;
-			case SN_CONTINUE_STMT:
-				w = "`continue`";
-				break;
 			case SN_RUN_STMT:
 				w = "`run`";
 				break;
 			case SN_EACH_FIELD_STMT:
 				w = "`each_field`";
-				break;
-			case SN_BIND_STMT:
-				w = "a local binding (`:=`)";
 				break;
 			default:
 				w = "a call / expression statement";

@@ -1,0 +1,21 @@
+// A `map` MAY loop — `for` is no longer banned (a map is the per-element variant of a system). A looping map
+// runs per element as a scalar loop; branch-free maps still vectorize / run on the GPU. Here each element is
+// incremented three times → v + 3. (Was `map_for_rejected` — the old loopless ban was lifted.)
+// RUN: %arche build -o %t %s && %t | grep -qF "v=13 23 33"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[3]N(3);
+
+seed :: system { N.v = { 10, 20, 30 }; }
+
+bump :: map (query { v }) (v) {
+  i := 0;
+  for (; i < 3; i += 1) {
+    v = v + 1;
+  }
+}
+
+verify :: system eff { fmt.printf("v=%d %d %d\n", N.v[0], N.v[1], N.v[2]); }
+
+#run seq({ seed, bump, verify })

@@ -1,0 +1,23 @@
+// A `map` MAY branch — control flow is no longer a map-vs-system gate (a map is the per-element variant of a
+// system, and branching is derived, not banned). An `if` runs the branchy body per element (scalar loop);
+// branch-free maps still vectorize / run on the GPU. Here: sign of each value. (Was `map_if_rejected` — the
+// old branch-free ban was lifted.)
+// RUN: %arche build -o %t %s && %t | grep -qF "v=1 0 1"
+#import { fmt }
+v :: int;
+N :: arche { v }
+[3]N(3);
+
+seed :: system { N.v = { 5, -2, 7 }; }
+
+sign :: map (query { v }) (v) {
+  if (v > 0) {
+    v = 1;
+  } else {
+    v = 0;
+  }
+}
+
+verify :: system eff { fmt.printf("v=%d %d %d\n", N.v[0], N.v[1], N.v[2]); }
+
+#run seq({ seed, sign, verify })

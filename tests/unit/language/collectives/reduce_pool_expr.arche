@@ -1,0 +1,32 @@
+// `reduce(op, <expr over Pool.col>)` — the neighbor-reduction / self-join: fold a per-pool-row EXPRESSION to
+// a scalar, evaluated inside a per-element columnar `system`. The folded pool's `B.*` refs index the inner
+// fold counter; the enclosing bound columns (bare `px`/`py`) stay at the outer row. Here each boid counts how
+// many boids lie within radius 2 (self included) — the two clusters {0,1} and {20,21} each see exactly 2.
+// RUN: %arche build -o %t %s && %t | grep -qF "cnt=2 2 2 2"
+#import { fmt }
+px  :: float;
+py  :: float;
+cnt :: float;
+B :: arche { px, py, cnt }
+[4]B(4);
+
+near :: func(ax: float, ay: float, bx: float, by: float) -> float {
+  dx := ax - bx;
+  dy := ay - by;
+  return select(sqrt(dx * dx + dy * dy) < 2.0, 1.0, 0.0);
+}
+
+seed :: system {
+  B.px = { 0.0, 1.0, 20.0, 21.0 };
+  B.py = { 0.0, 0.0, 0.0, 0.0 };
+}
+
+count :: system (query { px, py, cnt }) (cnt) eff {
+  cnt = reduce(+, near(px, py, B.px, B.py));
+}
+
+verify :: system eff {
+  fmt.printf("cnt=%.0f %.0f %.0f %.0f\n", B.cnt[0], B.cnt[1], B.cnt[2], B.cnt[3]);
+}
+
+#run seq({ seed, count, verify })

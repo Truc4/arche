@@ -1,5 +1,6 @@
 #define _POSIX_C_SOURCE 200809L
 #include "codegen.h"
+#include "gpu_glsl.h" /* gpu_glsl_build_src — derive GPU-eligibility from actual emittability */
 #include "../lexer/lexer.h"
 #include "../runtime/inspect.h" /* ArcheInspectType tags for the dev state-inspector registration */
 #include <stdarg.h>
@@ -233,6 +234,15 @@ struct CodegenContext {
 	int uses_memcpy;
 	/* Set when a `@llvm.memset` is emitted (insert's zero-padded char-column fill) — gates its declare. */
 	int uses_memset;
+	/* Set when the `sqrt` builtin emits a `@llvm.sqrt.f32`/`.v4f32` — gates its declare(s). */
+	int uses_sqrt;
+	int uses_sqrt_v4;
+	/* Active only while emitting a `reduce(op, <expr over Pool.col>)` fold (the neighbor-reduction /
+	 * self-join): a FIELD access `Pool.col` where Pool == fold_pool is loaded at fold_index (the inner fold
+	 * counter) as a scalar, instead of a whole-column pointer. Enclosing columnar bound columns (bare names)
+	 * are unaffected — they still read the outer row. NULL when no such fold is in flight. */
+	const char *fold_pool;
+	const char *fold_index;
 
 	/* Compile-time callback monomorphization. A proc with a proc/func-typed
 	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
@@ -1600,6 +1610,15 @@ static int cg_map_gpu_eligible(CodegenContext *ctx, HirKernelDecl *k, const char
 		if (fi < 0)
 			return 0; /* a non-emittable / missing column → no GPU form */
 	}
+	/* Derived eligibility: the BODY must actually be GLSL-emittable — not merely structurally typed. A body
+	 * the emitter can't lower (a loop, a `reduce`, an unhandled call, or mixed column types) is NOT
+	 * GPU-eligible, so placement keeps it on the CPU rather than choosing GPU and finding no embedded shader
+	 * at dispatch (the silent "placement picked GPU, win never materializes"). Build-time probe;
+	 * gpu_glsl_build_src is side-effect-free. */
+	char *probe = gpu_glsl_build_src(ctx->ast, k, ga);
+	if (!probe)
+		return 0;
+	free(probe);
 	if (out_pool)
 		*out_pool = an;
 	return 1;
@@ -3046,6 +3065,115 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, ty, ty, acc);
 		strcpy(result_buf, final);
 	}
+}
+
+/* True if `e` is a `Pool.col` field access on a pool archetype (a column), resolving a query alias. Sets
+ * *arch_out (if non-NULL) to the resolved archetype name. Used to find the pool a reduce-EXPRESSION folds
+ * over, and to recognize that pool's column refs during the fold. */
+static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_out) {
+	if (!e || e->kind != HIR_EXPR_FIELD || !e->data.field.base || e->data.field.base->kind != HIR_EXPR_NAME)
+		return 0;
+	const char *name = e->data.field.base->data.name.name;
+	const char *arch = name;
+	if (!find_archetype_decl(ctx, name) && resolve_collective_query(ctx, name, &arch) != 1)
+		return 0;
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch);
+	if (!ad)
+		return 0;
+	for (int i = 0; i < ad->field_count; i++)
+		if (strcmp(ad->fields[i]->name, e->data.field.field_name) == 0 && ad->fields[i]->kind == FIELD_COLUMN) {
+			if (arch_out)
+				*arch_out = arch;
+			return 1;
+		}
+	return 0;
+}
+
+/* Find the pool a reduce-expression folds over: the first `Pool.col` field access in the summand. Recurses
+ * over its arithmetic / call structure. Returns that field node (for the pool + count) or NULL. */
+static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
+	if (!e)
+		return NULL;
+	if (is_pool_col_field(ctx, e, NULL))
+		return e;
+	switch (e->kind) {
+	case HIR_EXPR_BINARY: {
+		HirExpr *l = find_fold_pool_field(ctx, e->data.binary.left);
+		return l ? l : find_fold_pool_field(ctx, e->data.binary.right);
+	}
+	case HIR_EXPR_UNARY:
+		return find_fold_pool_field(ctx, e->data.unary.operand);
+	case HIR_EXPR_CALL: {
+		for (int i = 0; i < e->data.call.arg_count; i++) {
+			HirExpr *a = find_fold_pool_field(ctx, e->data.call.args[i]);
+			if (a)
+				return a;
+		}
+		return NULL;
+	}
+	default:
+		return NULL;
+	}
+}
+
+/* `reduce(op, <expr over Pool.col + enclosing self scalars>)` — the neighbor-reduction / self-join: fold a
+ * per-pool-row EXPRESSION to a scalar. Unlike emit_fold (a whole column), the summand is re-evaluated per
+ * row `i`, with the folded pool's `Pool.col` accesses indexed by `i` (ctx->fold_pool/fold_index) while any
+ * enclosing columnar bound columns (bare names) keep reading the outer row. CPU scalar only (an arbitrary
+ * summand can't be lane-blended cheaply); O(N) per outer element — the boids neighbor scan. */
+static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op, char *result_buf) {
+	HirExpr *poolfield = find_fold_pool_field(ctx, sumexpr);
+	const char *arch = NULL;
+	if (!poolfield || !is_pool_col_field(ctx, poolfield, &arch)) {
+		strcpy(result_buf, "0");
+		return;
+	}
+	/* Loop bound = the folded pool's live row count (reuse the collective column resolver for the count). */
+	char colptr[256], count[256];
+	const char *cty;
+	int cisf;
+	if (!emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf)) {
+		strcpy(result_buf, "0");
+		return;
+	}
+	int is_float = (sumexpr->resolved.tag == HIR_TYPE_FLOAT) || cisf;
+	const char *ty = is_float ? "float" : "i32";
+	const char *id = monoid_identity(op, is_float);
+	char *acc = gen_value_name(ctx), *iv = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca %s\n", acc, ty);
+	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, id, ty, acc);
+	emit_alloca(ctx, "  %s = alloca i64\n", iv);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv);
+
+	const char *saved_pool = ctx->fold_pool, *saved_idx = ctx->fold_index;
+	ctx->fold_pool = arch;
+
+	char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", cond + 1);
+	char *i = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
+	char *lt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
+	buffer_append_fmt(ctx, "%s:\n", body + 1);
+	ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
+	char elem[256];
+	codegen_expression(ctx, sumexpr, elem);
+	char *a = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, ty, ty, acc);
+	char *r = emit_monoid_combine(ctx, op, is_float, ty, a, elem);
+	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, acc);
+	char *ni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", end + 1);
+	ctx->fold_pool = saved_pool;
+	ctx->fold_index = saved_idx;
+	char *final = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, ty, ty, acc);
+	strcpy(result_buf, final);
 }
 
 /* The CPU backend: scalar + 4-lane SIMD. reduce/scan share the `emit_fold` primitive; permute bridges to
@@ -4537,6 +4665,32 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	case HIR_EXPR_FIELD: {
+		/* Inside a `reduce(op, <expr over Pool.col>)` fold, a `Pool.col` on the folded pool is a SCALAR load
+		 * at the inner fold counter, not a whole-column pointer. Enclosing self columns are bare NAMEs, so
+		 * they never reach here — they keep reading the outer row. */
+		if (ctx->fold_pool && ctx->fold_index) {
+			const char *farch = NULL;
+			if (is_pool_col_field(ctx, expr, &farch) && strcmp(farch, ctx->fold_pool) == 0) {
+				const char *sp = ctx->fold_pool, *si = ctx->fold_index;
+				ctx->fold_pool = NULL; /* resolve the column base without re-entering this hook */
+				ctx->fold_index = NULL;
+				char fcolptr[256], fcount[256];
+				const char *fty;
+				int ffl;
+				int ok = emit_collective_column(ctx, expr, fcolptr, fcount, &fty, &ffl);
+				ctx->fold_pool = sp;
+				ctx->fold_index = si;
+				if (ok) {
+					char *ep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, fty, fty, fcolptr, si);
+					char *v = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v, fty, fty, ep);
+					strcpy(result_buf, v);
+					break;
+				}
+			}
+		}
+
 		/* Compile-time scalars from a monomorphized archetype-parametric proc.
 		 * Short-circuit before the normal field-access path. */
 		if (expr->data.field.base->kind == HIR_EXPR_NAME && expr->data.field.field_name) {
@@ -5217,6 +5371,23 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
+		/* `sqrt(x)` — float square root → LLVM's hardware sqrt intrinsic (one instruction), scalar or a
+		 * 4-lane vector blend in a vectorized map loop. Float in, float out. */
+		if (func_name && strcmp(func_name, "sqrt") == 0 && expr->data.call.arg_count == 1) {
+			char xb[256];
+			codegen_expression(ctx, expr->data.call.args[0], xb);
+			char *r = gen_value_name(ctx);
+			if (ctx->vector_lanes > 0) {
+				ctx->uses_sqrt_v4 = 1;
+				buffer_append_fmt(ctx, "  %s = call <4 x float> @llvm.sqrt.v4f32(<4 x float> %s)\n", r, xb);
+			} else {
+				ctx->uses_sqrt = 1;
+				buffer_append_fmt(ctx, "  %s = call float @llvm.sqrt.f32(float %s)\n", r, xb);
+			}
+			strcpy(result_buf, r);
+			break;
+		}
+
 		/* Collectives — whole-column ops over a monoid. `reduce` folds to a scalar (returned),
 		 * `scan` prefix-folds in place, `sort` sorts the pool by a key column. */
 		/* Each collective lowers to a ParOp and is emitted by the active backend (one uniform path,
@@ -5224,6 +5395,14 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (func_name && (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0) &&
 		    expr->data.call.arg_count == 2) {
 			int is_scan = (func_name[0] == 's');
+			/* `reduce(op, <expr>)` where the 2nd arg is not a bare `Pool.col` column is the neighbor-reduction
+			 * / self-join: fold a per-pool-row expression to a scalar (CPU). A plain column keeps the existing
+			 * whole-column (SIMD) path below. */
+			if (!is_scan && !is_pool_col_field(ctx, expr->data.call.args[1], NULL)) {
+				emit_fold_expr(ctx, expr->data.call.args[1], collective_op_text(expr->data.call.args[0]),
+				               result_buf);
+				break;
+			}
 			ParOp pop = {0};
 			pop.kind = is_scan ? PAR_SCAN : PAR_REDUCE;
 			/* Backend = AUTO (CPU scalar/SIMD) by default. `ARCHE_REDUCE_CORES` is an EXPERIMENTAL toggle
@@ -13091,6 +13270,72 @@ static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	buffer_append(ctx, "}\n\n");
 }
 
+/* A map body is "flat" — a plain sequence of column transforms (`col = expr`) — when every statement is an
+ * assignment. A flat body takes the vectorized whole-column fusion path (and is GPU-emittable). A body with
+ * `:=` locals or control flow is NOT flat: its statements must run INSIDE the per-element loop (a `:=` can't
+ * be hoisted to the whole-column top level, where columns are bare pointers), so it runs as a scalar
+ * per-element loop (the each fan) — the same machinery `map … eff` uses, minus the effects. */
+/* Does an expression contain a collective call (`reduce`/`scan`/`sort`)? A per-element `reduce` folds over a
+ * pool per row (the neighbour reduction), so a map using one must run as a scalar per-element loop — never
+ * the vectorized fusion (which would feed a vector `self` into the scalar fold). */
+static int cg_expr_has_collective(const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_CALL: {
+		const char *fn = e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME
+		                     ? e->data.call.callee->data.name.name
+		                     : NULL;
+		if (fn && (strcmp(fn, "reduce") == 0 || strcmp(fn, "scan") == 0 || strcmp(fn, "sort") == 0))
+			return 1;
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (cg_expr_has_collective(e->data.call.args[i]))
+				return 1;
+		return 0;
+	}
+	case HIR_EXPR_BINARY:
+		return cg_expr_has_collective(e->data.binary.left) || cg_expr_has_collective(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return cg_expr_has_collective(e->data.unary.operand);
+	default:
+		return 0;
+	}
+}
+
+static int cg_stmt_is_flat(const HirStmt *s) {
+	if (!s)
+		return 1;
+	switch (s->kind) {
+	case HIR_STMT_ASSIGN:
+		return !cg_expr_has_collective(s->data.assign_stmt.value); /* `out = reduce(…)` → scalar per-element */
+	/* These need the whole body run INSIDE a per-element loop (a scalar `:=` can't be hoisted to the
+	 * whole-column top level; control flow isn't a column transform). */
+	case HIR_STMT_BIND:
+	case HIR_STMT_IF:
+	case HIR_STMT_FOR:
+	case HIR_STMT_EACH:
+	case HIR_STMT_EACH_FIELD:
+		return 0;
+	case HIR_STMT_BLOCK:
+		/* A BLOCK is both a control-flow desugar AND a tuple-column write's expansion (`pos = …` → a block of
+		 * `pos_x = …; pos_y = …`). Flat iff every inner statement is — so tuple writes stay fused, but a
+		 * match/`{}` holding control flow does not. */
+		for (int i = 0; i < s->data.block.count; i++)
+			if (!cg_stmt_is_flat(s->data.block.stmts[i]))
+				return 0;
+		return 1;
+	default: /* a `col = expr` assignment, a tuple `MULTI_BIND`, … — a whole-column transform */
+		return 1;
+	}
+}
+
+static int cg_map_is_flat(const HirKernelDecl *k) {
+	for (int i = 0; i < k->stmt_count; i++)
+		if (!cg_stmt_is_flat(k->stmts[i]))
+			return 0;
+	return 1;
+}
+
 static void codegen_map_decl(CodegenContext *ctx, HirKernelDecl *map, int decl_unit) {
 	/* Per-unit: a map is emitted in the unit that DECLARED it (a device's map lives in that device's
 	 * unit), so editing a device's map body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
@@ -13132,6 +13377,24 @@ static void codegen_map_decl(CodegenContext *ctx, HirKernelDecl *map, int decl_u
 	buffer_append(ctx, ") #0 {\nentry:\n");
 
 	FunctionBodyState fbs = begin_function_body(ctx);
+
+	/* Non-flat body (`:=` locals or control flow): run the WHOLE body once per element (scalar), reusing the
+	 * each fan — a `:=`/`if` must live inside the per-row loop, not be hoisted to the whole-column top level.
+	 * The fan reads the pool from its global, which is the same storage the run site passes as the param (for
+	 * the map's own driver pool); the param signature is kept for ABI/dispatch compatibility, and this body is
+	 * also the correct CPU fallback for a GPU-placed non-flat map. */
+	if (!cg_map_is_flat(map)) {
+		push_value_scope(ctx);
+		ctx->block_terminated = 0;
+		register_static_arrays_in_scope(ctx);
+		codegen_each_fan(ctx, map->params, map->param_count, map->stmts, map->stmt_count, map->row_var);
+		pop_value_scope(ctx);
+		buffer_append(ctx, "  ret void\n");
+		end_function_body(ctx, fbs);
+		buffer_append(ctx, "}\n\n");
+		codegen_register_map_version(ctx, map->name, map->name); /* HIR_STMT_RUN dispatches it by name */
+		return;
+	}
 
 	/* For each matching archetype: bind columns and emit body inline */
 	for (int ai = 0; ai < matching_count; ai++) {
@@ -13600,6 +13863,10 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->efield_name_counter = 0;
 	ctx->uses_memcpy = 0;
 	ctx->uses_memset = 0;
+	ctx->uses_sqrt = 0;
+	ctx->uses_sqrt_v4 = 0;
+	ctx->fold_pool = NULL;
+	ctx->fold_index = NULL;
 	ctx->drop_reg = NULL;
 	ctx->drop_reg_count = 0;
 	ctx->drop_reg_capacity = 0;
@@ -14349,6 +14616,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		buffer_append(ctx, "\ndeclare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n");
 	if (ctx->uses_memset)
 		buffer_append(ctx, "declare void @llvm.memset.p0.i64(i8*, i8, i64, i1)\n");
+	if (ctx->uses_sqrt)
+		buffer_append(ctx, "declare float @llvm.sqrt.f32(float)\n");
+	if (ctx->uses_sqrt_v4)
+		buffer_append(ctx, "declare <4 x float> @llvm.sqrt.v4f32(<4 x float>)\n");
 
 	/* Global constants (strings, etc.), emitted LAST so any constant interned during late body emission
 	 * (notably the `@gpu` dispatch's map-name in `@arche_run`) is captured. */

@@ -1,0 +1,13 @@
+// `scan`/`sort` are whole-column collectives that REWRITE the column / permute the pool — not a per-element
+// result — so they may not appear in a `map` body (run them from the driver over the whole column). NOTE:
+// `reduce` IS allowed in a map (a per-element `reduce(+, <expr over Pool.col + this element>)` is the
+// neighbour reduction / self-join) — see collectives/reduce_in_map.arche. Must error mentioning "collective".
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "collective" %t.out
+v :: int;
+s :: int;
+N :: arche { v, s }
+[3]N(3);
+bad :: map (query { v, s }) (s) {
+  s = scan(+, v);
+}
+#run seq({ bad })
