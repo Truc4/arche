@@ -11,7 +11,7 @@
 // — the derivation itself is asserted by the Makefile target under --gpu (ARCHE_COH_DEBUG).
 // RUN: %arche build -o %t %s && %t | grep -qF "g=4"
 #import { fmt }
-g :: float;
+g  :: float;
 RP :: arche { g }
 [8]RP(8);
 
@@ -20,7 +20,7 @@ seed :: system {
 }
 
 // no @gpu — placement (and thus residency) is DERIVED.
-inc :: map (query { g }) (g) {
+inc :: map (query { g })(g) {
   g = g + 1.0;
 }
 

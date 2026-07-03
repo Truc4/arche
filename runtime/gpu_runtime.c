@@ -232,8 +232,8 @@ static int gpu_staged_copy(void *host, VkBuffer dev, VkDeviceSize bytes, int to_
 		goto out;
 	VkMemoryRequirements mr;
 	vkGetBufferMemoryRequirements(G.dev, stg, &mr);
-	uint32_t mt = find_mem_type(mr.memoryTypeBits,
-	                            VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
+	uint32_t mt =
+	    find_mem_type(mr.memoryTypeBits, VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT | VK_MEMORY_PROPERTY_HOST_COHERENT_BIT);
 	if (mt == UINT32_MAX)
 		goto out;
 	VkMemoryAllocateInfo mai = {
@@ -285,8 +285,7 @@ out:
 	return rc;
 }
 
-int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count,
-                       int resident) {
+int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count, int resident) {
 	if (!name || ncol == 0 || ncol > ARCHE_GPU_MAX_COL || !cols)
 		return 1;
 	if (count == 0)
@@ -505,8 +504,7 @@ void arche_gpu_upload(void **cols, unsigned ncol, unsigned elem_size, unsigned c
 
 #else /* no <vulkan/vulkan.h> at build time: always fall back to CPU */
 
-int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count,
-                       int resident) {
+int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count, int resident) {
 	/* No <vulkan/vulkan.h> at build time: always report failure so every dispatch runs the CPU path.
 	 * The `0 *` terms reference each argument (keeping -Wunused-parameter quiet) without altering the
 	 * result, which stays a constant nonzero. */

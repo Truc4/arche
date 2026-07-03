@@ -7,6 +7,10 @@ a :: float;
 b :: float;
 R :: arche { a, b }
 [4]R(4);
-k :: map (query { a, b }) (a, b) { a = a + 1.0; }
-done :: system eff { fmt.printf("ok\n"); }
+k :: map (query { a, b })(a, b) {
+  a = a + 1.0;
+}
+done :: system eff {
+  fmt.printf("ok\n");
+}
 #run seq({ k, done })

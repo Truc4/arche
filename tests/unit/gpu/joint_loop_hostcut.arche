@@ -12,9 +12,11 @@ p :: float;
 P :: arche { p }
 [8]P(8);
 
-seed :: system { P.p = { 1.0 }; }
+seed :: system {
+  P.p = { 1.0 };
+}
 
-light :: map (query { p }) (p) {
+light :: map (query { p })(p) {
   p = p + 1.0;
 }
 

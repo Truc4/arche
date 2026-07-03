@@ -14,10 +14,12 @@ g :: float;
 P :: arche { g }
 [8]P(8);
 
-seed :: system { P.g = { 1.0 }; }
+seed :: system {
+  P.g = { 1.0 };
+}
 
 @gpu
-inc :: map (query { g }) (g) {
+inc :: map (query { g })(g) {
   g = g + 1.0;
 }
 

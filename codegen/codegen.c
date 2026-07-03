@@ -1,8 +1,8 @@
 #define _POSIX_C_SOURCE 200809L
 #include "codegen.h"
-#include "gpu_glsl.h" /* gpu_glsl_build_src — derive GPU-eligibility from actual emittability */
 #include "../lexer/lexer.h"
 #include "../runtime/inspect.h" /* ArcheInspectType tags for the dev state-inspector registration */
+#include "gpu_glsl.h"           /* gpu_glsl_build_src — derive GPU-eligibility from actual emittability */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -15,11 +15,13 @@ char *strdup(const char *s);
 
 typedef struct {
 	char *name;
-	char *llvm_name;        /* allocated SSA value name */
-	int type;               /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 6=array/slice, 7=[N]char buf */
-	char *arch_name;        /* for type==3 or 4, nullable otherwise */
-	int string_len;         /* for type==2 (string), the compile-time length (-1 if unknown) */
-	const char *field_type; /* for type==4 (column ptr), the Arche type name (e.g. "float") */
+	char *llvm_name; /* allocated SSA value name */
+	int type;        /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 6=array/slice, 7=[N]char buf,
+	                  * 8=tuple aggregate value ({T,…}, tuple_type set) */
+	const struct HirType *tuple_type; /* type==8: the HIR_TYPE_TUPLE (field names/types), borrowed */
+	char *arch_name;                  /* for type==3 or 4, nullable otherwise */
+	int string_len;                   /* for type==2 (string), the compile-time length (-1 if unknown) */
+	const char *field_type;           /* for type==4 (column ptr), the Arche type name (e.g. "float") */
 	const char *handle_archetype; /* if field_type=="handle", the target archetype name (borrowed, like field_type) */
 	int bit_width;                /* 32 (default) or 64 for SSA values */
 	int is_slice; /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
@@ -86,9 +88,9 @@ struct CodegenContext {
 	 * pool storage — emit in every module as linkonce_odr, gated by the always-on ODR verifier in
 	 * compile.c). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
-	int shared;         /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
-	int hot;            /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
-	int gpu;            /* --gpu: `run map @gpu` dispatches the embedded shader on the GPU (CPU fallback) */
+	int shared;             /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
+	int hot;                /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
+	int gpu;                /* --gpu: `run map @gpu` dispatches the embedded shader on the GPU (CPU fallback) */
 	MachineProfile profile; /* per-machine cost profile driving the DERIVED CPU/GPU placement (Slice 4) */
 	/* Joint-placement decision table (cg_joint_placement): a residency-aware cluster decision per eligible
 	 * map, computed schedule-level before codegen and consulted by cg_placement_decide (above the greedy
@@ -685,7 +687,26 @@ static int proc_out_param_is_inout(HirProcDecl *proc, int oi);
 static int proc_out_param_is_inout_in(HirProcDecl *proc, int ii);
 static const char *extern_proc_cret(HirProcDecl *proc);
 
+/* The LLVM aggregate type for a HIR_TYPE_TUPLE value type (`pos(x,y) :: float` → `{ float, float }`), passed
+ * and returned by value — reusing the multi-return `{T,…}` aggregate ABI. `buf` receives the type string. */
+static void tuple_llvm_type(HirType *t, char *buf, size_t cap) {
+	size_t n = 0;
+	n += (size_t)snprintf(buf + n, cap - n, "{ ");
+	for (int i = 0; i < t->field_count; i++) {
+		const char *m = llvm_type_from_arche(field_base_type_name(t->fields[i].type));
+		n += (size_t)snprintf(buf + n, cap - n, "%s%s", i ? ", " : "", m);
+	}
+	snprintf(buf + n, cap - n, " }");
+}
+
 static const char *return_member_llvm(HirType *t) {
+	if (t && t->tag == HIR_TYPE_TUPLE) {
+		/* A tuple value returned by value, as the `{T,…}` aggregate. Single call per snprintf at every
+		 * consumer, so the static buffer can't be clobbered mid-format. */
+		static char tbuf[256];
+		tuple_llvm_type(t, tbuf, sizeof(tbuf));
+		return tbuf;
+	}
 	if (t && t->tag == HIR_TYPE_ARRAY) {
 		/* A `T[]` slice (any element, incl. char) is returned as a fat pointer `{T*, i64}` (the same
 		 * (ptr,len) it was threaded in as), so the caller recovers both the data pointer and the
@@ -1219,6 +1240,51 @@ static void add_value(CodegenContext *ctx, const char *name, const char *llvm_na
 
 	scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 	scope->values[scope->value_count++] = val;
+}
+
+/* Bind `name` to a tuple aggregate SSA value (`{T,…}`), carrying its HIR_TYPE_TUPLE so field access
+ * (extractvalue) and per-lane arithmetic can recover the members. */
+static void add_tuple_value(CodegenContext *ctx, const char *name, const char *llvm_name, const HirType *tt) {
+	add_value(ctx, name, llvm_name, 8);
+	if (ctx->scope_count > 0) {
+		ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+		if (scope->value_count > 0)
+			scope->values[scope->value_count - 1]->tuple_type = tt;
+	}
+}
+
+/* The index of tuple member `field` within tuple type `tt` (−1 if absent). */
+static int tuple_field_index(const HirType *tt, const char *field) {
+	if (!tt || tt->tag != HIR_TYPE_TUPLE)
+		return -1;
+	for (int i = 0; i < tt->field_count; i++)
+		if (tt->fields[i].name && field && strcmp(tt->fields[i].name, field) == 0)
+			return i;
+	return -1;
+}
+
+static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name);
+static char *cg_strdup(const char *s);
+
+/* If `e` evaluates to a tuple VALUE, return its HIR_TYPE_TUPLE (else NULL): a name bound to a type-8 tuple
+ * aggregate, any expr whose resolved type is a tuple (a tuple literal, a `.field` of a nested tuple), or a
+ * call to a func whose single return is a tuple. Drives tuple-aware field access, arithmetic, and binds. */
+static const HirType *codegen_tuple_type_of(CodegenContext *ctx, HirExpr *e) {
+	if (!e)
+		return NULL;
+	if (e->kind == HIR_EXPR_NAME) {
+		ValueInfo *v = find_value(ctx, e->data.name.name);
+		if (v && v->type == 8 && v->tuple_type)
+			return v->tuple_type;
+	}
+	if (e->resolved.tag == HIR_TYPE_TUPLE)
+		return &e->resolved;
+	if (e->kind == HIR_EXPR_CALL && e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME) {
+		HirFuncDecl *f = find_func_decl(ctx, e->data.call.callee->data.name.name);
+		if (f && f->return_type_count == 1 && f->return_types[0] && f->return_types[0]->tag == HIR_TYPE_TUPLE)
+			return f->return_types[0];
+	}
+	return NULL;
 }
 
 static void add_arch_value(CodegenContext *ctx, const char *name, const char *llvm_name, const char *arch_name) {
@@ -2875,6 +2941,37 @@ static int resolve_collective_query(CodegenContext *ctx, const char *name, const
 	return -1; /* a query that matches no allocated shape */
 }
 
+/* Resolve the arche element-type name of an indexed archetype-column base `Arch.col[i]` — including a
+ * flattened tuple sub-column (`P.pos.x` lowers to the column `pos_x`). Returns the base type name (e.g.
+ * "float"/"i32") or NULL if the base isn't a pool column. Shared by the indexed READ and STORE paths so a
+ * FLOAT column isn't mis-defaulted to i32 (G4/G5): the store path previously only consulted `find_value`,
+ * missing a directly-named global pool the way the read path already handled. */
+static const char *indexed_col_arche_type(CodegenContext *ctx, HirExpr *base_expr) {
+	if (!base_expr || base_expr->kind != HIR_EXPR_FIELD || !base_expr->data.field.base ||
+	    base_expr->data.field.base->kind != HIR_EXPR_NAME)
+		return NULL;
+	const char *bn = base_expr->data.field.base->data.name.name;
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, bn);
+	if (!ad) {
+		ValueInfo *iv = find_value(ctx, bn);
+		if (iv && iv->arch_name)
+			ad = find_archetype_decl(ctx, iv->arch_name);
+	}
+	if (!ad) {
+		/* `Query.col[i]` — resolve the query to its single matched pool for the column's type. */
+		const char *resolved = bn;
+		if (resolve_collective_query(ctx, bn, &resolved) == 1)
+			ad = find_archetype_decl(ctx, resolved);
+	}
+	if (!ad)
+		return NULL;
+	const char *fn = base_expr->data.field.field_name;
+	for (int i = 0; i < ad->field_count; i++)
+		if (ad->fields[i]->kind == FIELD_COLUMN && strcmp(ad->fields[i]->name, fn) == 0)
+			return field_base_type_name(ad->fields[i]->type);
+	return NULL;
+}
+
 /* Emit the matched pool's struct pointer into `base_buf` for a query-resolved collective base (the query
  * name has no value of its own): a static pool's global, or the loaded handle for a dynamic one. */
 static void emit_query_pool_ptr(CodegenContext *ctx, const char *arch_name, int is_static, char *base_buf,
@@ -4249,6 +4346,56 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
 
+		/* Tuple arithmetic: `a + b` / `a - b` / `v * s` on tuple VALUES is ELEMENT-WISE over the members,
+		 * producing a new `{T,…}` aggregate (extract each lane, combine, insert). Both sides must be tuples
+		 * of equal arity. (Tuple·scalar is not needed by the current surface — kept tuple∘tuple only.) */
+		if (expr->data.binary.op >= OP_ADD && expr->data.binary.op <= OP_DIV) {
+			const HirType *lt = codegen_tuple_type_of(ctx, expr->data.binary.left);
+			const HirType *rt = codegen_tuple_type_of(ctx, expr->data.binary.right);
+			if (lt && rt && lt->field_count == rt->field_count && lt->field_count > 0) {
+				char lb[256], rb[256], aggty[256];
+				int saved_lanes = ctx->vector_lanes;
+				ctx->vector_lanes = 0;
+				codegen_expression(ctx, expr->data.binary.left, lb);
+				codegen_expression(ctx, expr->data.binary.right, rb);
+				ctx->vector_lanes = saved_lanes;
+				tuple_llvm_type((HirType *)lt, aggty, sizeof(aggty));
+				char cur[256];
+				strcpy(cur, "undef");
+				for (int i = 0; i < lt->field_count; i++) {
+					const char *mt = llvm_type_from_arche(field_base_type_name(lt->fields[i].type));
+					int mf = (strcmp(mt, "float") == 0 || strcmp(mt, "double") == 0);
+					const char *opi;
+					switch (expr->data.binary.op) {
+					case OP_ADD:
+						opi = mf ? "fadd" : "add";
+						break;
+					case OP_SUB:
+						opi = mf ? "fsub" : "sub";
+						break;
+					case OP_MUL:
+						opi = mf ? "fmul" : "mul";
+						break;
+					default:
+						opi = mf ? "fdiv" : "sdiv";
+						break;
+					}
+					char *le = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", le, aggty, lb, i);
+					char *re = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", re, aggty, rb, i);
+					char *ce = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", ce, opi, mt, le, re);
+					char *ni = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, mt, ce, i);
+					strcpy(cur, ni);
+				}
+				strcpy(result_buf, cur);
+				expr->resolved = *lt;
+				break;
+			}
+		}
+
 		/* Logical `&&` / `||` MUST short-circuit. With failure policies an operand can abort (`_exit`) or
 		 * mutate state, so the RHS may run ONLY when the LHS doesn't already decide the result — eager
 		 * evaluation would fire a short-circuited-out `!abort`. Lower exactly like every modern compiler
@@ -4665,6 +4812,48 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	case HIR_EXPR_FIELD: {
+		/* `t.x` on a tuple VALUE (`pos(x,y)::float` used as a value): the base is a `{T,…}` aggregate SSA and
+		 * `.x` is member extraction (`extractvalue`). Handle a NAME base bound to a type-8 tuple value, or any
+		 * base whose resolved type is a tuple (e.g. a call result), before the archetype-column path below. */
+		if (expr->data.field.base) {
+			const HirType *tt = NULL;
+			if (expr->data.field.base->kind == HIR_EXPR_NAME) {
+				ValueInfo *bv = find_value(ctx, expr->data.field.base->data.name.name);
+				if (bv && bv->type == 8)
+					tt = bv->tuple_type;
+			}
+			if (!tt && expr->data.field.base->resolved.tag == HIR_TYPE_TUPLE)
+				tt = &expr->data.field.base->resolved;
+			if (tt) {
+				int idx = tuple_field_index(tt, expr->data.field.field_name);
+				if (idx >= 0) {
+					char agg[256], aggty[256];
+					codegen_expression(ctx, expr->data.field.base, agg);
+					tuple_llvm_type((HirType *)tt, aggty, sizeof(aggty));
+					char *ev = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", ev, aggty, agg, idx);
+					strcpy(result_buf, ev);
+					expr->resolved = *tt->fields[idx].type;
+					return;
+				}
+			}
+		}
+		/* `CENTER.X` on a named-vector CONSTANT (`CENTER(X,Y) :: (320,240)`): resolve to the flattened member
+		 * value const `CENTER_X`. (The tuple-group param rewrite only fires for query params, so a top-level
+		 * const used in a body reaches here unrewritten.) Emit the member const and carry its float/int type. */
+		if (expr->data.field.base && expr->data.field.base->kind == HIR_EXPR_NAME && expr->data.field.field_name) {
+			char comb[256];
+			snprintf(comb, sizeof(comb), "%s_%s", expr->data.field.base->data.name.name, expr->data.field.field_name);
+			const char *cv = semantic_get_const_value(ctx->sem_ctx, comb);
+			if (cv) {
+				HirExpr nm = {0};
+				nm.kind = HIR_EXPR_NAME;
+				nm.data.name.name = comb;
+				codegen_expression(ctx, &nm, result_buf);
+				expr->resolved.tag = (strchr(cv, '.') != NULL) ? HIR_TYPE_FLOAT : HIR_TYPE_INT;
+				return;
+			}
+		}
 		/* Inside a `reduce(op, <expr over Pool.col>)` fold, a `Pool.col` on the folded pool is a SCALAR load
 		 * at the inner fold counter, not a whole-column pointer. Enclosing self columns are bare NAMEs, so
 		 * they never reach here — they keep reading the outer row. */
@@ -5190,38 +5379,18 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		} else if (shaped_elem) {
 			arche_type = shaped_elem;
 			scalar_type = llvm_type_from_arche(shaped_elem);
-		} else if (expr->data.index.base->kind == HIR_EXPR_FIELD &&
-		           expr->data.index.base->data.field.base->kind == HIR_EXPR_NAME) {
-			/* Archetype-column read `Arch.col[i]` (e.g. a singleton `Config.center_x[0]`): take the element
-			 * type straight from the archetype field decl. Without this `scalar_type` stays the i32 default,
-			 * so a FLOAT column was loaded as i32 (`%v = i32` fed into an `fsub float` → verifier error). */
-			const char *bn = expr->data.index.base->data.field.base->data.name.name;
-			HirArchetypeDecl *ad = find_archetype_decl(ctx, bn);
-			if (!ad) {
-				ValueInfo *iv = find_value(ctx, bn);
-				if (iv && iv->arch_name)
-					ad = find_archetype_decl(ctx, iv->arch_name);
-			}
-			if (!ad) {
-				/* `Query.col[i]` — resolve the query to its single matched pool for the column's type. */
-				const char *resolved = bn;
-				if (resolve_collective_query(ctx, bn, &resolved) == 1)
-					ad = find_archetype_decl(ctx, resolved);
-			}
-			const char *fn = expr->data.index.base->data.field.field_name;
-			if (ad) {
-				for (int i = 0; i < ad->field_count; i++) {
-					if (ad->fields[i]->kind == FIELD_COLUMN && strcmp(ad->fields[i]->name, fn) == 0) {
-						arche_type = field_base_type_name(ad->fields[i]->type);
-						scalar_type = llvm_type_from_arche(arche_type);
-						break;
-					}
-				}
-			}
-			if (!arche_type && expr->resolved.tag != HIR_TYPE_UNKNOWN) {
-				arche_type = hir_resolved_type_name(expr);
-				scalar_type = llvm_type_from_arche(arche_type);
-			}
+		} else if (indexed_col_arche_type(ctx, expr->data.index.base)) {
+			/* Archetype-column read `Arch.col[i]` (a singleton `Config.center_x[0]`, or a flattened tuple
+			 * sub-column `P.pos.x`→`pos_x`): take the element type straight from the archetype field decl.
+			 * Without this `scalar_type` stays the i32 default, so a FLOAT column was loaded as i32
+			 * (`%v = i32` fed into an `fsub float` → verifier error), and a bare `P.pos.x[i]` handed to
+			 * `printf("%f", …)` was passed as i32 rather than fpext'd to double. Stamp the expr's resolved
+			 * type so those downstream type-driven paths (vararg promotion, arithmetic) agree. */
+			arche_type = indexed_col_arche_type(ctx, expr->data.index.base);
+			scalar_type = llvm_type_from_arche(arche_type);
+			if (expr->resolved.tag == HIR_TYPE_UNKNOWN &&
+			    (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0))
+				expr->resolved.tag = HIR_TYPE_FLOAT;
 		} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 			arche_type = hir_resolved_type_name(expr);
 			scalar_type = llvm_type_from_arche(arche_type);
@@ -5395,12 +5564,33 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (func_name && (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0) &&
 		    expr->data.call.arg_count == 2) {
 			int is_scan = (func_name[0] == 's');
+			HirExpr *colarg = expr->data.call.args[1];
+			/* G8 — fold an enclosing columnar `system(Q)`'s bound column: `reduce(+, v)` where `v` is a bare
+			 * name bound to that system's queried column (a type-4 whole-column pointer). The bound name IS the
+			 * archetype's column name, so redirect to the equivalent `Pool.col` field and reuse the whole-column
+			 * fold below. Without this the bare name isn't a `Pool.col` field and falls to the expression-fold,
+			 * which finds no pool to fold over and yields the bare identity. */
+			HirExpr synth_base, synth_field;
+			if (colarg->kind == HIR_EXPR_NAME) {
+				ValueInfo *cv = find_value(ctx, colarg->data.name.name);
+				if (cv && cv->type == 4 && cv->arch_name) {
+					synth_base = (HirExpr){0};
+					synth_base.kind = HIR_EXPR_NAME;
+					synth_base.data.name.name = cv->arch_name;
+					synth_field = (HirExpr){0};
+					synth_field.kind = HIR_EXPR_FIELD;
+					synth_field.data.field.base = &synth_base;
+					synth_field.data.field.field_name = colarg->data.name.name;
+					synth_field.resolved = colarg->resolved;
+					if (is_pool_col_field(ctx, &synth_field, NULL))
+						colarg = &synth_field;
+				}
+			}
 			/* `reduce(op, <expr>)` where the 2nd arg is not a bare `Pool.col` column is the neighbor-reduction
 			 * / self-join: fold a per-pool-row expression to a scalar (CPU). A plain column keeps the existing
 			 * whole-column (SIMD) path below. */
-			if (!is_scan && !is_pool_col_field(ctx, expr->data.call.args[1], NULL)) {
-				emit_fold_expr(ctx, expr->data.call.args[1], collective_op_text(expr->data.call.args[0]),
-				               result_buf);
+			if (!is_scan && !is_pool_col_field(ctx, colarg, NULL)) {
+				emit_fold_expr(ctx, colarg, collective_op_text(expr->data.call.args[0]), result_buf);
 				break;
 			}
 			ParOp pop = {0};
@@ -5411,7 +5601,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			 * not faster than the single-thread SIMD reduce (the win needs compute-bound/fused kernels).
 			 * A per-op `@cores`/`@gpu` surface is the eventual replacement for this toggle. */
 			pop.target = (!is_scan && getenv("ARCHE_REDUCE_CORES")) ? SCHED_CORES : SCHED_AUTO;
-			pop.col = expr->data.call.args[1];
+			pop.col = colarg;
 			pop.monoid.op = collective_op_text(expr->data.call.args[0]);
 			pop.monoid.associative = pop.monoid.commutative = 1;
 			const Backend *be = select_backend(pop.target);
@@ -5950,6 +6140,40 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			int callee_wants_slice = callee_pt && callee_pt->tag == HIR_TYPE_ARRAY && !callee_is_extern;
 			if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
 				callee_wants_shaped_arr = 1;
+
+			/* A tuple-typed param (`func(a: pos)`): pass a `{T,…}` aggregate by value. If the arg is already a
+			 * tuple VALUE (a name/literal/call result), `arg_bufs[i]` is the aggregate SSA. If it is a tuple
+			 * GROUP COLUMN name (`pos`, flattened to `pos_x`/`pos_y` and never bound as one value), pack the
+			 * per-member column reads at the current row into the aggregate here. */
+			if (callee_pt && callee_pt->tag == HIR_TYPE_TUPLE) {
+				char aggty[256];
+				tuple_llvm_type(callee_pt, aggty, sizeof(aggty));
+				call_arg_types[i] = cg_strdup(aggty);
+				if (codegen_tuple_type_of(ctx, expr->data.call.args[i])) {
+					strcpy(call_arg_vals[i], arg_bufs[i]); /* arg already a tuple aggregate */
+				} else if (expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
+					const char *gname = expr->data.call.args[i]->data.name.name;
+					char cur[256];
+					strcpy(cur, "undef");
+					for (int f = 0; f < callee_pt->field_count; f++) {
+						char sub[160];
+						snprintf(sub, sizeof(sub), "%s_%s", gname, callee_pt->fields[f].name);
+						HirExpr nm = {0};
+						nm.kind = HIR_EXPR_NAME;
+						nm.data.name.name = sub;
+						char sb[256];
+						codegen_expression(ctx, &nm, sb);
+						const char *mt = llvm_type_from_arche(field_base_type_name(callee_pt->fields[f].type));
+						char *ni = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, mt, sb, f);
+						strcpy(cur, ni);
+					}
+					strcpy(call_arg_vals[i], cur);
+				} else {
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+				}
+				continue;
+			}
 
 			/* An ARRAY column (`[N]T`) passed to a callee param: `arg_bufs[i]` already holds the row's
 			 * element pointer (the auto-indexed array-column read). A non-extern `T[]` param is a (ptr,len)
@@ -7064,7 +7288,8 @@ static void emit_column_assign_body(CodegenContext *ctx, const char *col_ptr, co
 	if (op != OP_NONE) {
 		char *loaded = gen_value_name(ctx);
 		char *gep = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, scalar_type, scalar_type, col_ptr, idx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, scalar_type, scalar_type, col_ptr,
+		                  idx);
 		const char *load_type = vec ? elem_llvm_type(ctx, arche_type) : scalar_type;
 		const char *load_src = gep;
 		if (vec) {
@@ -7072,7 +7297,8 @@ static void emit_column_assign_body(CodegenContext *ctx, const char *col_ptr, co
 			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, gep, load_type);
 			load_src = vec_ptr;
 		}
-		buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, load_type, load_src, vec ? 8 : 4);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, load_type, load_src,
+		                  vec ? 8 : 4);
 		const char *op_str;
 		switch (op) {
 		case OP_ADD:
@@ -7119,7 +7345,8 @@ static void emit_column_assign_body(CodegenContext *ctx, const char *col_ptr, co
 		buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, target_gep, vec_type);
 		buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 8\n", vec_type, compute_result, vec_type, vec_ptr);
 	} else {
-		buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 4\n", scalar_type, compute_result, scalar_type, target_gep);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 4\n", scalar_type, compute_result, scalar_type,
+		                  target_gep);
 	}
 }
 
@@ -7792,6 +8019,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 	case HIR_STMT_BIND: {
 		const char *var_name = stmt->data.bind_stmt.names[0];
 		char value_buf[256];
+
+		/* `s := <tuple-valued expr>` — bind `s` as a type-8 `{T,…}` aggregate SSA (not an alloca'd scalar), so a
+		 * later `s.x` extracts the member. Covers a call returning a tuple, a tuple literal, or tuple arithmetic. */
+		if (stmt->data.bind_stmt.value) {
+			const HirType *btt = codegen_tuple_type_of(ctx, stmt->data.bind_stmt.value);
+			if (btt) {
+				codegen_expression(ctx, stmt->data.bind_stmt.value, value_buf);
+				add_tuple_value(ctx, var_name, value_buf, btt);
+				break;
+			}
+		}
 
 		/* `e := B{…}` — an entity binding is virtual (no runtime value); record name→entity so a later
 		 * `insert(e)` resolves to the same literal. Emit no code. */
@@ -9917,26 +10155,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			if (base_expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				arche_type = hir_resolved_type_name(base_expr);
 				scalar_type = llvm_type_from_arche(arche_type);
-			} else if (base_expr->kind == HIR_EXPR_FIELD) {
-				/* Fallback: lookup field type from archetype */
-				const char *field_name = base_expr->data.field.field_name;
-				ValueInfo *base_val = NULL;
-
-				if (base_expr->data.field.base->kind == HIR_EXPR_NAME) {
-					base_val = find_value(ctx, base_expr->data.field.base->data.name.name);
-				}
-
-				if (base_val && base_val->type == 3 && base_val->arch_name) {
-					HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
-					if (arch) {
-						for (int i = 0; i < arch->field_count; i++) {
-							if (strcmp(arch->fields[i]->name, field_name) == 0) {
-								arche_type = field_base_type_name(arch->fields[i]->type);
-								scalar_type = llvm_type_from_arche(arche_type);
-								break;
-							}
-						}
-					}
+			} else {
+				/* Fallback: resolve the pool-column element type (incl. a flattened tuple sub-column
+				 * `P.pos.x`→`pos_x`). Shared with the read path so a FLOAT column isn't defaulted to i32. */
+				const char *at = indexed_col_arche_type(ctx, base_expr);
+				if (at) {
+					arche_type = at;
+					scalar_type = llvm_type_from_arche(at);
 				}
 			}
 
@@ -10316,9 +10541,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			if (ok && !cg_placement_decide(ctx, map, get_arch_static_capacity(ctx, an)))
 				ok = 0;
 			if (getenv("ARCHE_PLACE_DEBUG"))
-				fprintf(stderr, "PLACE %s: fpe=%.0f rows=%d force=%d -> %s\n", map->name,
-				        cg_kernel_flops_per_elem(map), get_arch_static_capacity(ctx, an), map->is_gpu,
-				        ok ? "GPU" : "CPU");
+				fprintf(stderr, "PLACE %s: fpe=%.0f rows=%d force=%d -> %s\n", map->name, cg_kernel_flops_per_elem(map),
+				        get_arch_static_capacity(ctx, an), map->is_gpu, ok ? "GPU" : "CPU");
 			if (ok) {
 				/* The placer chose GPU for this eligible map. Record it on the live decl so the shader-EMBED
 				 * pass (arche_gpu_embed → gpu_glsl_mark_runs, which runs AFTER codegen in compile.c) emits the
@@ -10367,9 +10591,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				free(nameg);
 				char *rc = gen_value_name(ctx);
 				int resident = cg_arch_is_resident(ctx, an); /* `@resident` pool → keep buffers on-device */
-				buffer_append_fmt(ctx,
-				                  "  %s = call i32 @arche_gpu_dispatch(i8* %s, i32 %d, i8** %s, i32 4, i32 %s, i32 %d)\n",
-				                  rc, namep, ncol, cols0, cnt32, resident);
+				buffer_append_fmt(
+				    ctx, "  %s = call i32 @arche_gpu_dispatch(i8* %s, i32 %d, i8** %s, i32 4, i32 %s, i32 %d)\n", rc,
+				    namep, ncol, cols0, cnt32, resident);
 				char *need_cpu = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", need_cpu, rc); /* nonzero → run CPU path */
 				char *cpu_lbl = gen_value_name(ctx);
@@ -11505,7 +11729,11 @@ static void emit_func_params(CodegenContext *ctx, HirFuncDecl *func) {
 		HirType *param_type = func->params[i]->type;
 		const char *type_name = field_base_type_name(param_type);
 		const char *llvm_type = llvm_type_from_arche(type_name);
-		if (param_type && param_type->tag == HIR_TYPE_ARRAY && !func->is_extern)
+		if (param_type && param_type->tag == HIR_TYPE_TUPLE) {
+			char tb[256];
+			tuple_llvm_type(param_type, tb, sizeof(tb));
+			buffer_append_fmt(ctx, "%s %%arg%d", tb, i); /* tuple passed by value as the {T,…} aggregate */
+		} else if (param_type && param_type->tag == HIR_TYPE_ARRAY && !func->is_extern)
 			buffer_append_fmt(ctx, "%s* %%arg%d.ptr, i64 %%arg%d.len", llvm_type, i, i);
 		else if (param_type && param_type->tag == HIR_TYPE_ARRAY)
 			buffer_append_fmt(ctx, "%s* %%arg%d", llvm_type, i);
@@ -11640,6 +11868,8 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 			vi->bit_width = strcmp(elt, "double") == 0 ? 64 : (strcmp(elt, "i8") == 0 ? 8 : 32);
 			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 			scope->values[scope->value_count++] = vi;
+		} else if (ptype && ptype->tag == HIR_TYPE_TUPLE) {
+			add_tuple_value(ctx, func->params[i]->name, param_name, ptype); /* {T,…} aggregate by value */
 		} else {
 			add_value(ctx, func->params[i]->name, param_name, 0);
 		}
@@ -12443,8 +12673,7 @@ static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
 		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
 		/* A `system` and an effectful per-entity fan (`map (Q) eff`) are invoked as no-arg functions; a pure
 		 * `map` runs via HIR_STMT_RUN (whole-column / GPU-dispatchable). */
-		if (d && d->kind == HIR_DECL_KERNEL &&
-		    (d->data.kernel->kind == HIR_KERNEL_SYSTEM || d->data.kernel->eff)) {
+		if (d && d->kind == HIR_DECL_KERNEL && (d->data.kernel->kind == HIR_KERNEL_SYSTEM || d->data.kernel->eff)) {
 			char sym[512];
 			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.kernel->name, 0, sym, sizeof(sym)));
 		} else {
@@ -12554,8 +12783,8 @@ static void cg_fp_expr(CodegenContext *ctx, HirExpr *e, int write_ctx, CgFootpri
 		return;
 	switch (e->kind) {
 	case HIR_EXPR_FIELD:
-		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
-		    e->data.field.base->data.name.name && find_archetype_decl(ctx, e->data.field.base->data.name.name)) {
+		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME && e->data.field.base->data.name.name &&
+		    find_archetype_decl(ctx, e->data.field.base->data.name.name)) {
 			cg_fp_add(fp, canonical_arch_name(ctx, e->data.field.base->data.name.name),
 			          /*write*/ write_ctx >= 1, /*read*/ write_ctx != 2);
 			return; /* the base names the pool; nothing deeper to walk */
@@ -13172,8 +13401,7 @@ static void cg_joint_collect_host_pools(CodegenContext *ctx, ScheduleTree *t, co
 /* Walk a SEQ/PAR's children in order, forming clusters. A run of eligible maps over one pool extends the
  * cluster; anything else (a system, a CPU map, an eligible map over a DIFFERENT pool, a control-flow node)
  * closes it — that is exactly a cut edge (a host access or a device switch). */
-static void cg_joint_walk_seq(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools,
-                              int n_host) {
+static void cg_joint_walk_seq(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools, int n_host) {
 	CgCluster cl = {0};
 	for (int i = 0; i < t->child_count; i++) {
 		ScheduleTree *ch = t->children[i];
@@ -13740,10 +13968,10 @@ int codegen_load_machine_profile(const char *cache_dir, MachineProfile *out) {
 	if (!f)
 		return 0;
 	MachineProfile p;
-	int n = fscanf(f, "gpu_present %d gpu_launch_us %lf pcie_up_gbps %lf pcie_down_gbps %lf cpu_gflops %lf "
-	                  "gpu_gflops %lf",
-	               &p.gpu_present, &p.gpu_launch_us, &p.pcie_up_gbps, &p.pcie_down_gbps, &p.cpu_gflops,
-	               &p.gpu_gflops);
+	int n = fscanf(f,
+	               "gpu_present %d gpu_launch_us %lf pcie_up_gbps %lf pcie_down_gbps %lf cpu_gflops %lf "
+	               "gpu_gflops %lf",
+	               &p.gpu_present, &p.gpu_launch_us, &p.pcie_up_gbps, &p.pcie_down_gbps, &p.cpu_gflops, &p.gpu_gflops);
 	if (n != 6) {
 		fclose(f);
 		return 0;

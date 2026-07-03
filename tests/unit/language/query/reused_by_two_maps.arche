@@ -8,11 +8,11 @@ P   :: arche { pos, vel }
 
 Movers :: query { pos, vel }
 
-integrate :: map (Movers) (pos) {
+integrate :: map (Movers)(pos) {
   pos = pos + vel;
 }
 
-damp :: map (Movers) (vel) {
+damp :: map (Movers)(vel) {
   vel = vel * 0.5;
 }
 

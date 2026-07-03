@@ -471,6 +471,11 @@ static int parse_tuple_name_group(Parser *parser) {
 		error(parser, "Expected `::` and a shared type after tuple name group `(a, b) :: T`");
 		return 0;
 	}
+	/* The RHS after `::` is EITHER a shared type (`pos (x, y) :: float` — a column-group shape) OR a VALUE
+	 * (`CENTER (X, Y) :: (320.0, 240.0)` — a named-vector constant). A value starts with `(`, a number, a
+	 * string, or a unary `-`; anything else is a type name. */
+	if (check(parser, TOK_LPAREN) || check(parser, TOK_NUMBER) || check(parser, TOK_STRING) || check(parser, TOK_MINUS))
+		return parse_expression(parser);
 	if (!parse_type(parser))
 		return 0;
 	return 1;
@@ -1614,8 +1619,11 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected a query in `map(...)` — a name `map(Movers)` or a literal `map(query {…})`");
 			return 0;
 		}
-		/* optional `as w` row-binder (only the effectful per-entity fan binds a row handle). */
-		int map_has_bind = parse_opt_row_bind(parser);
+		/* optional `as` row-binder. On the effectful fan (`… eff`) it binds the matched row's delete-handle
+		 * `w` for `delete(w)`; on a PURE map it binds a column self-binder `me` — `me.<col>` is THIS element's
+		 * bound column value (an rvalue + assignable lvalue), used to disambiguate self from an enclosing
+		 * system's same-named column. Binding self is not an effect, so the pure form needs no `eff`. */
+		parse_opt_row_bind(parser);
 		if (check(parser, TOK_COMMA)) {
 			error(parser, "maps don't support joins — a map runs over ONE query; to combine pools, nest a "
 			              "`map (…) eff` inside another (cross-pool work is explicit nesting, not a join)");
@@ -1632,10 +1640,6 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		 * `map` stays the pure branch-free column transform (SN_MAP_EXPR, E0046-restricted). */
 		if (parse_opt_eff(parser)) {
 			*out_kind = SN_EACH_EXPR;
-		} else if (map_has_bind) {
-			error(parser, "the `as` row-binder requires the `eff` permission — it binds a handle for effectful "
-			              "row ops (`delete(w)`): write `map (query {…} as w) eff { … }`");
-			return 0;
 		}
 		return parse_block_body(parser);
 	}
@@ -1917,12 +1921,22 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 
 	if (match(parser, TOK_LPAREN)) {
-		parse_expression(parser);
-		match(parser, TOK_COMMA); /* tolerate a trailing comma — trailing commas are valid in every list */
+		/* `(a, b, …)` with >1 element is a tuple VALUE literal (`SN_TUPLE_LIT`) — a real 2-vector value
+		 * `(320.0, 240.0)`; `(e)` (or `(e,)`) is just a grouped expression. Mirrors the entity-field path. */
+		int nelem = 0;
+		if (!check(parser, TOK_RPAREN)) {
+			do {
+				if (check(parser, TOK_RPAREN)) /* trailing comma */
+					break;
+				if (!parse_expression(parser))
+					return 0;
+				nelem++;
+			} while (match(parser, TOK_COMMA));
+		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after expression");
 		}
-		syntax_wrap(parser, prim_start, SN_PAREN_EXPR);
+		syntax_wrap(parser, prim_start, nelem > 1 ? SN_TUPLE_LIT : SN_PAREN_EXPR);
 		return 1;
 	}
 

@@ -9,16 +9,21 @@ P :: arche { x }
 
 @gpu
 
-sign :: map (query { x }) (x) {
+sign :: map (query { x })(x) {
   if (x > 0.0) {
     x = 1.0;
-  } else {
+  }
+  else {
     x = 0.0;
   }
 }
 
-seed :: system { P.x = { 5.0, -2.0, 7.0, -1.0 }; }
+seed :: system {
+  P.x = { 5.0, -2.0, 7.0, -1.0 };
+}
 
-verify :: system eff { fmt.printf("x=%.0f %.0f %.0f %.0f\n", P.x[0], P.x[1], P.x[2], P.x[3]); }
+verify :: system eff {
+  fmt.printf("x=%.0f %.0f %.0f %.0f\n", P.x[0], P.x[1], P.x[2], P.x[3]);
+}
 
 #run seq({ seed, sign, verify })

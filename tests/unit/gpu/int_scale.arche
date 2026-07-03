@@ -14,11 +14,13 @@ P :: arche { v }
 [4]P(4);
 
 @gpu
-grind :: map (query { v }) (v) {
+grind :: map (query { v })(v) {
   v = (v * K + 7) / 2;
 }
 
-seed :: system { P.v = { 10, 10, 10, 10 }; }
+seed :: system {
+  P.v = { 10, 10, 10, 10 };
+}
 
 verify :: system eff {
   fmt.printf("v0=%d v3=%d\n", P.v[0], P.v[3]);

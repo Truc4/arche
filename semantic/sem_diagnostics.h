@@ -180,22 +180,22 @@ typedef enum {
 	SEM_DIAG_run_targets_query, /* `run X` where X is a query, not a map */
 
 	/* Entities (`insert(Name{…})`) — E0217+ */
-	SEM_DIAG_entity_missing_column, /* an entity literal omits a required column */
-	SEM_DIAG_entity_unknown_column, /* an entity literal names a field that is not a column */
-	SEM_DIAG_entity_unknown_type,   /* `Name{…}` where Name is neither an archetype nor a query */
-	SEM_DIAG_positional_insert,     /* legacy positional `insert(Pool, v0, …)` — use an entity literal */
-	SEM_DIAG_proc_under_applied,    /* under-applying a (non-extern) proc to "build an Eff" — only an extern
-	                                   is inert under-applied; a proc minus its out-slots is a suspended
-	                                   computation, not a value. E0221. */
-	SEM_DIAG_eff_extern_not_static, /* an Eff at a run site whose extern is not statically one extern (a
-	                                   runtime `?:`/`match` selecting different externs) — no fn-pointer. E0222. */
-	SEM_DIAG_main_reserved,         /* a user decl named `main` — the program entry is `#run`, not `main`;
-	                                   `main` carries no special meaning and is reserved. E0225. */
-	SEM_DIAG_effect_without_eff,    /* a `map`/`system` runs an effect (insert/delete, extern/proc call, an
-	                                   Eff run) without the `eff` permission — kernels are pure by default;
-	                                   declare `eff` (or `map (Q) eff`) to run effects. E0226. */
-	SEM_DIAG_write_set_mismatch,    /* a kernel writes a bound selector column not covered by its `(writes)`
-	                                   permission list (or omits the list entirely). E0227. */
+	SEM_DIAG_entity_missing_column,     /* an entity literal omits a required column */
+	SEM_DIAG_entity_unknown_column,     /* an entity literal names a field that is not a column */
+	SEM_DIAG_entity_unknown_type,       /* `Name{…}` where Name is neither an archetype nor a query */
+	SEM_DIAG_positional_insert,         /* legacy positional `insert(Pool, v0, …)` — use an entity literal */
+	SEM_DIAG_proc_under_applied,        /* under-applying a (non-extern) proc to "build an Eff" — only an extern
+	                                       is inert under-applied; a proc minus its out-slots is a suspended
+	                                       computation, not a value. E0221. */
+	SEM_DIAG_eff_extern_not_static,     /* an Eff at a run site whose extern is not statically one extern (a
+	                                       runtime `?:`/`match` selecting different externs) — no fn-pointer. E0222. */
+	SEM_DIAG_main_reserved,             /* a user decl named `main` — the program entry is `#run`, not `main`;
+	                                       `main` carries no special meaning and is reserved. E0225. */
+	SEM_DIAG_effect_without_eff,        /* a `map`/`system` runs an effect (insert/delete, extern/proc call, an
+	                                       Eff run) without the `eff` permission — kernels are pure by default;
+	                                       declare `eff` (or `map (Q) eff`) to run effects. E0226. */
+	SEM_DIAG_write_set_mismatch,        /* a kernel writes a bound selector column not covered by its `(writes)`
+	                                       permission list (or omits the list entirely). E0227. */
 	SEM_DIAG_indexed_write_in_selector, /* an indexed pool-column write `Pool.col[i] = …` inside a selector
 	                                   kernel — write the bound bare column instead. E0228. */
 

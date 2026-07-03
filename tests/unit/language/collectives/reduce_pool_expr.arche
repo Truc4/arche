@@ -7,7 +7,7 @@
 px  :: float;
 py  :: float;
 cnt :: float;
-B :: arche { px, py, cnt }
+B   :: arche { px, py, cnt }
 [4]B(4);
 
 near :: func(ax: float, ay: float, bx: float, by: float) -> float {
@@ -21,7 +21,7 @@ seed :: system {
   B.py = { 0.0, 0.0, 0.0, 0.0 };
 }
 
-count :: system (query { px, py, cnt }) (cnt) eff {
+count :: system (query { px, py, cnt })(cnt) eff {
   cnt = reduce(+, near(px, py, B.px, B.py));
 }
 

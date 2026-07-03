@@ -1071,7 +1071,7 @@ static void mark_last_const(SemanticContext *ctx) {
 
 static void analyze_expression(SemanticContext *ctx, SyntaxView v);
 static void analyze_statement(SemanticContext *ctx, SyntaxView v);
-static void analyze_inline_each(SemanticContext *ctx, SyntaxView f);
+static void analyze_inline_fan(SemanticContext *ctx, SyntaxView f, int is_map);
 static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name);
 static ParamSummary sem_param_summary_node(SyntaxView p);
 static int proc_param_is_inout(DeclSummary *proc, int param_idx);
@@ -1548,6 +1548,14 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 						}
 					if (is_query)
 						goto done;
+					/* A named-vector CONSTANT base (`CENTER.X` where `CENTER(X,Y) :: (…)`): the tuple-group
+					 * const flattens to per-member value consts, and `CENTER.X` desugars to `CENTER_X` in
+					 * lowering. Accept the base here (codegen reads the flattened const). */
+					for (int ci = 0; ci < ctx->decl_count; ci++)
+						if (ctx->decls[ci] && ctx->decls[ci]->kind == DECL_CONST && ctx->decls[ci]->name &&
+						    strcmp(ctx->decls[ci]->name, idnt) == 0 &&
+						    tyid_kind(ctx->ty_arena, ctx->decls[ci]->const_type_value_id) == TYK_TUPLE)
+							goto done;
 				}
 				sem_emit_undefined_field_base(ctx, field_loc, idnt);
 				goto done;
@@ -3446,7 +3454,13 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				break;
 			}
 		if (sv_present(raw) && sv_kind(raw) == SN_EACH_EXPR) {
-			analyze_inline_each(ctx, raw);
+			analyze_inline_fan(ctx, raw, 0);
+			break;
+		}
+		/* A nested PURE `map (Q) { … }` in statement position is the honest self-join's inner scalar kernel
+		 * (G7): analyze it as an inline map fan (in_map + `as me` self-binder). */
+		if (sv_present(raw) && sv_kind(raw) == SN_MAP_EXPR) {
+			analyze_inline_fan(ctx, raw, 1);
 			break;
 		}
 		ctx->stmt_call_ok = 1;
@@ -4918,8 +4932,7 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *
 		free(tn);
 		if (rr)
 			return rr;
-	} else if (!kernel_mode &&
-	           (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR)) {
+	} else if (!kernel_mode && (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR)) {
 		/* Reading static memory is impure for a FUNC; a kernel reads its columns/singletons freely. */
 		char *nm = sv_resolved_name(ctx, v);
 		const char *rr = NULL;
@@ -6745,8 +6758,8 @@ static void kernel_writes_begin(SemanticContext *ctx, int *sv_collect, char ***s
  * `knode`); emit E0227 if any actual bound-column write is undeclared (or the list is absent). Over-declaring
  * is permitted (forward-compatible; avoids false positives on any write form the collector misses). Then free
  * this kernel's collector and restore the parent's. */
-static void kernel_writes_end(SemanticContext *ctx, SyntaxView knode, const char *kind, const char *name,
-                              SourceLoc loc, int sv_collect, char **sv_w, int sv_n) {
+static void kernel_writes_end(SemanticContext *ctx, SyntaxView knode, const char *kind, const char *name, SourceLoc loc,
+                              int sv_collect, char **sv_w, int sv_n) {
 	int nd = sv_count(knode, SN_WRITE_PARAM);
 	int missing = 0;
 	for (int i = 0; i < ctx->k_write_count && !missing; i++) {
@@ -6856,11 +6869,13 @@ static void analyze_each_decl(SemanticContext *ctx, DeclSummary *each) {
 	ctx->current_proc = prev_proc;
 }
 
-/* Analyze an anonymous inline `each(Q) { … }` appearing as a statement (HIR_STMT_EACH). `f` is the
- * SN_EACH_EXPR view: its body statements are its direct children (sem_stmt_*); its columns come from its
- * child SN_QUERY_EXPR(s). Bind the columns as per-element scalars in a fresh scope nested inside the
- * enclosing one (so the body sees both its columns AND the enclosing locals), then analyze the body. */
-static void analyze_inline_each(SemanticContext *ctx, SyntaxView f) {
+/* Analyze an anonymous inline fan appearing as a statement (HIR_STMT_EACH). `f` is the SN_EACH_EXPR (effectful
+ * fan) or SN_MAP_EXPR (pure fan, `is_map`) view: its body statements are its direct children (sem_stmt_*); its
+ * columns come from its child SN_QUERY_EXPR(s). Bind the columns as per-element scalars in a fresh scope nested
+ * inside the enclosing one (so the body sees both its columns AND the enclosing locals), then analyze the body.
+ * When `is_map` (a nested pure `map`, the honest self-join's inner scalar kernel — G7): set `in_map` so the
+ * transform-only rule applies, and register the `as me` column self-binder (see analyze_map_decl). */
+static void analyze_inline_fan(SemanticContext *ctx, SyntaxView f, int is_map) {
 	DeclSummary ds = {0};
 	ds.kind = DECL_EACH;
 	int nq = sv_count(f, SN_QUERY_EXPR);
@@ -6877,6 +6892,14 @@ static void analyze_inline_each(SemanticContext *ctx, SyntaxView f) {
 	push_scope(ctx);
 	const char *old_arch = ctx->current_map_archetype;
 	ctx->current_map_archetype = bind_query_archetype(ctx, &ds);
+	SyntaxView selfbind = sv_child_at(f, SN_QUERY_BIND, 0);
+	if (is_map && sv_present(selfbind) && ctx->current_map_archetype) {
+		char *self = sem_own_str(ctx, sem_txt_dup(sv_token(selfbind, TOK_IDENT)));
+		add_variable_with_archetype(ctx, self, TYID_UNKNOWN, ctx->current_map_archetype);
+	}
+	int prev_in_map = ctx->in_map;
+	if (is_map)
+		ctx->in_map = 1;
 	int sv_collect, sv_n;
 	char **sv_w;
 	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
@@ -6886,6 +6909,7 @@ static void analyze_inline_each(SemanticContext *ctx, SyntaxView f) {
 		analyze_statement(ctx, sem_stmt_at(f, i));
 	ctx->in_body = old_in_body;
 	kernel_writes_end(ctx, f, "map", NULL, sem_node_loc(f.node), sv_collect, sv_w, sv_n);
+	ctx->in_map = prev_in_map;
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
 	free(ds.params);
@@ -6898,6 +6922,15 @@ static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
 	const char *map_archetype = bind_query_archetype(ctx, map);
 	const char *old_map_archetype = ctx->current_map_archetype;
 	ctx->current_map_archetype = map_archetype;
+	/* `map (query {…} as me)`: the pure-map column self-binder. `me.<col>` is THIS element's bound column —
+	 * register `me` with the map's archetype so `me.col` resolves like a bare column access (lowering then
+	 * collapses `me.col`→`col`). Binding self is not an effect, so no `eff` is required (unlike the eff fan's
+	 * delete-handle `as w`, handled in analyze_each_decl). */
+	SyntaxView selfbind = sv_child_at(map->body_node, SN_QUERY_BIND, 0);
+	if (sv_present(selfbind) && map_archetype) {
+		char *self = sem_own_str(ctx, sem_txt_dup(sv_token(selfbind, TOK_IDENT)));
+		add_variable_with_archetype(ctx, self, TYID_UNKNOWN, map_archetype);
+	}
 	int prev_in_map = ctx->in_map;
 	/* `map` is the pure per-element kernel: E0046 (transform-only) active. The effectful per-entity fan is
 	 * `map (Q) eff`, which parses to SN_EACH_EXPR (analyze_each_decl), so it never reaches here. */
@@ -9263,6 +9296,11 @@ static void analyze_program_core(SemanticContext *ctx) {
 				continue;
 			}
 			if (tvk == TYK_TUPLE) {
+				/* A named-vector CONSTANT (`CENTER(X,Y) :: (320,240)`) carries a tuple VALUE: register each
+				 * flattened member as a VALUE const (`CENTER_X = 320`), so `CENTER.X` (rewritten to `CENTER_X`
+				 * by the tuple-group desugar) resolves to its value. A tuple TYPE group (`pos(x,y) :: float`)
+				 * instead registers per-member type aliases (the column-flattening path). */
+				int is_value_form = sv_present(c->const_value) && sv_kind(c->const_value) == SN_TUPLE_LIT;
 				for (int f = 0; f < tyid_tuple_count(ctx->ty_arena, tv); f++) {
 					TypeId ft = tyid_tuple_field_type(ctx->ty_arena, tv, f);
 					const char *fbacking = sem_tyid_name(ctx, ft);
@@ -9274,7 +9312,15 @@ static void analyze_program_core(SemanticContext *ctx) {
 					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
 					char *aname = malloc(L);
 					snprintf(aname, L, "%s_%s", c->name, fn);
-					register_type_alias(ctx, aname, fbacking, cloc, dsheet); /* aname leaks like the old path */
+					if (is_value_form) {
+						SyntaxView ev = sem_node_at_expr(c->const_value, f);
+						/* the lexeme leaks like `aname` — register_value_const retains the pointer (it does not
+						 * copy a plain float/int lexeme), so freeing it here would dangle the stored value. */
+						char *lex = sv_present(ev) ? sem_cv_dup(ev) : NULL;
+						register_value_const(ctx, aname, lex ? lex : "0", fbacking, cloc);
+					} else {
+						register_type_alias(ctx, aname, fbacking, cloc, dsheet); /* aname leaks like the old path */
+					}
 				}
 			} else {
 				const char *backing = sem_tyid_name(ctx, tv);
@@ -9995,10 +10041,23 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 		return ds;
 	}
 	if (!decorated && sv_has_token(dv, TOK_LPAREN)) {
-		/* tuple group: type_value = a tuple of the parenthesized suffix names, each typed by the shared
-		 * type after `::`. */
+		/* tuple group: type_value = a tuple of the parenthesized suffix names. EITHER a shape `pos(x,y) :: T`
+		 * (a shared type), OR a named-vector CONSTANT `CENTER(X, Y) :: (320.0, 240.0)` — a tuple VALUE. In the
+		 * value form the member type is inferred from the first element and the value is recorded so the const
+		 * pass can register the flattened per-field value consts (`CENTER_X`, `CENTER_Y`). */
+		SyntaxView tupval = sem_node_at_expr(dv, 0); /* an SN_TUPLE_LIT value RHS, if present */
+		int is_value_form = sv_present(tupval) && sv_kind(tupval) == SN_TUPLE_LIT;
 		SyntaxView memberty = sem_type_at(dv, 0);
-		TypeId shared_id = sv_present(memberty) ? sem_intern_view(ctx, memberty) : TYID_UNKNOWN;
+		TypeId shared_id;
+		if (is_value_form) {
+			SyntaxView e0 = sem_node_at_expr(tupval, 0);
+			shared_id = sv_present(e0) ? sem_literal_type_id(ctx, e0) : tyid_of_prim(ctx->ty_arena, PRIM_INT);
+			ds->const_value = tupval;
+			ds->const_value_kind = sem_expr_kind_of(sv_kind(tupval));
+			ds->const_value_loc = sem_node_loc(tupval.node);
+		} else {
+			shared_id = sv_present(memberty) ? sem_intern_view(ctx, memberty) : TYID_UNKNOWN;
+		}
 		int in_paren = 0, n = 0;
 		for (int i = 0; i < dv.node->child_count; i++)
 			if (dv.node->children[i].tag == SE_TOKEN) {
@@ -10516,28 +10575,45 @@ static void free_decl_summary(DeclSummary *ds); /* fwd */
  * bare name matching a top-level tuple-group const (a `name :: (x,y:T)` whose const_type_value is a
  * TYPE_TUPLE), replace the field type with a pooled copy of that tuple (so the column flattens to
  * `field_<member>`). Runs after the table is built + renamed. */
-static void sem_maybe_expand_tuple(SemanticContext *ctx, FieldSummary *fd) {
-	/* The field's interned type is a bare nominal naming a tuple-group const → become that tuple.
-	 * Runs AFTER sem_fill_decl_type_ids, so fd->type_id and the const's tuple id are both populated. */
-	const char *ref = tyid_nominal_name(ctx->ty_arena, fd->type_id);
+/* If `tid` is a bare nominal naming a top-level tuple-group const (`pos(x,y) :: T`), return that const's
+ * TYK_TUPLE type; else return `tid` unchanged. This is what lets a group name be used as a VALUE type — an
+ * archetype-field column shape, a func/proc param/return, a local — instead of a bare nominal with no fields.
+ * Runs AFTER sem_fill_decl_type_ids, so both `tid` and the const's tuple id are populated. */
+static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid) {
+	const char *ref = tyid_nominal_name(ctx->ty_arena, tid);
 	if (!ref)
-		return;
+		return tid;
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *c = ctx->decls[i];
-		if (c->kind != DECL_CONST || !c->name || tyid_kind(ctx->ty_arena, c->const_type_value_id) != TYK_TUPLE)
-			continue;
-		if (strcmp(c->name, ref) != 0)
-			continue;
-		fd->type_id = c->const_type_value_id;
-		return;
+		if (c && c->kind == DECL_CONST && c->name && strcmp(c->name, ref) == 0 &&
+		    tyid_kind(ctx->ty_arena, c->const_type_value_id) == TYK_TUPLE)
+			return c->const_type_value_id;
 	}
+	return tid;
+}
+
+static void sem_maybe_expand_tuple(SemanticContext *ctx, FieldSummary *fd) {
+	fd->type_id = sem_expand_tuple_nominal(ctx, fd->type_id);
 }
 
 static void sem_expand_tuple_groups_table(SemanticContext *ctx) {
-	for (int a = 0; a < ctx->decl_count; a++)
-		if (ctx->decls[a] && ctx->decls[a]->kind == DECL_ARCHETYPE)
-			for (int f = 0; f < ctx->decls[a]->field_count; f++)
-				sem_maybe_expand_tuple(ctx, &ctx->decls[a]->fields[f]);
+	for (int a = 0; a < ctx->decl_count; a++) {
+		DeclSummary *ds = ctx->decls[a];
+		if (!ds)
+			continue;
+		if (ds->kind == DECL_ARCHETYPE)
+			for (int f = 0; f < ds->field_count; f++)
+				sem_maybe_expand_tuple(ctx, &ds->fields[f]);
+		/* A func/proc using a tuple group as a VALUE type (`func(a: pos) -> pos`): expand its param, out-param,
+		 * and return TypeIds too, so `a.x`/`a.y` resolve and the tuple flows through the signature. */
+		for (int p = 0; p < ds->param_count; p++)
+			ds->params[p].type_id = sem_expand_tuple_nominal(ctx, ds->params[p].type_id);
+		for (int p = 0; p < ds->out_param_count; p++)
+			ds->out_params[p].type_id = sem_expand_tuple_nominal(ctx, ds->out_params[p].type_id);
+		for (int r = 0; r < ds->return_type_count; r++)
+			if (ds->return_type_ids)
+				ds->return_type_ids[r] = sem_expand_tuple_nominal(ctx, ds->return_type_ids[r]);
+	}
 }
 
 /* Channel recording for ONE tree node: resolve its leftmost name (a

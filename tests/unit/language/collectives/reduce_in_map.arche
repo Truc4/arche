@@ -6,13 +6,17 @@
 B :: arche { px :: float, out :: float }
 [3]B(3);
 
-seed :: system { B.px = { 1.0, 2.0, 3.0 }; }
+seed :: system {
+  B.px = { 1.0, 2.0, 3.0 };
+}
 
-selfjoin :: map (query { px, out }) (out) {
+selfjoin :: map (query { px, out })(out) {
   s := reduce(+, B.px * px);
   out = s;
 }
 
-verify :: system eff { fmt.printf("o=%.0f %.0f %.0f\n", B.out[0], B.out[1], B.out[2]); }
+verify :: system eff {
+  fmt.printf("o=%.0f %.0f %.0f\n", B.out[0], B.out[1], B.out[2]);
+}
 
 #run seq({ seed, selfjoin, verify })

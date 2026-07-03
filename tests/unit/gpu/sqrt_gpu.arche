@@ -8,7 +8,7 @@ P :: arche { x }
 
 @gpu
 
-root :: map (query { x }) (x) {
+root :: map (query { x })(x) {
   x = sqrt(x);
 }
 

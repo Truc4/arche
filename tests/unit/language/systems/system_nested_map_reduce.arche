@@ -9,12 +9,14 @@ o :: float;
 B :: arche { v, o }
 [3]B(3);
 
-seed :: system { B.v = { 1.0, 2.0, 3.0 }; }
+seed :: system {
+  B.v = { 1.0, 2.0, 3.0 };
+}
 
 flock :: system (query { v }) {
-  map (query { o } as me) (o) {
+  map (query { o } as me)(o) {
     me.o = reduce(+, v);
-  }
+  };
 }
 
 show :: system eff {

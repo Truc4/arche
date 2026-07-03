@@ -6,7 +6,7 @@
 B :: arche { px :: float, out :: float }
 [3]B(3);
 
-t :: map (query { px, out }) (out) {
+t :: map (query { px, out })(out) {
   d := px * 2.0;
   out = d + 1.0;
 }

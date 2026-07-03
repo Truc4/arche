@@ -7,15 +7,19 @@ v :: int;
 N :: arche { v }
 [3]N(3);
 
-seed :: system { N.v = { 10, 20, 30 }; }
+seed :: system {
+  N.v = { 10, 20, 30 };
+}
 
-bump :: map (query { v }) (v) {
+bump :: map (query { v })(v) {
   i := 0;
   for (; i < 3; i += 1) {
     v = v + 1;
   }
 }
 
-verify :: system eff { fmt.printf("v=%d %d %d\n", N.v[0], N.v[1], N.v[2]); }
+verify :: system eff {
+  fmt.printf("v=%d %d %d\n", N.v[0], N.v[1], N.v[2]);
+}
 
 #run seq({ seed, bump, verify })

@@ -3,7 +3,7 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "x=0 1 2"
 #import { fmt }
 pos(x, y) :: float;
-P :: arche { pos }
+P         :: arche { pos }
 [3]P(3);
 
 seed :: system eff {

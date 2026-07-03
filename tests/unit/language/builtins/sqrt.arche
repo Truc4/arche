@@ -5,7 +5,7 @@ x :: float;
 P :: arche { x }
 [4]P(4);
 
-root :: map (query { x }) (x) {
+root :: map (query { x })(x) {
   x = sqrt(x);
 }
 

@@ -95,9 +95,9 @@ static int op_is_compare(Operator op) {
  * so one type describes the whole shader — SSBOs, literals, and comparison-as-value casts all render in it. */
 typedef struct {
 	HirKernelDecl *map;
-	HirProgram *prog; /* for resolving `NAME` references to compile-time constants; may be NULL */
-	const char *ety;  /* GLSL scalar type: "float", "int", or "uint" */
-	int is_float;     /* ety == "float" — controls integer-literal float-izing and division safety */
+	HirProgram *prog;       /* for resolving `NAME` references to compile-time constants; may be NULL */
+	const char *ety;        /* GLSL scalar type: "float", "int", or "uint" */
+	int is_float;           /* ety == "float" — controls integer-literal float-izing and division safety */
 	const char *locals[64]; /* names bound by `:=` in the body so far — emitted as GLSL scalar vars, not columns */
 	int local_count;
 } EmitCtx;
@@ -213,8 +213,7 @@ static void emit_expr(GBuf *b, EmitCtx *ec, HirExpr *e, int want_bool) {
 			b->ok = 0;
 			break;
 		}
-		if ((op == OP_DIV || op == OP_MOD) && !ec->is_float &&
-		    !gpu_nonzero_int_const(ec->prog, e->data.binary.right)) {
+		if ((op == OP_DIV || op == OP_MOD) && !ec->is_float && !gpu_nonzero_int_const(ec->prog, e->data.binary.right)) {
 			b->ok = 0; /* unsafe integer div/mod (non-constant divisor) — keep on the CPU */
 			break;
 		}
@@ -398,9 +397,8 @@ static void mark_gpu_runs_in(HirProgram *prog, HirStmt **stmts, int count) {
 			continue;
 		if (s->kind == HIR_STMT_RUN && s->data.run_stmt.is_gpu && s->data.run_stmt.map_name) {
 			for (int d = 0; d < prog->decl_count; d++)
-				if (prog->decls[d] && prog->decls[d]->kind == HIR_DECL_KERNEL &&
-				    prog->decls[d]->data.kernel && prog->decls[d]->data.kernel->kind == HIR_KERNEL_MAP &&
-				    prog->decls[d]->data.kernel->name &&
+				if (prog->decls[d] && prog->decls[d]->kind == HIR_DECL_KERNEL && prog->decls[d]->data.kernel &&
+				    prog->decls[d]->data.kernel->kind == HIR_KERNEL_MAP && prog->decls[d]->data.kernel->name &&
 				    strcmp(prog->decls[d]->data.kernel->name, s->data.run_stmt.map_name) == 0)
 					prog->decls[d]->data.kernel->is_gpu = 1;
 		} else if (s->kind == HIR_STMT_BLOCK) {
@@ -447,8 +445,8 @@ int arche_gpu_emit(HirProgram *prog, const char *out_dir, int *out_count) {
 
 	for (int i = 0; i < prog->decl_count; i++) {
 		HirDecl *d = prog->decls[i];
-		if (!d || d->kind != HIR_DECL_KERNEL || !d->data.kernel ||
-		    d->data.kernel->kind != HIR_KERNEL_MAP || !d->data.kernel->is_gpu)
+		if (!d || d->kind != HIR_DECL_KERNEL || !d->data.kernel || d->data.kernel->kind != HIR_KERNEL_MAP ||
+		    !d->data.kernel->is_gpu)
 			continue;
 		HirKernelDecl *map = d->data.kernel;
 		gpu_maps++;

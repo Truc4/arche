@@ -72,7 +72,7 @@ typedef enum {
 	HIR_DECL_WORLD,
 	HIR_DECL_ARCHETYPE,
 	HIR_DECL_PROC,
-	HIR_DECL_KERNEL,  /* `map` / `map (Q) eff` / `system` — one decl, kind+eff select the codegen path */
+	HIR_DECL_KERNEL, /* `map` / `map (Q) eff` / `system` — one decl, kind+eff select the codegen path */
 	HIR_DECL_FUNC,
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
@@ -179,11 +179,11 @@ typedef struct {
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
-	int eff;          /* 1 if the `eff` permission was declared: the kernel may run effects */
-	int is_gpu;       /* 1 if `@gpu`: emitted as a GPU compute shader (pure MAP only) */
-	char **writes;    /* the declared `(writes)` permission list: bound columns the body may assign */
-	int write_count;  /* 0 ⇒ no `(writes)` declared */
-	char *row_var;    /* MAP+eff `as w` row-handle binding (`handle(driver)` local), else NULL */
+	int eff;         /* 1 if the `eff` permission was declared: the kernel may run effects */
+	int is_gpu;      /* 1 if `@gpu`: emitted as a GPU compute shader (pure MAP only) */
+	char **writes;   /* the declared `(writes)` permission list: bound columns the body may assign */
+	int write_count; /* 0 ⇒ no `(writes)` declared */
+	char *row_var;   /* MAP+eff `as w` row-handle binding (`handle(driver)` local), else NULL */
 	SourceLoc loc;
 } HirKernelDecl;
 

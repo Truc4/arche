@@ -26,8 +26,7 @@ const ArcheGpuShader *arche_gpu_lookup(const char *name);
  * once on first sight, reused (no re-upload) and NOT downloaded; the host copy stays stale until
  * `arche_gpu_sync`. Returns 0 on success (ran on GPU), nonzero on ANY failure — the caller then runs
  * the CPU path, so a missing device / driver / shader is always safe. Provided by gpu_runtime.c. */
-int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count,
-                       int resident);
+int arche_gpu_dispatch(const char *name, unsigned ncol, void **cols, unsigned elem_size, unsigned count, int resident);
 
 /* Download resident device buffers back to host (the explicit GPU->CPU sync for a `gpu.sync(Pool)`
  * schedule leaf). For each `cols[b]` that is a dirty resident buffer, copies device data back and clears

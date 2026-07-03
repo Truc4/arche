@@ -6,11 +6,63 @@
 // It is also the HAND-TUNED twin of derive_residency.arche (same workload; that one has NO @resident /
 // gpu.sync — both are derived). Building both forced-GPU lets you A/B derived-vs-hand residency directly.
 #import { fmt }
-g :: float;
+g  :: float;
 GR :: arche { g }
 @resident
 [16000000]GR(16000000);
-heavy :: map (query { g }) (g) { g = ((((((((((((((((((((((((((((((((g)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001)*1.0001+0.0001; }
-seed :: system { GR.g = { 1.0 }; }
-show :: system eff { fmt.printf("g0=%.4f\n", GR.g[0] * 1.0); }
-#run seq({ seed, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, heavy, gpu.sync(GR), show })
+heavy :: map (query { g })(g) {
+  g = ((((((((((((((((((((((((((((((((g) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001) * 1.0001 + 0.0001;
+}
+seed :: system {
+  GR.g = { 1.0 };
+}
+show :: system eff {
+  fmt.printf("g0=%.4f\n", GR.g[0] * 1.0);
+}
+#run seq(
+  {
+    seed,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    heavy,
+    gpu.sync(GR),
+    show,
+  },
+)

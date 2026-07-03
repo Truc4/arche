@@ -141,6 +141,89 @@ static void tuple_rewrite_expr(HirExpr *e, const char *base) {
 	}
 }
 
+/* A pure `map (Q as me)` binds a column self-binder: `me.<col>` is THIS element's bound column at the current
+ * row. Since a pure map already auto-loops rows and a bare column name IS its per-row scalar, `me.col` is just
+ * an alias for the bare column `col`. Collapse `me.field` (HIR_EXPR_FIELD over NAME `me`) → NAME `field`, so
+ * codegen never sees the self-binder — it lowers to the same per-row column access the bare name already does.
+ * Mirrors tuple_rewrite_expr (a FIELD→NAME desugar). `self` is the binder name. */
+static void self_bind_rewrite_expr(HirExpr *e, const char *self) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case HIR_EXPR_FIELD:
+		self_bind_rewrite_expr(e->data.field.base, self);
+		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+		    strcmp(e->data.field.base->data.name.name, self) == 0) {
+			const char *sub = e->data.field.field_name;
+			char *col = malloc(strlen(sub) + 1);
+			strcpy(col, sub);
+			e->kind = HIR_EXPR_NAME;
+			e->data.name.name = col; /* old base node intentionally leaked, as in tuple_rewrite_expr */
+		}
+		break;
+	case HIR_EXPR_INDEX:
+		self_bind_rewrite_expr(e->data.index.base, self);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			self_bind_rewrite_expr(e->data.index.indices[i], self);
+		break;
+	case HIR_EXPR_BINARY:
+		self_bind_rewrite_expr(e->data.binary.left, self);
+		self_bind_rewrite_expr(e->data.binary.right, self);
+		break;
+	case HIR_EXPR_UNARY:
+		self_bind_rewrite_expr(e->data.unary.operand, self);
+		break;
+	case HIR_EXPR_CALL:
+		self_bind_rewrite_expr(e->data.call.callee, self);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			self_bind_rewrite_expr(e->data.call.args[i], self);
+		break;
+	default:
+		break;
+	}
+}
+
+static void self_bind_rewrite_stmt(HirStmt *s, const char *self) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case HIR_STMT_BIND:
+		self_bind_rewrite_expr(s->data.bind_stmt.value, self);
+		break;
+	case HIR_STMT_ASSIGN:
+		self_bind_rewrite_expr(s->data.assign_stmt.target, self);
+		self_bind_rewrite_expr(s->data.assign_stmt.value, self);
+		break;
+	case HIR_STMT_FOR:
+		self_bind_rewrite_stmt(s->data.for_stmt.init, self);
+		self_bind_rewrite_expr(s->data.for_stmt.cond, self);
+		self_bind_rewrite_stmt(s->data.for_stmt.incr, self);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			self_bind_rewrite_stmt(s->data.for_stmt.body[i], self);
+		break;
+	case HIR_STMT_IF:
+		self_bind_rewrite_expr(s->data.if_stmt.cond, self);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			self_bind_rewrite_stmt(s->data.if_stmt.then_body[i], self);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			self_bind_rewrite_stmt(s->data.if_stmt.else_body[i], self);
+		break;
+	case HIR_STMT_EXPR:
+		self_bind_rewrite_expr(s->data.expr_stmt.expr, self);
+		break;
+	case HIR_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			self_bind_rewrite_expr(s->data.return_stmt.values[i], self);
+		break;
+	case HIR_STMT_BLOCK:
+		for (int i = 0; i < s->data.block.count; i++)
+			self_bind_rewrite_stmt(s->data.block.stmts[i], self);
+		break;
+	default:
+		break;
+	}
+}
+
 static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 	if (!s)
 		return;
@@ -195,7 +278,11 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 static HirExpr *lower_expr_cst(SyntaxView e);
 static HirStmt *lower_stmt_cst(SyntaxView s);
 static HirKernelDecl *lower_each_payload(SyntaxView f, char *name);
+static HirKernelDecl *lower_map_payload(SyntaxView f, char *name);
 static char *dupz(const char *s);
+struct CstTupleGroupTag;
+static struct CstTupleGroupTag *tgroup_lookup(const char *name);
+static HirType *hir_tuple_from_tgroup(struct CstTupleGroupTag *g);
 
 /* Lower an expression in a constant-required position (pool capacity / init length / field default /
  * const decl / global scalar init). CTFE first: if it folds to a compile-time integer, emit that
@@ -293,6 +380,20 @@ static HirType *lower_type_cst(SyntaxView t) {
 		const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
 		char *name = malloc(strlen(r) + 1);
 		strcpy(name, r);
+		/* A tuple-group name in VALUE-type position (`a: pos`, `-> pos`) lowers to a real HIR_TYPE_TUPLE
+		 * aggregate — not a bare nominal (which codegen would treat as an undefined `%struct.pos`). The
+		 * archetype-column path handles a group field separately (it flattens to `pos_x`/`pos_y`). */
+		struct CstTupleGroupTag *tg = tgroup_lookup(raw);
+		if (!tg && strcmp(name, raw) != 0)
+			tg = tgroup_lookup(name);
+		if (tg) {
+			HirType *tt = hir_tuple_from_tgroup(tg);
+			*at = *tt;
+			free(tt);
+			free(name);
+			free(raw);
+			break;
+		}
 		if (strcmp(name, "archetype") == 0)
 			at->tag = HIR_TYPE_ARCHETYPE;
 		else if (strcmp(name, "opaque") == 0)
@@ -1161,6 +1262,16 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 			as->data.each_stmt = lower_each_payload(raw, NULL);
 			break;
 		}
+		/* A nested PURE `map (Q) { … }` in statement position is an inline per-element fan too (the honest
+		 * self-join's inner scalar kernel — see G7). Route it through the same HIR_STMT_EACH machinery, but
+		 * with the pure-map body processing (self-binder `me.col`→`col`, group expansion) rather than the
+		 * eff fan's delete-handle. A pure map is NOT a value, so without this it would lower to a discarded
+		 * expression statement with a NULL expr. */
+		if (sv_present(raw) && sv_kind(raw) == SN_MAP_EXPR) {
+			as->kind = HIR_STMT_EACH;
+			as->data.each_stmt = lower_map_payload(raw, NULL);
+			break;
+		}
 		/* A bare `insert(E{…})` / `delete(h)` (no out-list) — legal only into an infallible pool (semantic
 		 * gate). Lower it like a 0-target proc-call statement so codegen emits the insert/delete; a plain
 		 * HIR_STMT_EXPR would DISCARD the call (a silent no-op — the row would never be inserted). */
@@ -1619,7 +1730,7 @@ static HirParam *lower_param_cst(SyntaxView p) {
 /* ---- tuple-group registry (syntax tree equivalent of main.c expand_archetype_tuple_groups) ----
  * A top-level `pos (x, y) :: T` declares a tuple group: a bare archetype field `pos`
  * expands to flat columns `pos_x`, `pos_y` (each of type T). */
-typedef struct {
+typedef struct CstTupleGroupTag {
 	char *name;
 	char **suffix;
 	int nsuf;
@@ -1737,6 +1848,22 @@ static CstTupleGroup *tgroup_lookup(const char *name) {
 		if (strcmp(g_tgroups[i].name, name) == 0)
 			return &g_tgroups[i];
 	return NULL;
+}
+
+/* Build a HIR_TYPE_TUPLE value type from a registered tuple group `pos(x,y) :: T` — `{x:T, y:T}`. Used to
+ * lower a group name in VALUE-type position (a func param/return, a local), so the tuple flows as a real
+ * aggregate value rather than a bare nominal. All members share the group's single declared type. */
+static HirType *hir_tuple_from_tgroup(CstTupleGroup *g) {
+	HirType *t = hir_type_create(HIR_TYPE_TUPLE);
+	t->field_count = g->nsuf;
+	t->fields = calloc(g->nsuf > 0 ? g->nsuf : 1, sizeof(HirTupleField));
+	for (int i = 0; i < g->nsuf; i++) {
+		HirType *ft = hir_type_create(HIR_TYPE_UNKNOWN);
+		*ft = g->member; /* member is a scalar (e.g. float) — a shallow copy owns no pointers */
+		t->fields[i].name = dupz(g->suffix[i]);
+		t->fields[i].type = ft;
+	}
+	return t;
 }
 
 /* ---- query registry (mirrors the tgroup table): a named `Name :: query {…}` decl → its column node,
@@ -2454,7 +2581,9 @@ static void lower_query_columns(SyntaxView f, HirStmt **stmts, int stmt_count, H
 }
 
 /* The optional `eff` permission marker (`system (Q) eff { … }`) parses to an SN_EFF child. */
-static int sv_has_eff(SyntaxView f) { return sv_present(sv_child_at(f, SN_EFF, 0)); }
+static int sv_has_eff(SyntaxView f) {
+	return sv_present(sv_child_at(f, SN_EFF, 0));
+}
 
 /* Extract the declared `(writes)` column names (SN_WRITE_PARAM children) into a fresh char* array. */
 static void lower_writes(SyntaxView f, char ***out_writes, int *out_count) {
@@ -2503,20 +2632,34 @@ static HirDecl *lower_each_from(SyntaxView f, char *name) {
 	return ad;
 }
 
-static HirDecl *lower_map_from(SyntaxView f, char *name) {
-	/* A plain `map` is the pure branch-free column transform. `map (Q) eff` is the effectful per-entity fan
-	 * and parses directly to SN_EACH_EXPR (the each machinery), so it never reaches here. */
-	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+/* Lower a pure `map` kernel BODY (the branch-free column transform) to a HirKernelDecl. `map (Q) eff` is the
+ * effectful per-entity fan and parses directly to SN_EACH_EXPR (the each machinery), so it never reaches here.
+ * Shared by the named-decl form (lower_map_from) and a nested pure-map STATEMENT lowered as an inline fan. */
+static HirKernelDecl *lower_map_payload(SyntaxView f, char *name) {
 	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
 	as->name = name;
 	as->kind = HIR_KERNEL_MAP;
 	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* `map (Q as me)`: collapse the pure-map column self-binder `me.<col>` → bare `col` BEFORE any tuple/
+	 * group rewrite, so `me.pos.x` becomes `pos.x` and then flattens to `pos_x` like a bare access. */
+	SyntaxView selfbind = sv_child_at(f, SN_QUERY_BIND, 0);
+	if (sv_present(selfbind)) {
+		char *self = txt_dup(sv_token(selfbind, TOK_IDENT));
+		for (int i = 0; i < as->stmt_count; i++)
+			self_bind_rewrite_stmt(as->stmts[i], self);
+		free(self);
+	}
 	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
 	 * `pos.x`→`pos_x` rewrite, so the produced scalar columns match the flattened params. */
 	expand_group_assigns(as);
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
-	ad->data.kernel = as;
+	return as;
+}
+
+static HirDecl *lower_map_from(SyntaxView f, char *name) {
+	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+	ad->data.kernel = lower_map_payload(f, name);
 	return ad;
 }
 

@@ -15,13 +15,16 @@ b :: float;
 B :: arche { b }
 [2000000]B(2000000);
 
-seed :: system { A.a = { 1.0 }; B.b = { 1.0 }; }
+seed :: system {
+  A.a = { 1.0 };
+  B.b = { 1.0 };
+}
 
-solo :: map (query { a }) (a) {
+solo :: map (query { a })(a) {
   a = (((a * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5;
 }
 
-chain :: map (query { b }) (b) {
+chain :: map (query { b })(b) {
   b = (((b * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5) * 1.01 + 0.5;
 }
 

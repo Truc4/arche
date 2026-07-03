@@ -11,7 +11,7 @@ P :: arche { x }
 [4]P(4);
 
 // no @gpu here — placement is DERIVED.
-scale :: map (query { x }) (x) {
+scale :: map (query { x })(x) {
   x = x * 10.0;
 }
 

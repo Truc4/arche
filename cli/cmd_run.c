@@ -293,7 +293,7 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 
 	CompileOpts opts = {0};
-	opts.quiet = 1; /* `go run`-style: no pipeline chatter, just the program's own output */
+	opts.quiet = 1;     /* `go run`-style: no pipeline chatter, just the program's own output */
 	opts.gpu = use_gpu; /* derived above (profile + glslc), whole-program/non-hot when on */
 	int rc = compile_source(src, input, exe, &opts);
 	free(src);

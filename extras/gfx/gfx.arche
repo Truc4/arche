@@ -17,7 +17,7 @@ Framebuffer :: arche { pixel :: int }
 
 /// Fill the framebuffer with each window's `bg` colour (0xRRGGBB).
 clear :: system eff {
-  view := Framebuffer.pixel[0 : Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
+  view := Framebuffer.pixel[0: Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
   map (query { handle, bg }) eff {
     dims(handle)(w:, h:);
     n := w * h;
@@ -29,7 +29,7 @@ clear :: system eff {
 
 /// Present the framebuffer (the driver-owned pool) to the window.
 present :: system eff {
-  view := Framebuffer.pixel[0 : Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
+  view := Framebuffer.pixel[0: Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
   map (query { handle }) eff {
     dims(handle)(w:, h:);
     gfx_be_present(handle, view, w, h)(_:); // px is in-out (FFI borrow rule); present only reads it

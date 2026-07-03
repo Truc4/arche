@@ -6,6 +6,10 @@
 x :: int;
 P :: arche { x }
 [4]P(4);
-load :: system { P.x[0] = 7; }
-show :: system eff { fmt.printf("x0=%d\n", P.x[0]); }
+load :: system {
+  P.x[0] = 7;
+}
+show :: system eff {
+  fmt.printf("x0=%d\n", P.x[0]);
+}
 #run seq({ load, show })

@@ -897,11 +897,10 @@ SemDiag *sem_emit_write_set_mismatch(SemanticContext *ctx, SourceLoc loc, const 
 	/* `actual_list` is the full bound-column write-set the body actually assigns, formatted `(pos, vel)` —
 	 * the migration codemod reads it from after the word `declare`. */
 	return sem_emit_(ctx, SEM_DIAG_write_set_mismatch, loc,
-	                 has_declared
-	                     ? "%s '%s' writes a bound column its `(writes)` permission omits — declare `%s` "
-	                       "after the selector"
-	                     : "%s '%s' writes bound columns but declares no `(writes)` permission — declare `%s` "
-	                       "after the selector",
+	                 has_declared ? "%s '%s' writes a bound column its `(writes)` permission omits — declare `%s` "
+	                                "after the selector"
+	                              : "%s '%s' writes bound columns but declares no `(writes)` permission — declare `%s` "
+	                                "after the selector",
 	                 kind, name ? name : "<kernel>", actual_list);
 }
 SemDiag *sem_emit_indexed_write_in_selector(SemanticContext *ctx, SourceLoc loc, const char *pool) {

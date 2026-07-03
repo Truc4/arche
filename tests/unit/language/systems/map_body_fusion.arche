@@ -9,9 +9,11 @@
 a :: float;
 b :: float;
 P :: arche { a, b }
-[4]P(4) { a: 1.0, b: 10.0 }
+[4]P(4) {
+  a: 1.0, b: 10.0
+}
 
-step :: map (query { a, b }) (a, b) {
+step :: map (query { a, b })(a, b) {
   a = a + b;
   b = b * 2.0;
   a = a + b;
