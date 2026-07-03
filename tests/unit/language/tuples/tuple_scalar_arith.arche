@@ -1,0 +1,22 @@
+// Tuple ∘ SCALAR arithmetic (the boids' `steer * COH`, `sum / cnt`, `w * MAXSPD/spd`): a tuple times/divided
+// by a scalar scales every lane. `pos = (2, 5)`; `pos * 3` = (6, 15); `pos / 2` = (1, 2.5). RED until tuple∘
+// scalar is supported (today `pos * K` types as a non-tuple → "type 'value' has no field 'x'").
+// RUN: %arche build -o %t %s && %t | grep -qF "m=6 15 d=1 2"
+#import { fmt }
+pos(x, y) :: float;
+P         :: arche { pos }
+[1]P(1);
+K :: 3.0;
+
+seed :: system {
+  P.pos.x = { 2.0 };
+  P.pos.y = { 5.0 };
+}
+
+show :: system (query { pos }) eff {
+  m := pos * K;
+  d := pos / 2.0;
+  fmt.printf("m=%.0f %.0f d=%.0f %.0f\n", m.x, m.y, d.x, d.y);
+}
+
+#run seq({ seed, show })

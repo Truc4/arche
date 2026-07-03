@@ -141,42 +141,64 @@ static void tuple_rewrite_expr(HirExpr *e, const char *base) {
 	}
 }
 
+struct CstTupleGroupTag;
+static struct CstTupleGroupTag *tgroup_lookup(const char *name);
+static HirType *hir_tuple_from_tgroup(struct CstTupleGroupTag *g);
+/* The HIR_TYPE_TUPLE value type of tuple-group `name` (`pos(x,y)::float` → `{x:float,y:float}`), or NULL. */
+static HirType *hir_tuple_type_for_name(const char *name);
+
 /* A pure `map (Q as me)` binds a column self-binder: `me.<col>` is THIS element's bound column at the current
  * row. Since a pure map already auto-loops rows and a bare column name IS its per-row scalar, `me.col` is just
- * an alias for the bare column `col`. Collapse `me.field` (HIR_EXPR_FIELD over NAME `me`) → NAME `field`, so
- * codegen never sees the self-binder — it lowers to the same per-row column access the bare name already does.
- * Mirrors tuple_rewrite_expr (a FIELD→NAME desugar). `self` is the binder name. */
-static void self_bind_rewrite_expr(HirExpr *e, const char *self) {
+ * distinguishes self from an enclosing system's SAME-named column. Collapse `me.field` (HIR_EXPR_FIELD over
+ * NAME `self`) → NAME `field`, keyed by CONTEXT:
+ *   - a READ (`to_self=1`) → NAME `\x1f`+field, a SELF-READ marker codegen resolves at the fan's own row
+ *     index — so it stays pinned to THIS element even inside a `reduce` that folds the same-named column.
+ *   - the ASSIGN TARGET (`to_self=0`) → bare NAME `field`, the fan's ordinary per-row write of that column.
+ * Without the read marker, `me.pos` and a folded neighbour `pos` would collapse to the same access and the
+ * self-join would degenerate (every element would only ever see itself). Mirrors tuple_rewrite_expr. */
+#define SELF_READ_MARK '\x1f'
+static void self_bind_rewrite_expr(HirExpr *e, const char *self, int to_self) {
 	if (!e)
 		return;
 	switch (e->kind) {
 	case HIR_EXPR_FIELD:
-		self_bind_rewrite_expr(e->data.field.base, self);
+		self_bind_rewrite_expr(e->data.field.base, self, to_self);
 		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
 		    strcmp(e->data.field.base->data.name.name, self) == 0) {
 			const char *sub = e->data.field.field_name;
-			char *col = malloc(strlen(sub) + 1);
-			strcpy(col, sub);
+			char *col = malloc(strlen(sub) + 2);
+			if (to_self) {
+				col[0] = SELF_READ_MARK;
+				strcpy(col + 1, sub);
+			} else
+				strcpy(col, sub);
 			e->kind = HIR_EXPR_NAME;
 			e->data.name.name = col; /* old base node intentionally leaked, as in tuple_rewrite_expr */
+			/* If the self column is a tuple GROUP (`me.pos`), tag the read a HIR_TYPE_TUPLE so codegen packs
+			 * its `pos_x`/`pos_y` at the self row (the field access already erased the group's own resolved). */
+			HirType *tt = hir_tuple_type_for_name(sub);
+			if (tt) {
+				e->resolved = *tt;
+				free(tt);
+			}
 		}
 		break;
 	case HIR_EXPR_INDEX:
-		self_bind_rewrite_expr(e->data.index.base, self);
+		self_bind_rewrite_expr(e->data.index.base, self, to_self);
 		for (int i = 0; i < e->data.index.index_count; i++)
-			self_bind_rewrite_expr(e->data.index.indices[i], self);
+			self_bind_rewrite_expr(e->data.index.indices[i], self, to_self);
 		break;
 	case HIR_EXPR_BINARY:
-		self_bind_rewrite_expr(e->data.binary.left, self);
-		self_bind_rewrite_expr(e->data.binary.right, self);
+		self_bind_rewrite_expr(e->data.binary.left, self, to_self);
+		self_bind_rewrite_expr(e->data.binary.right, self, to_self);
 		break;
 	case HIR_EXPR_UNARY:
-		self_bind_rewrite_expr(e->data.unary.operand, self);
+		self_bind_rewrite_expr(e->data.unary.operand, self, to_self);
 		break;
 	case HIR_EXPR_CALL:
-		self_bind_rewrite_expr(e->data.call.callee, self);
+		self_bind_rewrite_expr(e->data.call.callee, self, to_self);
 		for (int i = 0; i < e->data.call.arg_count; i++)
-			self_bind_rewrite_expr(e->data.call.args[i], self);
+			self_bind_rewrite_expr(e->data.call.args[i], self, to_self);
 		break;
 	default:
 		break;
@@ -188,32 +210,33 @@ static void self_bind_rewrite_stmt(HirStmt *s, const char *self) {
 		return;
 	switch (s->kind) {
 	case HIR_STMT_BIND:
-		self_bind_rewrite_expr(s->data.bind_stmt.value, self);
+		self_bind_rewrite_expr(s->data.bind_stmt.value, self, 1);
 		break;
 	case HIR_STMT_ASSIGN:
-		self_bind_rewrite_expr(s->data.assign_stmt.target, self);
-		self_bind_rewrite_expr(s->data.assign_stmt.value, self);
+		/* `me.col = <expr>`: the TARGET is the fan's per-row write (bare col); the VALUE reads self (marked). */
+		self_bind_rewrite_expr(s->data.assign_stmt.target, self, 0);
+		self_bind_rewrite_expr(s->data.assign_stmt.value, self, 1);
 		break;
 	case HIR_STMT_FOR:
 		self_bind_rewrite_stmt(s->data.for_stmt.init, self);
-		self_bind_rewrite_expr(s->data.for_stmt.cond, self);
+		self_bind_rewrite_expr(s->data.for_stmt.cond, self, 1);
 		self_bind_rewrite_stmt(s->data.for_stmt.incr, self);
 		for (int i = 0; i < s->data.for_stmt.body_count; i++)
 			self_bind_rewrite_stmt(s->data.for_stmt.body[i], self);
 		break;
 	case HIR_STMT_IF:
-		self_bind_rewrite_expr(s->data.if_stmt.cond, self);
+		self_bind_rewrite_expr(s->data.if_stmt.cond, self, 1);
 		for (int i = 0; i < s->data.if_stmt.then_count; i++)
 			self_bind_rewrite_stmt(s->data.if_stmt.then_body[i], self);
 		for (int i = 0; i < s->data.if_stmt.else_count; i++)
 			self_bind_rewrite_stmt(s->data.if_stmt.else_body[i], self);
 		break;
 	case HIR_STMT_EXPR:
-		self_bind_rewrite_expr(s->data.expr_stmt.expr, self);
+		self_bind_rewrite_expr(s->data.expr_stmt.expr, self, 1);
 		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
-			self_bind_rewrite_expr(s->data.return_stmt.values[i], self);
+			self_bind_rewrite_expr(s->data.return_stmt.values[i], self, 1);
 		break;
 	case HIR_STMT_BLOCK:
 		for (int i = 0; i < s->data.block.count; i++)
@@ -280,9 +303,6 @@ static HirStmt *lower_stmt_cst(SyntaxView s);
 static HirKernelDecl *lower_each_payload(SyntaxView f, char *name);
 static HirKernelDecl *lower_map_payload(SyntaxView f, char *name);
 static char *dupz(const char *s);
-struct CstTupleGroupTag;
-static struct CstTupleGroupTag *tgroup_lookup(const char *name);
-static HirType *hir_tuple_from_tgroup(struct CstTupleGroupTag *g);
 
 /* Lower an expression in a constant-required position (pool capacity / init length / field default /
  * const decl / global scalar init). CTFE first: if it folds to a compile-time integer, emit that
@@ -769,6 +789,15 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 				ax->data.string.value = decoded;
 				ax->data.string.length = n;
 				free(nm);
+			}
+		}
+		/* A bare tuple-group column used as a VALUE (`pos` in `pos * K` / `near(me.pos, pos)`): tag it a
+		 * HIR_TYPE_TUPLE so codegen packs its flattened `pos_x`/`pos_y` columns into a `{T,…}` aggregate. */
+		if (ax->kind == HIR_EXPR_NAME && ax->resolved.tag == HIR_TYPE_UNKNOWN && ax->data.name.name) {
+			HirType *tt = hir_tuple_type_for_name(ax->data.name.name);
+			if (tt) {
+				ax->resolved = *tt;
+				free(tt);
 			}
 		}
 		break;
@@ -1739,6 +1768,24 @@ typedef struct CstTupleGroupTag {
 static CstTupleGroup g_tgroups[64];
 static int g_tgroup_count = 0;
 
+/* Probe a subtree for the FIRST numeric literal token; sets *is_float by whether it has a '.'. Returns 1 if a
+ * number was found. Used to infer a value-form tuple group's member type (`CENTER(X,Y)::(320.0,240.0)`→float). */
+static int subtree_first_number(const SyntaxNode *n, const char *src, int *is_float) {
+	for (int i = 0; i < n->child_count; i++) {
+		SyntaxElem *ch = &n->children[i];
+		if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_NUMBER) {
+			*is_float = 0;
+			for (uint32_t z = 0; z < ch->as.token.length; z++)
+				if (src[ch->as.token.offset + z] == '.')
+					*is_float = 1;
+			return 1;
+		}
+		if (ch->tag == SE_NODE && subtree_first_number(ch->as.node, src, is_float))
+			return 1;
+	}
+	return 0;
+}
+
 /* Register a tuple group `name (s0, s1, …) :: T` from a contiguous child range
  * [start,end) of `parent`: `name` is the IDENT before `(`, the suffixes are the
  * IDENTs inside `()`, and the member type is the first type node after `)`. */
@@ -1773,6 +1820,16 @@ static void register_tgroup(const SyntaxNode *parent, const char *src, int start
 					g->member = *mt;
 			}
 		}
+	}
+	/* A value-form named-vector group (`CENTER(X,Y)::(320.0,…)`) has no member TYPE node — infer it from the
+	 * first value literal, so `CENTER` packs as `{float,…}` matching its member value consts (not the i32 default). */
+	if (g->member.tag == HIR_TYPE_UNKNOWN) {
+		int isf = 0;
+		for (int k = start; k < end; k++)
+			if (parent->children[k].tag == SE_NODE && subtree_first_number(parent->children[k].as.node, src, &isf)) {
+				g->member.tag = isf ? HIR_TYPE_FLOAT : HIR_TYPE_INT;
+				break;
+			}
 	}
 	if (g->name && g->nsuf > 0)
 		g_tgroup_count++;
@@ -1864,6 +1921,11 @@ static HirType *hir_tuple_from_tgroup(CstTupleGroup *g) {
 		t->fields[i].type = ft;
 	}
 	return t;
+}
+
+static HirType *hir_tuple_type_for_name(const char *name) {
+	CstTupleGroup *g = tgroup_lookup(name);
+	return (g && g->nsuf > 0) ? hir_tuple_from_tgroup(g) : NULL;
 }
 
 /* ---- query registry (mirrors the tgroup table): a named `Name :: query {…}` decl → its column node,
@@ -2434,6 +2496,38 @@ static void group_suffix_names(HirExpr *e, const char *suffix) {
  * the user writes the vector once instead of hand-expanding each axis. Each component clones the RHS and
  * suffixes its bare group references. Statements are replaced in place by a BLOCK (codegen + the later
  * tuple_rewrite pass both recurse into blocks). */
+/* True if `e` produces its tuple from something other than bare group COLUMNS — a self-read marker (`me.vel`)
+ * or a tuple LOCAL (`steer`). Such an RHS can't be split by suffixing names per component; codegen writes it
+ * lane-wise instead (`nvel_x = value.x; nvel_y = value.y`). */
+static int expr_needs_tuple_value_write(HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		if (!e->data.name.name)
+			return 0;
+		if (e->data.name.name[0] == SELF_READ_MARK)
+			return 1; /* a self-read (`me.vel`) — not a suffixable bare column */
+		if (tgroup_lookup(e->data.name.name))
+			return 0; /* a bare group column (`pos`/`vel`) — suffixable per component */
+		if (g_lower_sem && semantic_get_const_value(g_lower_sem, e->data.name.name))
+			return 0; /* a scalar const — fine to clone into each component */
+		/* Anything else is a LOCAL (`w`, `spd`, `steer`): a tuple local can't be name-suffixed → value write. */
+		return 1;
+	case HIR_EXPR_BINARY:
+		return expr_needs_tuple_value_write(e->data.binary.left) || expr_needs_tuple_value_write(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return expr_needs_tuple_value_write(e->data.unary.operand);
+	case HIR_EXPR_CALL:
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (expr_needs_tuple_value_write(e->data.call.args[i]))
+				return 1;
+		return 0;
+	default:
+		return 0;
+	}
+}
+
 static void expand_group_assigns(HirKernelDecl *as) {
 	for (int sx = 0; sx < as->stmt_count; sx++) {
 		HirStmt *s = as->stmts[sx];
@@ -2445,6 +2539,10 @@ static void expand_group_assigns(HirKernelDecl *as) {
 		CstTupleGroup *g = tgroup_lookup(tgt->data.name.name);
 		if (!g)
 			continue;
+		/* A tuple-VALUE RHS (`me.nvel = me.vel + steer`, mixing self-reads + tuple locals) can't be split by
+		 * name-suffixing — write it lane-wise via field access: `nvel_x = (…).x`. A pure group-column op
+		 * (`pos = pos + vel`) suffixes bare names per component as before (which vectorizes). */
+		int value_write = expr_needs_tuple_value_write(s->data.assign_stmt.value);
 		HirStmt *blk = hir_stmt_create(HIR_STMT_BLOCK);
 		blk->data.block.stmts = calloc(g->nsuf ? g->nsuf : 1, sizeof(HirStmt *));
 		blk->data.block.count = 0;
@@ -2455,8 +2553,15 @@ static void expand_group_assigns(HirKernelDecl *as) {
 			ct->data.name.name = malloc(strlen(tgt->data.name.name) + 1 + strlen(g->suffix[j]) + 1);
 			sprintf(ct->data.name.name, "%s_%s", tgt->data.name.name, g->suffix[j]);
 			cs->data.assign_stmt.target = ct;
-			HirExpr *cv = hir_expr_deep_clone(s->data.assign_stmt.value);
-			group_suffix_names(cv, g->suffix[j]);
+			HirExpr *cv;
+			if (value_write) {
+				cv = hir_expr_create(HIR_EXPR_FIELD);
+				cv->data.field.base = hir_expr_deep_clone(s->data.assign_stmt.value);
+				cv->data.field.field_name = dupz(g->suffix[j]);
+			} else {
+				cv = hir_expr_deep_clone(s->data.assign_stmt.value);
+				group_suffix_names(cv, g->suffix[j]);
+			}
 			cs->data.assign_stmt.value = cv;
 			blk->data.block.stmts[blk->data.block.count++] = cs;
 		}

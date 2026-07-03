@@ -130,6 +130,11 @@ struct CodegenContext {
 	int in_map;             /* 1 when generating inside a map function body */
 	int in_columnar_system; /* 1 inside a no-arg `system(Q)` body: whole-column ops read the pool from its
 	                         * GLOBAL (`@Arch`), not a `%arch_<name>` parameter (maps get the pool by param) */
+	int in_nested_fan;      /* 1 inside a per-element fan that is itself nested in a columnar `system(Q)` (the
+	                         * honest self-join): the enclosing system's BOUND columns are the neighbour fold
+	                         * domain, so a bare-column read inside a `reduce` iterates the fold counter (while a
+	                         * `\x1f` self-read stays at the fan row). Off for a top-level map/system, where a
+	                         * bare column is the kernel's own per-element self, not a fold domain. */
 	int in_func;            /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
 	                         * default is the total `clamp` policy instead of `abort`, so a func never crashes */
 
@@ -1273,14 +1278,26 @@ static const HirType *codegen_tuple_type_of(CodegenContext *ctx, HirExpr *e) {
 	if (!e)
 		return NULL;
 	if (e->kind == HIR_EXPR_NAME) {
+		/* A bound value's ACTUAL kind wins over a (possibly stale) resolved tag: a tuple local is type-8; a
+		 * flattened scalar column (`pos_x`, from a whole-group expansion that kept the group's tuple tag) is a
+		 * real scalar, NOT a tuple. Only an UNBOUND group-column name falls through to the resolved-tag check. */
 		ValueInfo *v = find_value(ctx, e->data.name.name);
-		if (v && v->type == 8 && v->tuple_type)
-			return v->tuple_type;
+		if (v)
+			return (v->type == 8 && v->tuple_type) ? v->tuple_type : NULL;
 	}
 	if (e->resolved.tag == HIR_TYPE_TUPLE)
 		return &e->resolved;
+	/* tuple arithmetic (`v * s`, `a - b`) yields a tuple iff an operand is a tuple — recurse either side. */
+	if (e->kind == HIR_EXPR_BINARY && e->data.binary.op >= OP_ADD && e->data.binary.op <= OP_DIV) {
+		const HirType *l = codegen_tuple_type_of(ctx, e->data.binary.left);
+		return l ? l : codegen_tuple_type_of(ctx, e->data.binary.right);
+	}
 	if (e->kind == HIR_EXPR_CALL && e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME) {
-		HirFuncDecl *f = find_func_decl(ctx, e->data.call.callee->data.name.name);
+		const char *cn = e->data.call.callee->data.name.name;
+		/* `reduce(op, <tuple summand>)` / `scan(...)` folds each lane → the result is the summand's tuple type. */
+		if ((strcmp(cn, "reduce") == 0 || strcmp(cn, "scan") == 0) && e->data.call.arg_count == 2)
+			return codegen_tuple_type_of(ctx, e->data.call.args[1]);
+		HirFuncDecl *f = find_func_decl(ctx, cn);
 		if (f && f->return_type_count == 1 && f->return_types[0] && f->return_types[0]->tag == HIR_TYPE_TUPLE)
 			return f->return_types[0];
 	}
@@ -3188,10 +3205,54 @@ static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_
 
 /* Find the pool a reduce-expression folds over: the first `Pool.col` field access in the summand. Recurses
  * over its arithmetic / call structure. Returns that field node (for the pool + count) or NULL. */
+/* A BARE bound column (`pos` from an enclosing `system(query{pos})`) usable as a fold domain: a type-4 column
+ * ValueInfo, NOT a `\x1f` self-read marker (that stays pinned to the fan row). Sets *arch to its pool. */
+static int is_foldable_bare_col(CodegenContext *ctx, HirExpr *e, const char **arch_out) {
+	if (!ctx->in_nested_fan) /* only an enclosing system's column is a fold domain (see in_nested_fan) */
+		return 0;
+	if (!e || e->kind != HIR_EXPR_NAME || !e->data.name.name || e->data.name.name[0] == '\x1f')
+		return 0;
+	/* An enclosing columnar-system column has no own fan row (loop_idx NULL); the current fan's own per-element
+	 * column has loop_idx = its fan row and is SELF, not a fold domain. */
+	ValueInfo *v = find_value(ctx, e->data.name.name);
+	if (v && v->type == 4 && v->arch_name && !(v->loop_idx && v->loop_idx[0])) {
+		if (arch_out)
+			*arch_out = v->arch_name;
+		return 1;
+	}
+	/* A bare TUPLE-group column (`pos`, flattened to `pos_x`/`pos_y` — no single value binding): resolve its
+	 * pool via a flattened subcolumn, so a vector neighbour scan `reduce(+, pos * …)` folds over it. */
+	if (!v && e->resolved.tag == HIR_TYPE_TUPLE && e->resolved.field_count > 0 && e->resolved.fields[0].name) {
+		char sub[160];
+		snprintf(sub, sizeof(sub), "%s_%s", e->data.name.name, e->resolved.fields[0].name);
+		ValueInfo *sv = find_value(ctx, sub);
+		if (sv && sv->type == 4 && sv->arch_name && !(sv->loop_idx && sv->loop_idx[0])) {
+			if (arch_out)
+				*arch_out = sv->arch_name;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* Emit the live row count of pool `arch_name` into `out` (the struct field after all columns). */
+static void emit_pool_live_count(CodegenContext *ctx, const char *arch_name, char *out, size_t cap) {
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch_name);
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	char base[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base, sizeof(base));
+	char *cgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
+	                  arch_name, base, ad ? ad->field_count : 0);
+	char *cnt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt, cgep);
+	snprintf(out, cap, "%s", cnt);
+}
+
 static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
 	if (!e)
 		return NULL;
-	if (is_pool_col_field(ctx, e, NULL))
+	if (is_pool_col_field(ctx, e, NULL) || is_foldable_bare_col(ctx, e, NULL))
 		return e;
 	switch (e->kind) {
 	case HIR_EXPR_BINARY: {
@@ -3221,24 +3282,50 @@ static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
 static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op, char *result_buf) {
 	HirExpr *poolfield = find_fold_pool_field(ctx, sumexpr);
 	const char *arch = NULL;
-	if (!poolfield || !is_pool_col_field(ctx, poolfield, &arch)) {
+	char count[256];
+	int is_float = (sumexpr->resolved.tag == HIR_TYPE_FLOAT);
+	if (poolfield && is_pool_col_field(ctx, poolfield, &arch)) {
+		/* Explicit `Pool.col` fold domain — reuse the collective column resolver for its count + element type. */
+		char colptr[256];
+		const char *cty;
+		int cisf;
+		if (!emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf)) {
+			strcpy(result_buf, "0");
+			return;
+		}
+		is_float = is_float || cisf;
+	} else if (poolfield && is_foldable_bare_col(ctx, poolfield, &arch)) {
+		/* An enclosing system's BOUND column (`pos`) is the fold domain — derive count from its pool and the
+		 * float-ness from the column's element type (so the accumulator identity is `0.0`, not the i32 `0`). */
+		ValueInfo *v = find_value(ctx, poolfield->data.name.name);
+		if (v && v->field_type && (strcmp(v->field_type, "float") == 0 || strcmp(v->field_type, "double") == 0))
+			is_float = 1;
+		emit_pool_live_count(ctx, arch, count, sizeof(count));
+	} else {
 		strcpy(result_buf, "0");
 		return;
 	}
-	/* Loop bound = the folded pool's live row count (reuse the collective column resolver for the count). */
-	char colptr[256], count[256];
-	const char *cty;
-	int cisf;
-	if (!emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf)) {
-		strcpy(result_buf, "0");
-		return;
+	/* A TUPLE-valued summand (`reduce(+, pos * near(…))` → the cohesion/separation vectors) folds each lane
+	 * independently into its own accumulator; a scalar summand is the single-lane case. */
+	const HirType *tt = codegen_tuple_type_of(ctx, sumexpr);
+	int nlane = tt ? tt->field_count : 1;
+	if (nlane > 8)
+		nlane = 8;
+	char aggty[256] = "";
+	if (tt)
+		tuple_llvm_type((HirType *)tt, aggty, sizeof(aggty));
+	char accs[8][64];
+	const char *lty[8];
+	int lf[8];
+	for (int l = 0; l < nlane; l++) {
+		lty[l] = tt ? llvm_type_from_arche(field_base_type_name(tt->fields[l].type)) : (is_float ? "float" : "i32");
+		lf[l] = (strcmp(lty[l], "float") == 0 || strcmp(lty[l], "double") == 0);
+		char *acc = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca %s\n", acc, lty[l]);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], monoid_identity(op, lf[l]), lty[l], acc);
+		snprintf(accs[l], sizeof(accs[l]), "%s", acc);
 	}
-	int is_float = (sumexpr->resolved.tag == HIR_TYPE_FLOAT) || cisf;
-	const char *ty = is_float ? "float" : "i32";
-	const char *id = monoid_identity(op, is_float);
-	char *acc = gen_value_name(ctx), *iv = gen_value_name(ctx);
-	emit_alloca(ctx, "  %s = alloca %s\n", acc, ty);
-	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, id, ty, acc);
+	char *iv = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca i64\n", iv);
 	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv);
 
@@ -3257,10 +3344,20 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 	ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
 	char elem[256];
 	codegen_expression(ctx, sumexpr, elem);
-	char *a = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, ty, ty, acc);
-	char *r = emit_monoid_combine(ctx, op, is_float, ty, a, elem);
-	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, acc);
+	for (int l = 0; l < nlane; l++) {
+		const char *ev = elem;
+		char evb[64];
+		if (tt) { /* extract this lane from the summand's aggregate value */
+			char *e = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, elem, l);
+			snprintf(evb, sizeof(evb), "%s", e);
+			ev = evb;
+		}
+		char *a = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, lty[l], lty[l], accs[l]);
+		char *r = emit_monoid_combine(ctx, op, lf[l], lty[l], a, ev);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], r, lty[l], accs[l]);
+	}
 	char *ni = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
@@ -3268,9 +3365,22 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 	buffer_append_fmt(ctx, "%s:\n", end + 1);
 	ctx->fold_pool = saved_pool;
 	ctx->fold_index = saved_idx;
-	char *final = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, ty, ty, acc);
-	strcpy(result_buf, final);
+	if (tt) { /* pack the per-lane accumulators back into a `{T,…}` aggregate */
+		char cur[256];
+		strcpy(cur, "undef");
+		for (int l = 0; l < nlane; l++) {
+			char *ld = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", ld, lty[l], lty[l], accs[l]);
+			char *ni2 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni2, aggty, cur, lty[l], ld, l);
+			strcpy(cur, ni2);
+		}
+		strcpy(result_buf, cur);
+	} else {
+		char *final = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, lty[0], lty[0], accs[0]);
+		strcpy(result_buf, final);
+	}
 }
 
 /* The CPU backend: scalar + 4-lane SIMD. reduce/scan share the `emit_fold` primitive; permute bridges to
@@ -4186,6 +4296,48 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
+		/* A `\x1f`-marked SELF-READ (`me.col` inside a nested-fan reduce, from the self-binder desugar): read
+		 * `col` at THIS element's row — the fan's own index — immune to any active `reduce` fold counter. So
+		 * `me.pos` stays pinned to this boid while a same-named neighbour `pos` folds. Clear fold_index so the
+		 * bare-column read below auto-indexes at the fan row. */
+		if (name[0] == '\x1f') {
+			const char *saved_fold = ctx->fold_index;
+			ctx->fold_index = NULL;
+			HirExpr nm = *expr;
+			nm.data.name.name = (char *)(name + 1);
+			codegen_expression(ctx, &nm, result_buf);
+			ctx->fold_index = saved_fold;
+			expr->resolved = nm.resolved;
+			return;
+		}
+
+		/* A bare tuple-group COLUMN read as a VALUE (`pos` where `pos(x,y)::float`, tagged HIR_TYPE_TUPLE by
+		 * lowering) with no direct value binding: pack its flattened per-lane columns (`pos_x`, `pos_y`) —
+		 * each read at the current row (folding / self-marker / auto-index all handled by the per-lane read) —
+		 * into a `{T,…}` aggregate value, so `.x`/`.y` and tuple arithmetic work on it. */
+		if (expr->resolved.tag == HIR_TYPE_TUPLE && !find_value(ctx, name) && expr->resolved.field_count > 0) {
+			char aggty[256];
+			tuple_llvm_type(&expr->resolved, aggty, sizeof(aggty));
+			char cur[256];
+			strcpy(cur, "undef");
+			for (int i = 0; i < expr->resolved.field_count; i++) {
+				char sub[160];
+				snprintf(sub, sizeof(sub), "%s_%s", name, expr->resolved.fields[i].name);
+				HirExpr nm = {0};
+				nm.kind = HIR_EXPR_NAME;
+				nm.data.name.name = sub;
+				nm.resolved = *expr->resolved.fields[i].type;
+				char sb[256];
+				codegen_expression(ctx, &nm, sb);
+				const char *mt = llvm_type_from_arche(field_base_type_name(expr->resolved.fields[i].type));
+				char *ni = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, mt, sb, i);
+				strcpy(cur, ni);
+			}
+			strcpy(result_buf, cur);
+			return;
+		}
+
 		/* An entity binding (`e := B{…}`) is virtual — it has no runtime value. Using it as anything but
 		 * `insert(e)` (which resolves the literal directly) is unsupported; report it cleanly instead of
 		 * emitting invalid IR. */
@@ -4232,8 +4384,14 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			/* If inside implicit loop and this is a type-4 column param, auto-index */
 			if (ctx->implicit_loop_index[0] && val->type == 4) {
 				/* Index by the fan that BOUND this column (`loop_idx`), so an outer-fan column read inside
-				 * a nested fan still uses the outer row — not the ambient (inner) index. */
+				 * a nested fan still uses the outer row — not the ambient (inner) index. But inside a `reduce`
+				 * that folds THIS column's pool (`fold_pool`), it is the neighbour domain — index at the fold
+				 * counter so the reduce scans every row (the self-join: `me.pos` stays at the fan row via its
+				 * `\x1f` marker, the bare `pos` here iterates). */
 				const char *idx = (val->loop_idx && val->loop_idx[0]) ? val->loop_idx : ctx->implicit_loop_index;
+				if (ctx->in_nested_fan && ctx->fold_index && ctx->fold_pool && val->arch_name &&
+				    !(val->loop_idx && val->loop_idx[0]) && strcmp(val->arch_name, ctx->fold_pool) == 0)
+					idx = ctx->fold_index;
 				/* An ARRAY column (`[N]T`, e.g. `msg :: [64]char`) reads per-row as a pointer/slice over
 				 * that row's storage (stride N) — NOT a scalar load of one element. The column is stored
 				 * flat (`[count*N x T]`) and `val->llvm_name` is its element-0 pointer, so the row's start
@@ -4346,24 +4504,25 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
 
-		/* Tuple arithmetic: `a + b` / `a - b` / `v * s` on tuple VALUES is ELEMENT-WISE over the members,
-		 * producing a new `{T,…}` aggregate (extract each lane, combine, insert). Both sides must be tuples
-		 * of equal arity. (Tuple·scalar is not needed by the current surface — kept tuple∘tuple only.) */
+		/* Tuple arithmetic: `a + b` / `a - b` (tuple ∘ tuple) is ELEMENT-WISE; `v * s` / `v / s` (tuple ∘ SCALAR)
+		 * scales every lane by the scalar broadcast across lanes. Result = a new `{T,…}` aggregate (extract each
+		 * lane, combine, insert). At least one side is a tuple; a non-tuple side is the broadcast scalar. */
 		if (expr->data.binary.op >= OP_ADD && expr->data.binary.op <= OP_DIV) {
 			const HirType *lt = codegen_tuple_type_of(ctx, expr->data.binary.left);
 			const HirType *rt = codegen_tuple_type_of(ctx, expr->data.binary.right);
-			if (lt && rt && lt->field_count == rt->field_count && lt->field_count > 0) {
+			const HirType *tt = lt ? lt : rt;
+			if (tt && (!lt || !rt || lt->field_count == rt->field_count) && tt->field_count > 0) {
 				char lb[256], rb[256], aggty[256];
 				int saved_lanes = ctx->vector_lanes;
 				ctx->vector_lanes = 0;
 				codegen_expression(ctx, expr->data.binary.left, lb);
 				codegen_expression(ctx, expr->data.binary.right, rb);
 				ctx->vector_lanes = saved_lanes;
-				tuple_llvm_type((HirType *)lt, aggty, sizeof(aggty));
+				tuple_llvm_type((HirType *)tt, aggty, sizeof(aggty));
 				char cur[256];
 				strcpy(cur, "undef");
-				for (int i = 0; i < lt->field_count; i++) {
-					const char *mt = llvm_type_from_arche(field_base_type_name(lt->fields[i].type));
+				for (int i = 0; i < tt->field_count; i++) {
+					const char *mt = llvm_type_from_arche(field_base_type_name(tt->fields[i].type));
 					int mf = (strcmp(mt, "float") == 0 || strcmp(mt, "double") == 0);
 					const char *opi;
 					switch (expr->data.binary.op) {
@@ -4380,10 +4539,20 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 						opi = mf ? "fdiv" : "sdiv";
 						break;
 					}
-					char *le = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", le, aggty, lb, i);
-					char *re = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", re, aggty, rb, i);
+					/* a tuple side yields lane i via extractvalue; a scalar side broadcasts (same value each lane). */
+					char le[256], re[256];
+					if (lt) {
+						char *e = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, lb, i);
+						snprintf(le, sizeof(le), "%s", e);
+					} else
+						snprintf(le, sizeof(le), "%s", lb);
+					if (rt) {
+						char *e = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, rb, i);
+						snprintf(re, sizeof(re), "%s", e);
+					} else
+						snprintf(re, sizeof(re), "%s", rb);
 					char *ce = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", ce, opi, mt, le, re);
 					char *ni = gen_value_name(ctx);
@@ -4391,7 +4560,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					strcpy(cur, ni);
 				}
 				strcpy(result_buf, cur);
-				expr->resolved = *lt;
+				expr->resolved = *tt;
 				break;
 			}
 		}
@@ -4816,14 +4985,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * `.x` is member extraction (`extractvalue`). Handle a NAME base bound to a type-8 tuple value, or any
 		 * base whose resolved type is a tuple (e.g. a call result), before the archetype-column path below. */
 		if (expr->data.field.base) {
-			const HirType *tt = NULL;
-			if (expr->data.field.base->kind == HIR_EXPR_NAME) {
-				ValueInfo *bv = find_value(ctx, expr->data.field.base->data.name.name);
-				if (bv && bv->type == 8)
-					tt = bv->tuple_type;
-			}
-			if (!tt && expr->data.field.base->resolved.tag == HIR_TYPE_TUPLE)
-				tt = &expr->data.field.base->resolved;
+			const HirType *tt = codegen_tuple_type_of(ctx, expr->data.field.base);
 			if (tt) {
 				int idx = tuple_field_index(tt, expr->data.field.field_name);
 				if (idx >= 0) {
@@ -12383,6 +12545,11 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
  * the row index is saved/restored so nested fans don't clobber each other). */
 static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts, int stmt_count,
                              const char *row_var) {
+	/* This fan is a NESTED self-join fan iff it runs inside a columnar `system(Q)` — then the enclosing
+	 * system's bound columns are the neighbour fold domain (a bare-column read inside a `reduce` iterates the
+	 * fold counter). A top-level map/system fan is not nested, so its bare columns stay per-element self. */
+	int saved_nested = ctx->in_nested_fan;
+	ctx->in_nested_fan = ctx->in_columnar_system;
 	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
 	 * rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine which
 	 * archetype(s) we fan over (a query may still match several same-shape archetypes). */
@@ -12559,6 +12726,7 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		                  rnext, row, rnext, ralloca, head, lend);
 		ctx->block_terminated = 0;
 	}
+	ctx->in_nested_fan = saved_nested;
 }
 
 static void codegen_each_decl(CodegenContext *ctx, HirKernelDecl *each, int decl_unit) {

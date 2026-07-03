@@ -1,0 +1,56 @@
+// The full boids flock kernel in one file: the honest self-join (`system` neighbour COLUMNS ∘ nested `map`
+// self SCALARS) with tuple 2-vectors, tuple-valued reduces into locals (cohesion/separation), a scalar reduce
+// (neighbour count), funcs taking/returning tuples (near/push), and tuple∘scalar / tuple∘tuple arithmetic.
+// Deterministic: 2 boids far apart so each sees ONLY itself (near→1 only for self; cnt=1). Then cohesion=
+// me.pos, alignment=me.vel, separation=0, so steer = (CENTER-me.pos)*CTR only, nvel = me.vel + steer.
+// b0 pos=(100,100) vel=(1,0): steer=(320-100,240-100)*0.5=(110,70); nvel=(1+110,0+70)=(111,70).
+// b1 pos=(500,400) vel=(0,2): steer=(320-500,240-400)*0.5=(-90,-80); nvel=(0-90,2-80)=(-90,-78).
+// RUN: %arche build -o %t %s && %t | grep -qF "v=111 70 -90 -78"
+#import { fmt }
+pos(x, y)  :: float;
+vel(x, y)  :: float;
+nvel(x, y) :: float;
+B          :: arche { pos, vel, nvel }
+[2]B(2);
+
+CTR          :: 0.5;
+R2           :: 2500.0;
+CENTER(X, Y) :: (320.0, 240.0);
+
+near :: func(a: pos, b: pos) -> float {
+  d := a - b;
+  return select(d.x * d.x + d.y * d.y < R2, 1.0, 0.0);
+}
+
+push :: func(a: pos, b: pos) -> pos {
+  d  := a - b;
+  d2 := d.x * d.x + d.y * d.y;
+  return d * select(d2 < R2 && d2 > 0.0, 1.0, 0.0);
+}
+
+seed :: system {
+  B.pos.x = { 100.0, 500.0 };
+  B.pos.y = { 100.0, 400.0 };
+  B.vel.x = { 1.0, 0.0 };
+  B.vel.y = { 0.0, 2.0 };
+}
+
+flock :: system (query { pos, vel }) {
+  map (query { nvel } as me)(nvel) {
+    cnt        := reduce(+, near(me.pos, pos));
+    cohesion   := reduce(+, pos * near(me.pos, pos)) / cnt;
+    separation := reduce(+, push(me.pos, pos));
+    steer      := (cohesion - me.pos) * 0.0 + separation * 1.0 + (CENTER - me.pos) * CTR;
+    me.nvel = me.vel + steer;
+  };
+}
+
+apply :: map (query { vel, nvel })(vel) {
+  vel = nvel;
+}
+
+show :: system eff {
+  fmt.printf("v=%.0f %.0f %.0f %.0f\n", B.vel.x[0], B.vel.y[0], B.vel.x[1], B.vel.y[1]);
+}
+
+#run seq({ seed, flock, apply, show })

@@ -1,0 +1,97 @@
+// Emergent flocking: 4 boids at the corners run flock+apply repeatedly and CONVERGE toward CENTER=(320,240)
+// (cohesion + center-pull cluster them; separation keeps them apart). End positions must cluster near center.
+// RUN: %arche build -o %t %s && %t | tail -1 | grep -qF "p=371,277 269,277 371,203 269,203"
+#import { fmt }
+pos(x, y)  :: float;
+vel(x, y)  :: float;
+nvel(x, y) :: float;
+B          :: arche { pos, vel, nvel }
+[4]B(4);
+
+R2           :: 2500.0;
+SEP2         :: 400.0;
+COH          :: 0.02;
+ALN          :: 0.05;
+SEP          :: 0.5;
+CTR          :: 0.02;
+CENTER(X, Y) :: (320.0, 240.0);
+
+near :: func(a: pos, b: pos) -> float {
+  d := a - b;
+  return select(d.x * d.x + d.y * d.y < R2, 1.0, 0.0);
+}
+
+push :: func(a: pos, b: pos) -> pos {
+  d  := a - b;
+  d2 := d.x * d.x + d.y * d.y;
+  return d / (d2 + 1.0) * select(d2 < SEP2 && d2 > 0.0, SEP2, 0.0);
+}
+
+seed :: system {
+  B.pos.x = { 40.0, 600.0, 40.0, 600.0 };
+  B.pos.y = { 40.0, 40.0, 440.0, 440.0 };
+  B.vel.x = { 0.0, 0.0, 0.0, 0.0 };
+  B.vel.y = { 0.0, 0.0, 0.0, 0.0 };
+}
+
+flock :: system (query { pos, vel }) {
+  map (query { nvel } as me)(nvel) {
+    cnt        := reduce(+, near(me.pos, pos));
+    cohesion   := reduce(+, pos * near(me.pos, pos)) / cnt;
+    alignment  := reduce(+, vel * near(me.pos, pos)) / cnt;
+    separation := reduce(+, push(me.pos, pos));
+    steer      := (cohesion - me.pos) * COH + (alignment - me.vel) * ALN + separation * SEP + (CENTER - me.pos) * CTR;
+    me.nvel = me.vel + steer;
+  };
+}
+
+apply :: map (query { pos, vel, nvel })(vel, pos) {
+  vel = nvel;
+  pos = pos + vel;
+}
+
+report :: system eff {
+  fmt.printf(
+    "p=%.0f,%.0f %.0f,%.0f %.0f,%.0f %.0f,%.0f\n",
+    B.pos.x[0],
+    B.pos.y[0],
+    B.pos.x[1],
+    B.pos.y[1],
+    B.pos.x[2],
+    B.pos.y[2],
+    B.pos.x[3],
+    B.pos.y[3],
+  );
+}
+
+#run seq(
+  {
+    seed,
+    report,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    flock,
+    apply,
+    report,
+  },
+)

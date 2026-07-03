@@ -1072,6 +1072,7 @@ static void mark_last_const(SemanticContext *ctx) {
 static void analyze_expression(SemanticContext *ctx, SyntaxView v);
 static void analyze_statement(SemanticContext *ctx, SyntaxView v);
 static void analyze_inline_fan(SemanticContext *ctx, SyntaxView f, int is_map);
+static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid);
 static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name);
 static ParamSummary sem_param_summary_node(SyntaxView p);
 static int proc_param_is_inout(DeclSummary *proc, int param_idx);
@@ -1158,6 +1159,18 @@ static int alias_name_matches(const char *registered, const char *ref) {
 		return 1;
 	const char *dot = strrchr(ref, '.');
 	return dot && strcmp(registered, dot + 1) == 0;
+}
+
+/* Like alias_name_matches but SYMMETRIC — matches whether the module qualifier (`game.pos`) is on the
+ * registered decl name or on the reference. Used for tuple-group lookups across a device's module bands. */
+static int name_tail_matches(const char *a, const char *b) {
+	if (strcmp(a, b) == 0)
+		return 1;
+	const char *da = strrchr(a, '.');
+	if (da && strcmp(da + 1, b) == 0)
+		return 1;
+	const char *db = strrchr(b, '.');
+	return db && strcmp(a, db + 1) == 0;
 }
 
 static const char *resolve_type_alias(SemanticContext *ctx, const char *name) {
@@ -1553,7 +1566,7 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 					 * lowering. Accept the base here (codegen reads the flattened const). */
 					for (int ci = 0; ci < ctx->decl_count; ci++)
 						if (ctx->decls[ci] && ctx->decls[ci]->kind == DECL_CONST && ctx->decls[ci]->name &&
-						    strcmp(ctx->decls[ci]->name, idnt) == 0 &&
+						    name_tail_matches(ctx->decls[ci]->name, idnt) &&
 						    tyid_kind(ctx->ty_arena, ctx->decls[ci]->const_type_value_id) == TYK_TUPLE)
 							goto done;
 				}
@@ -1829,6 +1842,17 @@ static int sem_arch_covers_col(ArchetypeInfo *ai, const char *col) {
 /* The type of an archetype field `base.field` (a field of an archetype name or of a var of that
  * archetype). TYID_UNKNOWN if not an archetype field. */
 static TypeId archetype_field_type_id(SemanticContext *ctx, const char *base_name, const char *field_name) {
+	/* `w.x` on a tuple VALUE local (`w := pos`, a 2-vector): the field type is the tuple member's type — so
+	 * `w.x * w.y` is float, and `sqrt(…)` / a `:=` bind infer float rather than the int default. */
+	VariableInfo *tv = find_variable(ctx, base_name);
+	if (tv && tyid_kind(ctx->ty_arena, tv->type_id) == TYK_TUPLE) {
+		int cnt = tyid_tuple_count(ctx->ty_arena, tv->type_id);
+		for (int fi = 0; fi < cnt; fi++) {
+			const char *fn = tyid_tuple_field_name(ctx->ty_arena, tv->type_id, fi);
+			if (fn && strcmp(fn, field_name) == 0)
+				return tyid_tuple_field_type(ctx->ty_arena, tv->type_id, fi);
+		}
+	}
 	ArchetypeInfo *arch = find_archetype(ctx, base_name);
 	if (!arch) {
 		VariableInfo *var = find_variable(ctx, base_name);
@@ -2069,6 +2093,12 @@ static TypeId binary_type_id(SemanticContext *ctx, SyntaxView v) {
 	}
 	TypeId lt = sem_expr_type_id(ctx, sem_node_at_expr(v, 0));
 	TypeId rt = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+	/* Tuple arithmetic: `a - b` (tuple ∘ tuple) is element-wise; `v * s` / `v / s` (tuple ∘ scalar) scales
+	 * every lane. Either way the result is the tuple type — so `.x`/`.y` still resolve on the result. */
+	if (tyid_kind(ctx->ty_arena, lt) == TYK_TUPLE)
+		return lt;
+	if (tyid_kind(ctx->ty_arena, rt) == TYK_TUPLE)
+		return rt;
 	char ln[64];
 	char rn[64];
 	tyid_display(ctx->ty_arena, lt, ln, sizeof(ln));
@@ -2297,9 +2327,18 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		int is_arch = find_archetype(ctx, name) != NULL;
 		int is_const = semantic_get_const_value(ctx, name) != NULL;
 		int is_nullary_ctor = sum_ctor_lookup(ctx, name, NULL, NULL) != TYID_UNKNOWN; /* a bare `halt`/`empty` */
+		/* A named-vector CONSTANT (`CENTER(X,Y) :: (…)`) used as a whole tuple VALUE (`CENTER - me.pos`): its
+		 * flattened members are the value consts, but the bare name is a valid tuple value too. */
+		int is_tuple_const = 0;
+		for (int ci = 0; ci < ctx->decl_count && !is_tuple_const; ci++) {
+			DeclSummary *cc = ctx->decls[ci];
+			if (cc && cc->kind == DECL_CONST && cc->name && name_tail_matches(cc->name, name) &&
+			    tyid_kind(ctx->ty_arena, cc->const_type_value_id) == TYK_TUPLE)
+				is_tuple_const = 1;
+		}
 		if (is_var)
 			name_var->is_referenced = 1;
-		if (!is_known_func && !is_var && !is_arch && !is_const && !is_nullary_ctor)
+		if (!is_known_func && !is_var && !is_arch && !is_const && !is_nullary_ctor && !is_tuple_const)
 			sem_emit_undefined_symbol(ctx, loc, name);
 		else if (is_var && name_var->is_consumed)
 			sem_emit_use_after_consume(ctx, loc, name);
@@ -6706,7 +6745,7 @@ static const char *bind_query_archetype(SemanticContext *ctx, DeclSummary *d) {
 	for (int p = 0; p < d->param_count; p++) {
 		ArchetypeInfo *owner = NULL;
 		for (int a = 0; a < ctx->archetype_count; a++)
-			if (find_field(ctx->archetypes[a], d->params[p].name)) {
+			if (sem_arch_covers_col(ctx->archetypes[a], d->params[p].name)) { /* group-aware (`pos`↦`pos_x`/…) */
 				owner = ctx->archetypes[a];
 				break;
 			}
@@ -6723,6 +6762,18 @@ static const char *bind_query_archetype(SemanticContext *ctx, DeclSummary *d) {
 		TypeId param_type = d->params[p].type_id;
 		if (param_type == TYID_UNKNOWN && field)
 			param_type = field->type_id;
+		/* A tuple-group column (`pos(x,y)::float`) queried by name resolves to its TYK_TUPLE VALUE type, so the
+		 * body can use `pos` as a 2-vector (`pos * K`, `near(me.pos, pos)`). The flattened `pos_x`/`pos_y` remain
+		 * for column storage; this is the value view. */
+		param_type = sem_expand_tuple_nominal(ctx, param_type);
+		for (int ci = 0; ci < ctx->decl_count; ci++) {
+			DeclSummary *cc = ctx->decls[ci];
+			if (cc && cc->kind == DECL_CONST && cc->name && name_tail_matches(cc->name, d->params[p].name) &&
+			    tyid_kind(ctx->ty_arena, cc->const_type_value_id) == TYK_TUPLE) {
+				param_type = cc->const_type_value_id;
+				break;
+			}
+		}
 		add_variable(ctx, d->params[p].name, param_type);
 		mark_last_param(ctx, d->params[p].is_own);
 	}
@@ -10585,7 +10636,7 @@ static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid) {
 		return tid;
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *c = ctx->decls[i];
-		if (c && c->kind == DECL_CONST && c->name && strcmp(c->name, ref) == 0 &&
+		if (c && c->kind == DECL_CONST && c->name && name_tail_matches(c->name, ref) &&
 		    tyid_kind(ctx->ty_arena, c->const_type_value_id) == TYK_TUPLE)
 			return c->const_type_value_id;
 	}
@@ -11140,5 +11191,11 @@ const char *semantic_get_const_value(SemanticContext *ctx, const char *const_nam
 			return ctx->const_values[i];
 		}
 	}
+	/* Fallback: a module-qualified mismatch (`CENTER_X` vs a device's registered `game.CENTER_X`, or the
+	 * reverse) — match on the unqualified tail. Lets a named-vector const's flattened members resolve across
+	 * a device's module bands. */
+	for (int i = 0; i < ctx->const_count; i++)
+		if (name_tail_matches(ctx->const_names[i], const_name))
+			return ctx->const_values[i];
 	return NULL;
 }

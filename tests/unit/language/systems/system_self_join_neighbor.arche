@@ -1,0 +1,26 @@
+// The REAL self-join the boids need (stronger than system_nested_map_reduce): the reduce folds the enclosing
+// system's bound column `v` as an EXPRESSION `me.v - v`, where `me.v` (SAME base column) must stay pinned to
+// THIS row while `v` iterates the fold. o_i = Σ_j (v_i − v_j) = N·v_i − Σv. v={10,20,30}, Σ=60, N=3 →
+// o = -30, 0, 30. If `me.v` collapses into the fold column `v` (the bug), every term is v_j−v_j=0 → o=0 0 0.
+// RUN: %arche build -o %t %s && %t | grep -qF "o=-30 0 30"
+#import { fmt }
+v :: float;
+o :: float;
+B :: arche { v, o }
+[3]B(3);
+
+seed :: system {
+  B.v = { 10.0, 20.0, 30.0 };
+}
+
+flock :: system (query { v }) {
+  map (query { o } as me)(o) {
+    me.o = reduce(+, me.v - v);
+  };
+}
+
+show :: system eff {
+  fmt.printf("o=%.0f %.0f %.0f\n", B.o[0], B.o[1], B.o[2]);
+}
+
+#run seq({ seed, flock, show })
