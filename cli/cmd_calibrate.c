@@ -165,6 +165,10 @@ static int measure_gpu(double *launch_us, double *xfer_us, double *gpu_gflops) {
 	CompileOpts opts = {0};
 	opts.gpu = 1;
 	opts.quiet = 1;
+	/* The probe hand-indexes its tiny `[6]T` timer pool (`T.ns[i]`) — legitimate for an internal generated
+	 * program; opt out of W0029 pool_index_outside_query (error-by-default) so the probe compiles instead of
+	 * failing semantic analysis and reporting a phantom `gpu_present=0` on every machine. */
+	cli_apply_pool_index("allow");
 	int rc = compile_source(src, spath, exe, &opts);
 	if (rc != 0)
 		return 0;
