@@ -6753,13 +6753,11 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 		}
 		if (out_only > 1)
 			sem_emit_extern_multi_out(ctx, proc->loc, proc->name, out_only);
-		/* W0012 (C-ABI variant): an in-out param — a name in BOTH the in-list and out-list — is PERMITTED
-		 * on a `#foreign`/`@syscall` proc (the in-slot is only a positional shadow, written `_` at the call
-		 * site; the kernel writes the OUT param), but surface it so the shadow is visible, not silent. */
-		for (int i = 0; i < proc->param_count; i++)
-			if (proc_param_is_inout(proc, i))
-				sem_emit_lint_inout_param_shadow_cabi(ctx, proc->loc,
-				                                      proc->params[i].name ? proc->params[i].name : "<param>");
+		/* An in-out param on a `#foreign`/`@syscall` proc — a name in BOTH the in-list and out-list — is the
+		 * SANCTIONED C-ABI idiom for a caller-allocated buffer the C side fills/reads through one pointer arg
+		 * (`sys_clock(clk, ts)(ts)`, `gfx_be_present(win, px, …)(px)`). It's correct and, with no read-only
+		 * foreign-slice option, unavoidable — so it is NOT a lint. (The non-foreign W0012 above still flags an
+		 * accidental in-out shadow in a real arche proc; the call-site out-arg footgun is a separate concern.) */
 		return;
 	}
 

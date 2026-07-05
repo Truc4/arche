@@ -1189,16 +1189,6 @@ SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, c
 	                 "`#foreign` proc (C-ABI alignment). Return a fresh out-only result instead",
 	                 name);
 }
-/* The `#foreign`/`@syscall` variant: the shadow is PERMITTED here (the in-slot is only a C-ABI positional
- * shadow, written `_` at the call site; the kernel writes the out-param), but surface it so it is visible,
- * not silent — the buffer the caller reads is the OUT param, not the in-arg. */
-SemDiag *sem_emit_lint_inout_param_shadow_cabi(SemanticContext *ctx, SourceLoc loc, const char *name) {
-	return sem_emit_(ctx, SEM_LINT_inout_param_shadow, loc,
-	                 "in-param '%s' shadowed by out-param '%s' (permitted for C-ABI alignment): the in-slot "
-	                 "is a positional shadow — write `_` at the call site; the kernel-written buffer is the "
-	                 "out-param",
-	                 name, name);
-}
 /* `module_path` (or NULL): the source file of the decl's owning module, appended so a cross-file
  * dead-code warning names a file the user can open (the bare `loc` line is module-local). The
  * conditional `%s` triplet keeps the format a single literal for -Wformat checking. */
