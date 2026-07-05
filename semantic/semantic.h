@@ -168,8 +168,9 @@ void semantic_set_lint_map_writes_foreign_pool(int enabled, int werror);
 /* W0028 proc_calls_proc: WARN by default (the flat-effect proc→proc ban). `--proc-leaf=error|warn|allow`
  * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
 void semantic_set_lint_proc_calls_proc(int enabled, int werror);
-/* W0030 proc_not_primitive: the proc-elimination ban (a proc must be `#foreign`/primitive). DISABLED by
- * default during the migration; enable (then werror) to enforce once stdlib is converted. */
+/* W0030 proc_not_primitive: the proc-elimination ban — a `proc` must be `#foreign`/`@syscall`/`@intrinsic`;
+ * pure logic is a `func`, effects/pool access a `system`/`map (Q) eff`. ENFORCED — error by default (set in
+ * ensure_init, stdlib is fully converted); `--proc-not-primitive=warn|allow` relaxes it. */
 void semantic_set_lint_proc_not_primitive(int enabled, int werror);
 /* W0016 discarded_ok: ERROR by default — an `insert` into a fallible (`reject`) pool that ignores `ok`.
  * `--discarded-ok=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */

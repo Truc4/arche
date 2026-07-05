@@ -6,11 +6,11 @@
 #import { io }
 
 Open :: arche { f :: fd }
-[4]Open;
+[4]Open ?abort; // infallible overflow → insert needs no `ok` check
 
 entry :: system eff {
   io.fopen_read("/dev/null")(f:); // open → fd (the kernel descriptor, as data)
-  insert(Open { f: f })(h:, _:); // park the fd in a row
+  insert(Open { f: f })(h:); // park the fd in a row
   delete(h)(_:); // close = delete the row → @drop(fd) fires os.close (syscall 3)
 }
 
