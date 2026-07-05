@@ -1,7 +1,7 @@
 // Unsigned key whose values straddle 2^31. The previous sort always used a signed compare (icmp slt),
 // so 4000000000 (negative as i32) sorted FIRST — wrong. With the unsigned-correct compare it sorts LAST.
 // Probes the tag order (unambiguous regardless of how the u32 prints). RED before the unsigned fix.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 k   :: u32;
 tag :: int;

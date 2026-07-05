@@ -1,0 +1,20 @@
+// SOUNDNESS: a self-binder `me` may read ONLY the components the map QUERIED. A query is source-agnostic —
+// `query { o }` matches ANY shape with an `o` component — so reaching `me.v` (v is NOT in the query) is unsound:
+// the matched shape may not have `v` at all. It must be a hard semantic error, not silently accepted (before,
+// `me` exposed the whole archetype, so `me.v` was allowed and only blew up later in codegen).
+// RUN: not %arche build -o %t %s 2>&1 | grep -qiF "not queried"
+v :: float;
+o :: float;
+B :: arche { v, o }
+[2]B(2);
+
+seed :: system {
+  B.v = { 5.0, 7.0 };
+  B.o = { 0.0, 0.0 };
+}
+
+bad :: map (query { o } as me)(o) {
+  me.o = me.v; // v is not in the query `{ o }` — unsound
+}
+
+#run seq({ seed, bad })

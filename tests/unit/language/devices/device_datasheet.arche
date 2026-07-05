@@ -2,7 +2,7 @@
 // and the device's system runs over it. `libdev`'s datasheet (`.ds.arche`) declares `pos`/`vel` as
 // GLOBAL components; this driver's `Thing` references them by bare name (plus its own `mass`), sizes
 // the pool, and `run libdev.integrate` binds to `Thing` by column name — the device owns no storage.
-// RUN: %arche build -o %t %s && %t | grep "datasheet_ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "datasheet_ok"
 #import { libdev fmt }
 
 Thing :: arche { pos, vel, mass :: float }

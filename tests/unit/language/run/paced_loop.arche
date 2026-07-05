@@ -2,7 +2,7 @@
 // accumulator: read `os.now_ms`, add the elapsed delta to a bank, drain it in a loop (catch up if behind),
 // and sleep the remainder via `os.sleep_ms`. The schedule is just `forever(frame)`; `boot` seeds the clock.
 // Exits with the tick count once it reaches 3 (exit code survives `os.exit` cleanly).
-// RUN: %arche build -o %t %s && ( %t; test $? -eq 3 )
+// RUN: %arche build --pool-index=allow -o %t %s && ( %t; test $? -eq 3 )
 #import { os }
 last  :: i64;
 bank  :: i64;

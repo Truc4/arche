@@ -1,0 +1,17 @@
+// RULE (regression): a device's impl (`.arche`) may not define a tuple-group TYPE (`dir(x,y)::float`) —
+// it is a queryable component-type vocabulary and belongs in the device's `.ds.arche` datasheet. (A
+// named-vector VALUE const `C(X,Y)::(1,2)` HAS a value and is allowed.) `tgtypedev`'s impl leaks such a
+// type, so a build importing it must error. Before this was caught, the tuple-group case slipped the
+// device-impl-decl sweep entirely (only enum/opaque/alias types were rejected).
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "device.*impl cannot define a type" %t.out
+#import { tgtypedev }
+
+Thing :: arche { val }
+
+[2]Thing;
+
+seed :: system eff {
+  insert(Thing { val: 1.0 })(_:, _:);
+}
+
+#run seq({ seed, tgtypedev.bump })

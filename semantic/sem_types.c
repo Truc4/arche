@@ -631,9 +631,19 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 		snprintf(buf, buflen, "[%d]%s", n->data.array.len, inner);
 		break;
 	}
-	case TYK_TUPLE:
-		snprintf(buf, buflen, "tuple(%d)", n->data.tuple.count);
+	case TYK_TUPLE: {
+		/* Render the real shape, e.g. `(float, float)` — a bare `tuple(2)` says nothing about the lanes. */
+		int cnt = n->data.tuple.count;
+		int off = snprintf(buf, buflen, "(");
+		for (int i = 0; i < cnt && off > 0 && off < buflen; i++) {
+			char inner[128];
+			tyid_display(a, n->data.tuple.types[i], inner, sizeof(inner));
+			off += snprintf(buf + off, buflen - off, "%s%s", i ? ", " : "", inner);
+		}
+		if (off > 0 && off < buflen)
+			snprintf(buf + off, buflen - off, ")");
 		break;
+	}
 	case TYK_SUM:
 		snprintf(buf, buflen, "%s", n->data.sum.name ? n->data.sum.name : "sum");
 		break;

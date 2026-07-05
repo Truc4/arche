@@ -1,6 +1,6 @@
 // Radix-path stability: an integer key with all-equal values at n>=32 (radix path), distinct tags 1..40.
 // LSD radix with stable counting passes must keep equal-key rows in input order, so tag stays 1..40.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 k   :: int;
 tag :: int;

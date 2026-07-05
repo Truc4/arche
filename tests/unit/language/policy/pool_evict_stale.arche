@@ -1,7 +1,7 @@
 // Eviction correctness falls out of the generation system: overwriting a victim slot bumps its
 // generation, so the evicted entity's old handle goes STALE. Using it (here `delete`) aborts, exactly
 // like a normal use-after-free. (Companion to pool_evict, which checks the value side.)
-// RUN: %arche build -o %t %s && ! %t
+// RUN: %arche build --pool-index=allow -o %t %s && ! %t
 Foo :: arche { v :: int, ts :: int }
 [2]Foo ?evict_oldest;
 @policy(pool)

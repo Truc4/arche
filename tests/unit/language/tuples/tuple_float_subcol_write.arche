@@ -1,6 +1,6 @@
 // GAP (idiomatic-boids-gaps.md G4): a FLOAT tuple sub-column hand-indexed write mis-lowers to i32. The int
 // case works (see sys_tuple_subcol_write); float does not. RED until fixed.
-// RUN: %arche build -o %t %s && %t | grep -qF "x=0 1 2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "x=0 1 2"
 #import { fmt }
 pos(x, y) :: float;
 P         :: arche { pos }

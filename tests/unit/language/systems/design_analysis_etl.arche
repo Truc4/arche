@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 // Task 1: Derived columns (revenue = price * quantity)
 #import { fmt }
 Task1 :: arche { price :: float, quantity :: int, revenue :: float }

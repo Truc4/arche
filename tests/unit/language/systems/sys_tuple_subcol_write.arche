@@ -1,6 +1,6 @@
 // FEATURE: a tuple-subcolumn column-init scatter inside a SYSTEM body (`Mover.pos.x = { … }`) stores each
 // element into its row. (Read-back in `check` — both systems now that procs are gone.)
-// RUN: %arche build -o %t %s && %t | grep -qF "ok 7 9"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok 7 9"
 #import { fmt }
 pos(x, y) :: int;
 Mover     :: arche { pos }

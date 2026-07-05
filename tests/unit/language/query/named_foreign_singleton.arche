@@ -1,6 +1,6 @@
 // A `map(Name)` body may read a FOREIGN singleton pool (`Config`, a `[1]` shape it does not iterate),
 // alongside the iterated query columns — the named-query form preserves the foreign-pool read path.
-// RUN: %arche build -o %t %s && %t | grep -qF "v=4 24 p=84 104"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=4 24 p=84 104"
 #import { fmt }
 pos(x, y)    :: float;
 vel(x, y)    :: float;

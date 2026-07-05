@@ -2,7 +2,7 @@
 // transform, which must order negatives before positives. n=40 → radix path. `v = 20.5 - v` maps the
 // ascending 1..40 to a descending 19.5..-19.5; sorting ascending reverses it, so the most-negative lands
 // first and tag is permuted in lockstep.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 
 v :: float;

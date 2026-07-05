@@ -157,6 +157,10 @@ static HirType *hir_tuple_type_for_name(const char *name);
  * Without the read marker, `me.pos` and a folded neighbour `pos` would collapse to the same access and the
  * self-join would degenerate (every element would only ever see itself). Mirrors tuple_rewrite_expr. */
 #define SELF_READ_MARK '\x1f'
+/* `me.id` — the intrinsic read-only pool-row identity — is NOT a stored column, so it can't rewrite to a
+ * `\x1f`col (codegen would strip the mark and read a nonexistent `id` column). It becomes a NAME `\x1e` sentinel
+ * that codegen turns into the current fan row index (trunc to i32). Read-only; an assign target never reaches. */
+#define ROW_ID_MARK '\x1e'
 static void self_bind_rewrite_expr(HirExpr *e, const char *self, int to_self) {
 	if (!e)
 		return;
@@ -166,6 +170,16 @@ static void self_bind_rewrite_expr(HirExpr *e, const char *self, int to_self) {
 		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
 		    strcmp(e->data.field.base->data.name.name, self) == 0) {
 			const char *sub = e->data.field.field_name;
+			if (strcmp(sub, "id") == 0) {
+				char *idn = malloc(3);
+				idn[0] = ROW_ID_MARK;
+				idn[1] = 'i'; /* a short, stable body — codegen keys off the mark only */
+				idn[2] = '\0';
+				e->kind = HIR_EXPR_NAME;
+				e->data.name.name = idn;
+				e->resolved.tag = HIR_TYPE_INT;
+				break;
+			}
 			char *col = malloc(strlen(sub) + 2);
 			if (to_self) {
 				col[0] = SELF_READ_MARK;
@@ -460,17 +474,14 @@ static HirType *lower_type_cst(SyntaxView t) {
 			elem->name = en;
 		else
 			free(en);
-		/* collect ranks (NUMBER tokens) left-to-right */
+		/* collect ranks left-to-right — each dimension is a const-expression sub-node, CTFE-folded to its size. */
 		int ranks[16], nr = 0;
 		for (int i = 0; i < t.node->child_count && nr < 16; i++)
-			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
-				char buf[32];
-				int l = (int)t.node->children[i].as.token.length;
-				if (l > 31)
-					l = 31;
-				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
-				buf[l] = '\0';
-				ranks[nr++] = atoi(buf);
+			if (t.node->children[i].tag == SE_NODE) {
+				SyntaxView sz = {t.node->children[i].as.node, t.src};
+				int r = 0;
+				semantic_try_const_int(g_lower_sem, sz, &r); /* a non-const size is reported in semantic */
+				ranks[nr++] = r;
 			}
 		HirType *cur = elem;
 		for (int i = nr - 1; i >= 0; i--) {
@@ -2699,6 +2710,93 @@ static void lower_writes(SyntaxView f, char ***out_writes, int *out_count) {
 		(*out_writes)[i] = txt_dup(sv_token(sv_child_at(f, SN_WRITE_PARAM, i), TOK_IDENT));
 }
 
+/* `Flock.<group>` where `<group>` is a tuple group (`pos(x,y)`) must carry the tuple TYPE so codegen's tuple
+ * arithmetic (`Flock.pos - me.pos`) extracts its lanes — unlike `me.pos`, the binder field is NOT collapsed to
+ * a bare name (codegen resolves `Flock.pos` from the pool at the fold counter), so only its resolved type is
+ * tagged. Recurses into the nested `map` (a HIR_STMT_EACH) that holds the self-join body. */
+static void sysbind_tag_expr(HirExpr *e, const char *binder) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case HIR_EXPR_FIELD:
+		sysbind_tag_expr(e->data.field.base, binder);
+		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+		    strcmp(e->data.field.base->data.name.name, binder) == 0) {
+			HirType *tt = hir_tuple_type_for_name(e->data.field.field_name);
+			if (tt) {
+				e->resolved = *tt;
+				free(tt);
+			}
+		}
+		break;
+	case HIR_EXPR_BINARY:
+		sysbind_tag_expr(e->data.binary.left, binder);
+		sysbind_tag_expr(e->data.binary.right, binder);
+		break;
+	case HIR_EXPR_UNARY:
+		sysbind_tag_expr(e->data.unary.operand, binder);
+		break;
+	case HIR_EXPR_CALL:
+		sysbind_tag_expr(e->data.call.callee, binder);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			sysbind_tag_expr(e->data.call.args[i], binder);
+		break;
+	case HIR_EXPR_INDEX:
+		sysbind_tag_expr(e->data.index.base, binder);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			sysbind_tag_expr(e->data.index.indices[i], binder);
+		break;
+	default:
+		break;
+	}
+}
+
+static void sysbind_tag_stmt(HirStmt *s, const char *binder) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case HIR_STMT_BIND:
+		sysbind_tag_expr(s->data.bind_stmt.value, binder);
+		break;
+	case HIR_STMT_ASSIGN:
+		sysbind_tag_expr(s->data.assign_stmt.target, binder);
+		sysbind_tag_expr(s->data.assign_stmt.value, binder);
+		break;
+	case HIR_STMT_FOR:
+		sysbind_tag_stmt(s->data.for_stmt.init, binder);
+		sysbind_tag_expr(s->data.for_stmt.cond, binder);
+		sysbind_tag_stmt(s->data.for_stmt.incr, binder);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			sysbind_tag_stmt(s->data.for_stmt.body[i], binder);
+		break;
+	case HIR_STMT_IF:
+		sysbind_tag_expr(s->data.if_stmt.cond, binder);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			sysbind_tag_stmt(s->data.if_stmt.then_body[i], binder);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			sysbind_tag_stmt(s->data.if_stmt.else_body[i], binder);
+		break;
+	case HIR_STMT_EXPR:
+		sysbind_tag_expr(s->data.expr_stmt.expr, binder);
+		break;
+	case HIR_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			sysbind_tag_expr(s->data.return_stmt.values[i], binder);
+		break;
+	case HIR_STMT_BLOCK:
+		for (int i = 0; i < s->data.block.count; i++)
+			sysbind_tag_stmt(s->data.block.stmts[i], binder);
+		break;
+	case HIR_STMT_EACH:
+		if (s->data.each_stmt)
+			for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+				sysbind_tag_stmt(s->data.each_stmt->stmts[i], binder);
+		break;
+	default:
+		break;
+	}
+}
+
 static HirDecl *lower_system_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
 	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
@@ -2709,6 +2807,13 @@ static HirDecl *lower_system_from(SyntaxView f, char *name) {
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
 	/* `system(Q)` carries query columns (the effectful fan); a run-once `system { }` resolves to 0. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
+	/* `system (query {…} as Flock)`: `Flock.<col>` names the whole queried column (the neighbour fold domain). */
+	SyntaxView qbind = sv_child_at(f, SN_QUERY_BIND, 0);
+	if (sv_present(qbind)) {
+		as->query_binder = txt_dup(sv_token(qbind, TOK_IDENT));
+		for (int i = 0; i < as->stmt_count; i++)
+			sysbind_tag_stmt(as->stmts[i], as->query_binder);
+	}
 	ad->data.kernel = as;
 	return ad;
 }
@@ -2750,6 +2855,7 @@ static HirKernelDecl *lower_map_payload(SyntaxView f, char *name) {
 	 * group rewrite, so `me.pos.x` becomes `pos.x` and then flattens to `pos_x` like a bare access. */
 	SyntaxView selfbind = sv_child_at(f, SN_QUERY_BIND, 0);
 	if (sv_present(selfbind)) {
+		as->has_self_binder = 1;
 		char *self = txt_dup(sv_token(selfbind, TOK_IDENT));
 		for (int i = 0; i < as->stmt_count; i++)
 			self_bind_rewrite_stmt(as->stmts[i], self);
@@ -3282,18 +3388,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 				HirType *ft = (stride <= 1 && sv_present(declty)) ? lower_type_cst(declty) : NULL;
 				if (ft && ft->elem) {
 					sd->array.element_type = ft->elem;
-					for (int i = 0; i < declty.node->child_count; i++)
-						if (declty.node->children[i].tag == SE_TOKEN &&
-						    declty.node->children[i].as.token.kind == TOK_NUMBER) {
-							char b[32];
-							int l = (int)declty.node->children[i].as.token.length;
-							if (l > 31)
-								l = 31;
-							memcpy(b, declty.src + declty.node->children[i].as.token.offset, l);
-							b[l] = '\0';
-							sd->array.size = atoi(b);
-							break;
-						}
+					/* size from the (const-folded) declared type — `[W * H]T` folds to a rank, not a raw token. */
+					if (ft->rank > 0)
+						sd->array.size = ft->rank;
 				} else {
 					HirType *et = hir_type_create(HIR_TYPE_UNKNOWN);
 					*et = map_type_str(etn);
@@ -3428,18 +3525,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 				sd->kind = HIR_STATIC_ARRAY;
 				sd->array.name = nm;
 				sd->array.element_type = full->elem;
-				for (int i = 0; i < arr_ty.node->child_count; i++)
-					if (arr_ty.node->children[i].tag == SE_TOKEN &&
-					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
-						char buf[32];
-						int l = (int)arr_ty.node->children[i].as.token.length;
-						if (l > 31)
-							l = 31;
-						memcpy(buf, arr_ty.src + arr_ty.node->children[i].as.token.offset, l);
-						buf[l] = '\0';
-						sd->array.size = atoi(buf);
-						break;
-					}
+				/* size from the (const-folded) declared type — `[W * H]T` folds to a rank, not a raw token. */
+				if (full->rank > 0)
+					sd->array.size = full->rank;
 				sd->array.init = sv_present(initv) ? lower_expr_cst(initv) : NULL;
 			} else {
 				/* scalar; inferred form `name := v` carries no type node — infer int/float from the

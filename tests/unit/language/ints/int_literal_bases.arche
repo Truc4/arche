@@ -1,7 +1,7 @@
 // Integer literals in every base + `_` digit separators: hex `0x`, binary `0b`, octal `0o`, decimal — each
 // usable as a const, a local, in a comparison, and as a column array-scatter element. All decode to the
 // same value an equivalent decimal literal would (and emit decimal in the IR).
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 RED  :: 0xFF0000; // 16711680
 MASK :: 0b1010; // 10

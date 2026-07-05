@@ -4,7 +4,7 @@
 // the index EXPRESSION (`v`, an iterated column) must still auto-index per row (loop index restored after
 // the base). A regression would read Table.val[loop_index] or use a loaded i32 as a pointer (miscompile).
 // (Reading a foreign pool from a sys is allowed; writing one is W0024 — here `out` is the iterated column.)
-// RUN: %arche build -o %t %s && %t | grep -qF "out=30 10 40"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "out=30 10 40"
 #import { fmt }
 val   :: int;
 v     :: int;

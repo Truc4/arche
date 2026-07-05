@@ -1,0 +1,13 @@
+// RULE (regression): a device's impl (`.arche`) may not INLINE-define a typed component on its archetype
+// (`Thing :: arche { …, extra :: int }`) — inline `name :: T` is just sugar for a top-level `extra :: int`
+// type decl, so it is the device's shared vocabulary and belongs in the `.ds.arche` datasheet. A BARE
+// component (`{ val }`) that references a datasheet-declared type is fine. `inlinetypedev` leaks such an
+// inline type, so a build importing it must error.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "device.*impl cannot define a type" %t.out
+#import { inlinetypedev }
+
+seed :: system eff {
+  insert(Thing { val: 1.0, extra: 2 })(_:, _:);
+}
+
+#run seq({ seed, inlinetypedev.bump })

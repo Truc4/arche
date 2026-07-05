@@ -1,6 +1,6 @@
 // A query touches ONLY archetypes that have ALL its columns. `Full` has {pos, vel} and is updated;
 // `PosOnly` lacks `vel`, so the `{pos, vel}` query never matches it and its rows are left untouched.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 pos     :: float;
 vel     :: float;

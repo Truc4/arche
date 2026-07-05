@@ -1,7 +1,7 @@
 // `select(cond, a, b)` — the branch-free conditional inside a `map` kernel (replaces `if`, which a map
 // forbids). cond nonzero -> a, else b; applied per element, vectorizable. Covers int + float columns and a
 // nested select. (Spec for the new builtin; red until `select` is implemented.)
-// RUN: %arche build -o %t %s && %t | grep -qF "v=6 -4 21 w=2 0 4 c=1 0 2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=6 -4 21 w=2 0 4 c=1 0 2"
 #import { fmt }
 v :: int;
 w :: float;

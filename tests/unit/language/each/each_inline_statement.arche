@@ -2,7 +2,7 @@
 // top-level `each` does, but emitted in place so its body CAPTURES the enclosing scope (a value-form used as
 // a statement, per the grammar; it takes a `;` like any expression-statement). Here the inline fan reads an
 // enclosing local (`bump`) and writes back through its own column per element. Verified by cells.
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 P :: arche { v :: int }
 [8]P(3);

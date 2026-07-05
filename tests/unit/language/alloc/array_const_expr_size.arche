@@ -1,0 +1,18 @@
+// An array-COLUMN sized by a compile-time const EXPRESSION (`[W * H]int` == `[16]int`), not a bare literal.
+// The size folds via the existing integer CTFE before the type is built.
+// RUN: %arche build -o %t %s && %t | grep -qF "b10=42"
+#import { fmt }
+W :: 4;
+H :: 4;
+S :: arche { buf :: [W * H]int }
+[1]S(1);
+
+set :: system (query { buf })(buf) eff {
+  buf[10] = 42;
+}
+
+show :: system (query { buf }) eff {
+  fmt.printf("b10=%d\n", buf[10]);
+}
+
+#run seq({ set, show })

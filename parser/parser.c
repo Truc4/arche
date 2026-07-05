@@ -332,19 +332,17 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 			advance(parser); /* '[' */
 			if (check(parser, TOK_RBRACKET)) {
 				advance(parser); /* ']' — slice dimension */
-			} else if (check(parser, TOK_NUMBER)) {
-				advance(parser); /* size */
+			} else {
+				/* Fixed-size dimension: a compile-time const EXPRESSION (a literal `16`, a NAME `SIZE`, or
+				 * arithmetic `W * H`) parsed as a sub-expression node and CTFE-folded downstream — same as a
+				 * pool's `[C]` capacity. */
+				if (!parse_expression(parser))
+					return 1;
 				any_number = 1;
 				if (!match(parser, TOK_RBRACKET)) {
-					error(parser, "Expected ']' after array size");
+					error(parser, "Expected ']' after array size expression");
 					return 1;
 				}
-			} else {
-				error(parser, "Expected ']' or integer size after '['");
-				while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF))
-					advance(parser);
-				if (check(parser, TOK_RBRACKET))
-					advance(parser);
 			}
 		}
 		/* element type name (a primitive or name, optionally qualified `mod.Name`) */
@@ -851,7 +849,8 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * the name references the archetype shape whose singleton pool to allocate. */
 	if (check(parser, TOK_LBRACKET)) {
 		*out_kind = SN_STATIC_DECL;
-		advance(parser);               /* '[' */
+		int saw_block = 0; /* an `arche {…}` shape or `{V}` init block was opened → the decl self-terminates */
+		advance(parser);   /* '[' */
 		if (!parse_expression(parser)) /* capacity expression */
 			return 0;
 		if (!match(parser, TOK_RBRACKET)) {
@@ -876,6 +875,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 			syntax_wrap(parser, arch_cp, SN_ARCH_EXPR);
+			saw_block = 1;
 		} else if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected an archetype name or `arche {…}` after pool capacity (e.g. `[8]Particle`)");
 			return 0;
@@ -916,6 +916,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 			if (!match(parser, TOK_RBRACE))
 				error(parser, "Expected '}' after pool init block");
+			saw_block = 1;
 		}
 		/* `Name[C] ?handler` — the pool's overflow handler policy (storage-level, not the archetype
 		 * schema). Wrapped in SN_POLICY_REF; every `insert(Name,…)` defaults to it. `?` (handler), not
@@ -930,7 +931,13 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* the handler ident */
 			syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 		}
-		require_decl_terminator(parser); /* required; `;` optional after a `}` body */
+		/* A pool decl that opened an `arche {…}` shape or `{V}` init block self-terminates — a trailing `(M)`
+		 * init count / `?policy` (which end on `)`/ident, not `}`) does NOT force a `;`. `[1]arche {…}(1)` is
+		 * complete, like `[1]arche {…}`. A blockless `[C]Name(M)` still needs its `;`. */
+		if (saw_block)
+			match(parser, TOK_SEMI); /* optional */
+		else
+			require_decl_terminator(parser);
 		return 1;
 	}
 
@@ -1666,6 +1673,9 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 					              "`system(query {…})`");
 					return 0;
 				}
+				/* optional `as Flock` query-binder — `Flock.<col>` names the whole queried COLUMN (the neighbour
+				 * fold domain of a nested `map (… as me)`), distinct from `me.<col>` (this element). */
+				parse_opt_row_bind(parser);
 			} while (match(parser, TOK_COMMA));
 			if (!match(parser, TOK_RPAREN)) {
 				error(parser, "Expected ')'");

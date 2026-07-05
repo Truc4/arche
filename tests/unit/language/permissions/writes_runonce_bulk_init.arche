@@ -1,6 +1,6 @@
 // A run-once `system` (no selector) writing a pool column directly by whole-column init (`R.v = { … }`) is
 // bulk initialization, NOT a selector-bound per-element write — it needs no `(writes)` permission.
-// RUN: %arche build -o %t %s && %t | grep -qF "v3=4"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v3=4"
 #import { fmt }
 v :: float;
 R :: arche { v }

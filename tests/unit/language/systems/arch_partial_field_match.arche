@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "ok"
 // A sys names a subset of components; it runs only over archetypes that have ALL of them.
 // `gravity (pos, mass)` matches Body (has `mass`) but NOT Particle (no `mass`), so Particle.pos
 // is left untouched while Body.pos advances by mass. (Body reuses the global `pos`/`vel`

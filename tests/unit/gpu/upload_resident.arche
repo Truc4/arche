@@ -7,7 +7,7 @@
 // show. Correct = 101. Without the upload, the 3rd inc reads the stale device value 3 → 4. `make
 // test-upload-resident` proves the derived upload is load-bearing on a device (101 with it, stale 4 under
 // ARCHE_COH_NO_UPLOAD). On the CPU (this RUN, no --gpu) there is no residency and the value is 101 anyway.
-// RUN: %arche build -o %t %s && %t | grep -qF "g=101"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "g=101"
 #import { fmt }
 g :: float;
 P :: arche { g }

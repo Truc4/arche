@@ -1,6 +1,6 @@
 // GAP (idiomatic-boids-gaps.md G6): the `as` self-binder is welded to `eff` — a PURE map can't bind itself
 // (`as me`) to disambiguate self from an enclosing column. Binding self is not an effect. RED until decoupled.
-// RUN: %arche build -o %t %s && %t | grep -qF "v=2 4 6"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=2 4 6"
 #import { fmt }
 x :: float;
 P :: arche { x }

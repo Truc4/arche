@@ -1,7 +1,7 @@
 // A named query over TUPLE-GROUP columns (`pos`/`vel` each (x,y)). Guards the lowering resolution-timing
 // risk: a named query's columns must be resolved BEFORE the `pos.x`->`pos_x` body rewrite, so a whole-
 // group `pos = pos + vel` flattens per-component correctly.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 pos(x, y) :: float;
 vel(x, y) :: float;

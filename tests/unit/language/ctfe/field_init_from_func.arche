@@ -1,5 +1,5 @@
 // CTFE folds a pure func of constants used as a pool field initializer value.
-// RUN: %arche build -o %t %s && %t | grep "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "ok"
 #import { fmt }
 two :: func() -> int {
   return 1 + 1;

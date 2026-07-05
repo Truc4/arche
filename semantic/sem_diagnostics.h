@@ -198,6 +198,9 @@ typedef enum {
 	                                       permission list (or omits the list entirely). E0227. */
 	SEM_DIAG_indexed_write_in_selector, /* an indexed pool-column write `Pool.col[i] = …` inside a selector
 	                                   kernel — write the bound bare column instead. E0228. */
+	SEM_DIAG_self_binder_unqueried,     /* a self-binder read `me.col` of a component NOT in the map's query — a
+	                                       source-agnostic query only guarantees the queried components exist on
+	                                       the matched shape, so reaching an unqueried one is unsound. E0229. */
 
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
@@ -426,6 +429,7 @@ SemDiag *sem_emit_module_parse_failed(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *op, const char *lhs,
                                       const char *rhs);
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type, const char *field);
+SemDiag *sem_emit_self_binder_unqueried(SemanticContext *ctx, SourceLoc loc, const char *binder, const char *col);
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword);
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
 SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only);

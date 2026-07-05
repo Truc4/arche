@@ -1,7 +1,7 @@
 // The column ← array-literal scatter is type-checked element-wise: a mismatched element is still a type
 // error (the convenience doesn't punch a hole in checking). Here a string in an int column's array is
 // rejected. (Companion to column_array_init.arche, which covers the valid cases incl. int→float widening.)
-// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: ! %arche build --pool-index=allow -o %t %s 2>%t.err
 // RUN: grep -qF "column element" %t.err
 #import { fmt }
 x   :: int;

@@ -1,6 +1,6 @@
 // W0027 pointless_move: `move` of a pool column (slice) transfers nothing — a column is shared, fixed
 // pool storage, so `move` is a no-op. Flagged on the move; silent on a plain borrow and under @allow.
-// RUN: test "$(%arche check %s 2>&1 | grep -c pointless_move)" -eq 1
+// RUN: test "$(%arche check --pool-index=allow %s 2>&1 | grep -c pointless_move)" -eq 1
 #import { fmt }
 
 cb      :: char;

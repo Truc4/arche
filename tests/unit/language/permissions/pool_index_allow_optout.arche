@@ -1,0 +1,14 @@
+// The direct-access ban (W0029, error-by-default) is opt-out at BUILD level with `--pool-index=allow` — a
+// deliberate whole-build choice, NOT a per-decl decorator (`@allow(pool_index_outside_query)` does NOT silence
+// it). Same body as the banned test, but with the flag it builds and runs.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "n=5"
+#import { fmt }
+B :: arche { n :: int }
+[4]B(4);
+
+poke :: system eff {
+  B.n[0] = 5;
+  fmt.printf("n=%d\n", B.n[0]);
+}
+
+#run seq({ poke })

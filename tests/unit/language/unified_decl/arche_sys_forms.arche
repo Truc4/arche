@@ -1,6 +1,6 @@
 // Unified grammar: archetype and sys declared as RHS value forms
 // (`Name :: arche { ... }`, `name :: map (...) { ... }`).
-// RUN: %arche build -o %t %s && %t | grep "pos0=3"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "pos0=3"
 #import { fmt }
 pos :: float;
 

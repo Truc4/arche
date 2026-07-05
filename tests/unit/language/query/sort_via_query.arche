@@ -1,5 +1,5 @@
 // RED until Phase 5: `sort(Q.col)` sorts the matched pool by that column, like `sort(Pool.col)`.
-// RUN: %arche build -o %t %s && %t | grep -qF "min=1 max=9"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "min=1 max=9"
 #import { fmt }
 v :: int;
 N :: arche { v }

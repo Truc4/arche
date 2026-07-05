@@ -130,11 +130,11 @@ struct CodegenContext {
 	int in_map;             /* 1 when generating inside a map function body */
 	int in_columnar_system; /* 1 inside a no-arg `system(Q)` body: whole-column ops read the pool from its
 	                         * GLOBAL (`@Arch`), not a `%arch_<name>` parameter (maps get the pool by param) */
-	int in_nested_fan;      /* 1 inside a per-element fan that is itself nested in a columnar `system(Q)` (the
-	                         * honest self-join): the enclosing system's BOUND columns are the neighbour fold
-	                         * domain, so a bare-column read inside a `reduce` iterates the fold counter (while a
-	                         * `\x1f` self-read stays at the fan row). Off for a top-level map/system, where a
-	                         * bare column is the kernel's own per-element self, not a fold domain. */
+	int in_nested_fan;      /* 1 inside a per-element fan nested in a columnar `system(Q)` (the self-join: system
+	                         * queries the neighbour COLUMNS, the nested map queries the self ELEMENTS as `me`).
+	                         * The ENCLOSING system's bound columns (bare names, no own fan row) are the neighbour
+	                         * fold domain — a bare-column read inside a `reduce` iterates the fold counter, while
+	                         * `me.col` (a `\x1f` self-read) stays at the fan row. Off for a top-level map/system. */
 	int in_func;            /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
 	                         * default is the total `clamp` policy instead of `abort`, so a func never crashes */
 
@@ -250,6 +250,12 @@ struct CodegenContext {
 	 * are unaffected — they still read the outer row. NULL when no such fold is in flight. */
 	const char *fold_pool;
 	const char *fold_index;
+
+	/* Active inside a columnar `system (query {…} as Flock)` body: `qbinder_name` == "Flock", `qbinder_arch`
+	 * its resolved backing pool. `Flock.<col>` reads the whole queried column — the neighbour fold domain of a
+	 * nested `map (… as me)` — as a pool column, so `resolve_collective_query` treats the binder as a query. */
+	const char *qbinder_name;
+	const char *qbinder_arch;
 
 	/* Compile-time callback monomorphization. A proc with a proc/func-typed
 	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
@@ -2919,6 +2925,11 @@ static HirQueryDecl *find_query_decl(CodegenContext *ctx, const char *name) {
  * printed for >1). The caller emits the matched pool's pointer directly when this returns 1. */
 static int resolve_collective_query(CodegenContext *ctx, const char *name, const char **out) {
 	*out = name;
+	/* A `system (query {…} as Flock)` binder resolves to its backing pool: `Flock.col` is a pool column. */
+	if (ctx->qbinder_name && ctx->qbinder_arch && strcmp(name, ctx->qbinder_name) == 0) {
+		*out = ctx->qbinder_arch;
+		return 1;
+	}
 	HirQueryDecl *q = find_query_decl(ctx, name);
 	if (!q)
 		return 0;
@@ -3181,9 +3192,28 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 	}
 }
 
+/* A tuple-GROUP column `group` (`pos(x,y)`) is stored FLATTENED as sub-columns `group_<suffix>` (`pos_x`,
+ * `pos_y`) — there is no single `group` field. Fill `idxs`/`types` with each flattened lane's struct field
+ * index and LLVM element type, in declaration order; return the lane count (0 ⇒ `group` is not a tuple group
+ * in this arch). Used to fold / read a whole tuple column (`Flock.pos`) as a packed `{T,…}` value. */
+static int arch_tuple_group_lanes(HirArchetypeDecl *ad, const char *group, int *idxs, const char **types, int max) {
+	int n = 0;
+	size_t glen = strlen(group);
+	for (int i = 0; i < ad->field_count && n < max; i++) {
+		const char *fn = ad->fields[i]->name;
+		if (ad->fields[i]->kind == FIELD_COLUMN && strncmp(fn, group, glen) == 0 && fn[glen] == '_') {
+			idxs[n] = i;
+			types[n] = llvm_type_from_arche(field_base_type_name(ad->fields[i]->type));
+			n++;
+		}
+	}
+	return n;
+}
+
 /* True if `e` is a `Pool.col` field access on a pool archetype (a column), resolving a query alias. Sets
  * *arch_out (if non-NULL) to the resolved archetype name. Used to find the pool a reduce-EXPRESSION folds
- * over, and to recognize that pool's column refs during the fold. */
+ * over, and to recognize that pool's column refs during the fold. A tuple-GROUP column (`Flock.pos`, flattened
+ * to `pos_x`/`pos_y`) counts too — it is a valid whole-tuple fold domain. */
 static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_out) {
 	if (!e || e->kind != HIR_EXPR_FIELD || !e->data.field.base || e->data.field.base->kind != HIR_EXPR_NAME)
 		return 0;
@@ -3200,6 +3230,13 @@ static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_
 				*arch_out = arch;
 			return 1;
 		}
+	int lidx[8];
+	const char *lty[8];
+	if (arch_tuple_group_lanes(ad, e->data.field.field_name, lidx, lty, 8) > 0) {
+		if (arch_out)
+			*arch_out = arch;
+		return 1;
+	}
 	return 0;
 }
 
@@ -3208,12 +3245,12 @@ static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_
 /* A BARE bound column (`pos` from an enclosing `system(query{pos})`) usable as a fold domain: a type-4 column
  * ValueInfo, NOT a `\x1f` self-read marker (that stays pinned to the fan row). Sets *arch to its pool. */
 static int is_foldable_bare_col(CodegenContext *ctx, HirExpr *e, const char **arch_out) {
-	if (!ctx->in_nested_fan) /* only an enclosing system's column is a fold domain (see in_nested_fan) */
+	if (!ctx->in_nested_fan) /* only a fan nested in a columnar system has a neighbour fold domain */
 		return 0;
 	if (!e || e->kind != HIR_EXPR_NAME || !e->data.name.name || e->data.name.name[0] == '\x1f')
-		return 0;
-	/* An enclosing columnar-system column has no own fan row (loop_idx NULL); the current fan's own per-element
-	 * column has loop_idx = its fan row and is SELF, not a fold domain. */
+		return 0; /* a `\x1f` self-read (`me.col`) is the SELF, never the fold domain */
+	/* The ENCLOSING system's bound column has no own fan row (loop_idx NULL); the current fan's own per-element
+	 * column has loop_idx = its fan row and is SELF (`me.col`), not the fold domain. */
 	ValueInfo *v = find_value(ctx, e->data.name.name);
 	if (v && v->type == 4 && v->arch_name && !(v->loop_idx && v->loop_idx[0])) {
 		if (arch_out)
@@ -3285,15 +3322,16 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 	char count[256];
 	int is_float = (sumexpr->resolved.tag == HIR_TYPE_FLOAT);
 	if (poolfield && is_pool_col_field(ctx, poolfield, &arch)) {
-		/* Explicit `Pool.col` fold domain — reuse the collective column resolver for its count + element type. */
+		/* Explicit `Pool.col` fold domain — reuse the collective column resolver for its count + element type. A
+		 * tuple-GROUP column (`Flock.pos`) has no single field, so emit_collective_column declines: fall back to
+		 * the pool's live row count (the summand's per-lane float-ness comes from its tuple type below). */
 		char colptr[256];
 		const char *cty;
 		int cisf;
-		if (!emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf)) {
-			strcpy(result_buf, "0");
-			return;
-		}
-		is_float = is_float || cisf;
+		if (emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf))
+			is_float = is_float || cisf;
+		else
+			emit_pool_live_count(ctx, arch, count, sizeof(count));
 	} else if (poolfield && is_foldable_bare_col(ctx, poolfield, &arch)) {
 		/* An enclosing system's BOUND column (`pos`) is the fold domain — derive count from its pool and the
 		 * float-ness from the column's element type (so the accumulator identity is `0.0`, not the i32 `0`). */
@@ -4296,6 +4334,23 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
+		/* A `\x1e`-marked ROW-ID intrinsic (`me.id`): the current fan row index, truncated to the i32 the
+		 * accessor yields. `me.id` never folds (it is self, like a `\x1f` self-read), so a `reduce` fold counter
+		 * is ignored — the id is the fan's own row. Valid only inside a fan (implicit_loop_index set). */
+		if (name[0] == '\x1e') {
+			const char *row = ctx->implicit_loop_index; /* the fan's OWN row (self), never a reduce fold counter */
+			if (!row || !row[0]) {
+				strcpy(result_buf, "0"); /* not in a fan — a static single element */
+				expr->resolved.tag = HIR_TYPE_INT;
+				return;
+			}
+			char *idv = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", idv, row);
+			strcpy(result_buf, idv);
+			expr->resolved.tag = HIR_TYPE_INT;
+			return;
+		}
+
 		/* A `\x1f`-marked SELF-READ (`me.col` inside a nested-fan reduce, from the self-binder desugar): read
 		 * `col` at THIS element's row — the fan's own index — immune to any active `reduce` fold counter. So
 		 * `me.pos` stays pinned to this boid while a same-named neighbour `pos` folds. Clear fold_index so the
@@ -4392,6 +4447,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				if (ctx->in_nested_fan && ctx->fold_index && ctx->fold_pool && val->arch_name &&
 				    !(val->loop_idx && val->loop_idx[0]) && strcmp(val->arch_name, ctx->fold_pool) == 0)
 					idx = ctx->fold_index;
+				/* A `[1]` SINGLETON column (a shared buffer bound by an enclosing system, e.g. a framebuffer) has
+				 * ONE row — it reads at index 0, NEVER the ambient fan's row. `framebuffer[i]` then indexes INTO
+				 * that one buffer rather than a per-fan-row copy. */
+				if (val->arch_name && get_arch_static_capacity(ctx, val->arch_name) == 1)
+					idx = "0";
 				/* An ARRAY column (`[N]T`, e.g. `msg :: [64]char`) reads per-row as a pointer/slice over
 				 * that row's storage (stride N) — NOT a scalar load of one element. The column is stored
 				 * flat (`[count*N x T]`) and `val->llvm_name` is its element-0 pointer, so the row's start
@@ -5022,6 +5082,50 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (ctx->fold_pool && ctx->fold_index) {
 			const char *farch = NULL;
 			if (is_pool_col_field(ctx, expr, &farch) && strcmp(farch, ctx->fold_pool) == 0) {
+				/* A tuple-GROUP neighbour column (`Flock.pos`): pack each flattened sub-column (`pos_x`,`pos_y`)
+				 * loaded at the fold counter into a `{T,…}` value — the map's own `pos_x` binding shadows the
+				 * system's, so the neighbour MUST come from the pool at this counter, not from scope. */
+				HirArchetypeDecl *ad = find_archetype_decl(ctx, farch);
+				int lidx[8];
+				const char *lty[8];
+				int nlane = ad ? arch_tuple_group_lanes(ad, expr->data.field.field_name, lidx, lty, 8) : 0;
+				if (nlane > 0) {
+					int is_static = get_arch_static_capacity(ctx, farch) > 0;
+					char base[256];
+					emit_query_pool_ptr(ctx, farch, is_static, base, sizeof(base));
+					char aggty[256] = "{ ";
+					for (int l = 0; l < nlane; l++) {
+						size_t al = strlen(aggty);
+						snprintf(aggty + al, sizeof(aggty) - al, "%s%s", l ? ", " : "", lty[l]);
+					}
+					size_t al = strlen(aggty);
+					snprintf(aggty + al, sizeof(aggty) - al, " }");
+					char cur[256];
+					strcpy(cur, "undef");
+					for (int l = 0; l < nlane; l++) {
+						char *ep = gen_value_name(ctx);
+						if (is_static) {
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 %s\n", ep,
+							    farch, farch, base, lidx[l], ctx->fold_index);
+						} else {
+							char *gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  gep, farch, farch, base, lidx[l]);
+							char *colp = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", colp, lty[l], lty[l], gep);
+							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, lty[l], lty[l],
+							                  colp, ctx->fold_index);
+						}
+						char *lv = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", lv, lty[l], lty[l], ep);
+						char *ni = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, lty[l], lv, l);
+						strcpy(cur, ni);
+					}
+					strcpy(result_buf, cur);
+					break;
+				}
 				const char *sp = ctx->fold_pool, *si = ctx->fold_index;
 				ctx->fold_pool = NULL; /* resolve the column base without re-entering this hook */
 				ctx->fold_index = NULL;
@@ -12467,6 +12571,11 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 			int driver_is_singleton = get_arch_static_capacity(ctx, arch_name) == 1;
 			char base_buf[256];
 			emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+			const char *prev_qbn = ctx->qbinder_name, *prev_qba = ctx->qbinder_arch;
+			if (sys->query_binder) {
+				ctx->qbinder_name = sys->query_binder;
+				ctx->qbinder_arch = arch_name;
+			}
 			push_value_scope(ctx);
 			/* bind each query column: a column from an N-row pool as a type-4 COLUMN pointer (whole-column, no
 			 * row index); a `[1]` column the system does NOT own (a join broadcast partner) as the scalar at
@@ -12522,6 +12631,8 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 			codegen_body_fused(ctx, sys->stmts, sys->stmt_count);
 			ctx->implicit_loop_index[0] = '\0';
 			pop_value_scope(ctx);
+			ctx->qbinder_name = prev_qbn;
+			ctx->qbinder_arch = prev_qba;
 		}
 		ctx->in_columnar_system = prev_columnar;
 	} else {
@@ -12545,9 +12656,10 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
  * the row index is saved/restored so nested fans don't clobber each other). */
 static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts, int stmt_count,
                              const char *row_var) {
-	/* This fan is a NESTED self-join fan iff it runs inside a columnar `system(Q)` — then the enclosing
-	 * system's bound columns are the neighbour fold domain (a bare-column read inside a `reduce` iterates the
-	 * fold counter). A top-level map/system fan is not nested, so its bare columns stay per-element self. */
+	/* This fan is a NESTED self-join fan iff it runs inside a columnar `system(Q)` — then the enclosing system's
+	 * BOUND columns are the neighbour fold domain, so a bare-column read inside a `reduce` iterates the fold
+	 * counter (while a `\x1f` self-read `me.col` stays at the fan row). A top-level map/system fan is not nested,
+	 * so its bare columns stay per-element self. */
 	int saved_nested = ctx->in_nested_fan;
 	ctx->in_nested_fan = ctx->in_columnar_system;
 	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
@@ -13698,12 +13810,38 @@ static int cg_expr_has_collective(const HirExpr *e) {
 	}
 }
 
+/* Does an expression reference the `me.id` row-id intrinsic (the `\x1e` marker)? A flat map vectorizes in
+ * 4-lane blocks where a per-element scalar row index doesn't exist, so a body using `.id` must run as a scalar
+ * per-element loop (the each fan) — force it non-flat. */
+static int cg_expr_has_row_id(const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		return e->data.name.name && e->data.name.name[0] == '\x1e';
+	case HIR_EXPR_BINARY:
+		return cg_expr_has_row_id(e->data.binary.left) || cg_expr_has_row_id(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return cg_expr_has_row_id(e->data.unary.operand);
+	case HIR_EXPR_CALL:
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (cg_expr_has_row_id(e->data.call.args[i]))
+				return 1;
+		return 0;
+	case HIR_EXPR_FIELD:
+		return cg_expr_has_row_id(e->data.field.base);
+	default:
+		return 0;
+	}
+}
+
 static int cg_stmt_is_flat(const HirStmt *s) {
 	if (!s)
 		return 1;
 	switch (s->kind) {
 	case HIR_STMT_ASSIGN:
-		return !cg_expr_has_collective(s->data.assign_stmt.value); /* `out = reduce(…)` → scalar per-element */
+		/* `out = reduce(…)` → scalar per-element; `out = f(me.id)` → needs the per-row scalar index. */
+		return !cg_expr_has_collective(s->data.assign_stmt.value) && !cg_expr_has_row_id(s->data.assign_stmt.value);
 	/* These need the whole body run INSIDE a per-element loop (a scalar `:=` can't be hoisted to the
 	 * whole-column top level; control flow isn't a column transform). */
 	case HIR_STMT_BIND:
@@ -14263,6 +14401,8 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->uses_sqrt_v4 = 0;
 	ctx->fold_pool = NULL;
 	ctx->fold_index = NULL;
+	ctx->qbinder_name = NULL;
+	ctx->qbinder_arch = NULL;
 	ctx->drop_reg = NULL;
 	ctx->drop_reg_count = 0;
 	ctx->drop_reg_capacity = 0;

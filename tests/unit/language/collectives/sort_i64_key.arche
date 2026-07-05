@@ -1,6 +1,6 @@
 // i64 key, n>=32 → radix with 8 passes (the widest radix path) + the i64 signed-key transform. Negated
 // 1..40 reverses on ascending sort.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 k   :: i64;
 tag :: int;

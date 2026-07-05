@@ -1,6 +1,6 @@
 // The `(writes)` permission (slice 2): a selector kernel declares the bound columns it assigns. When the
 // declared set matches what the body writes, it compiles and runs.
-// RUN: %arche build -o %t %s && %t | grep -qF "v0=2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v0=2"
 #import { fmt }
 v :: float;
 R :: arche { v }

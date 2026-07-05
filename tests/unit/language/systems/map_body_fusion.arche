@@ -3,8 +3,8 @@
 //   1. behavioral: the in-iteration read-after-write is honored (statement 3 reads b updated by statement 2):
 //      a=1,b=10 -> a=a+b=11 -> b=b*2=20 -> a=a+b=31. Wrong (unfused-but-stale) would give 21.
 //   2. structural: exactly ONE fused loop is emitted for the 3-statement map body.
-// RUN: %arche build -o %t %s && %t | grep -qF "a0=31 b0=20"
-// RUN: %arche build --emit=llvm-ir -o %t.ll %s && test $(grep -cE '^fmap_vloop_[0-9]+:' %t.ll) -eq 1
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "a0=31 b0=20"
+// RUN: %arche build --pool-index=allow --emit=llvm-ir -o %t.ll %s && test $(grep -cE '^fmap_vloop_[0-9]+:' %t.ll) -eq 1
 #import { fmt }
 a :: float;
 b :: float;

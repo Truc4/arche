@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "2"
 #import { fmt }
 pos(x, y) :: float;
 vel(x, y) :: float;

@@ -1,6 +1,6 @@
 // i128 key, n>=32 → radix with 16 passes + the i128 signed-key transform (XOR i128 sign bit). Negated
 // 1..40 reverses on ascending sort.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 
 k :: i128;

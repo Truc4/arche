@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "value:"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "value:"
 #import { fmt }
 Matrix :: arche { data :: [10]float }
 

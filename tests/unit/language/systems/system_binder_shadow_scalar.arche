@@ -1,0 +1,25 @@
+// The self-join scalar shadow: the map and the system both query `v`, so the name clashes. `me.v` (this
+// element) and `Flock.v` (the whole neighbour column / fold domain) disambiguate through the binders.
+// o_i = Σ_j (v_j - v_i) = (Σv) − N·v_i. v={1,2,3}: 6−3=3, 6−6=0, 6−9=−3.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "o=3 0 -3"
+#import { fmt }
+v :: float;
+o :: float;
+B :: arche { v, o }
+[3]B(3);
+
+seed :: system {
+  B.v = { 1.0, 2.0, 3.0 };
+}
+
+run :: system (query { v } as Flock) {
+  map (query { v, o } as me)(o) {
+    me.o = reduce(+, Flock.v - me.v);
+  };
+}
+
+show :: system eff {
+  fmt.printf("o=%.0f %.0f %.0f\n", B.o[0], B.o[1], B.o[2]);
+}
+
+#run seq({ seed, run, show })

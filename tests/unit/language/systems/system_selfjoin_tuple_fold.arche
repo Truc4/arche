@@ -2,7 +2,7 @@
 // Each row's o = Σ_j pos_j (sum of ALL positions, a 2-vector). pos = {(1,2),(3,4),(5,6)}; Σ = (9,12). Every
 // row folds the whole `pos` column (me is unused here — pure sum), so o = (9,12) for all. Exercises: a tuple
 // group column as the fold domain + a tuple-accumulating reduce.
-// RUN: %arche build -o %t %s && %t | grep -qF "o=9 12 9 12 9 12"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "o=9 12 9 12 9 12"
 #import { fmt }
 pos(x, y) :: float;
 o(x, y)   :: float;

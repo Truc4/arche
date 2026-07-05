@@ -2,7 +2,7 @@
 // DOD batch seed of distinct per-row values — the columnar alternative to N row-at-a-time `insert`s. Covers
 // int columns, a tuple-group column (`pos.x`/`pos.y`), and int-literal→float promotion into a float column.
 // (Distinct from the pool-literal `[N]Arch(M){ col: v }`, which BROADCASTS one scalar to every row.)
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 pos(x, y) :: int;
 hp        :: float;

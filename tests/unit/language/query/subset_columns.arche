@@ -1,6 +1,6 @@
 // A query naming a SUBSET of an archetype's columns still matches (cover, not equality). `Rich` has three
 // columns; a one-column `query { hp }` matches it and transforms just that column, the others untouched.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 hp    :: int;
 armor :: int;

@@ -1,7 +1,7 @@
 // A `@gpu` map with an `if` — the GLSL emitter lowers it to a native `if (…) { … } else { … }`, so a simple
 // branchy map runs on the GPU (not just CPU). CPU path (scalar per-element) must match; `make test-gpu-exe`
 // runs it on the device. Sign of each value.
-// RUN: %arche build -o %t %s && %t | grep -qF "x=1 0 1 0"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "x=1 0 1 0"
 #import { fmt }
 x :: float;
 P :: arche { x }

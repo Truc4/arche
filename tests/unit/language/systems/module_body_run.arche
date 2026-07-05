@@ -3,8 +3,8 @@
 // entry references them via the cross-unit declare path. Asserts the map actually mutated pool state, so
 // it fails loudly if the declare ever regresses. Tested in BOTH whole-program AND incremental (per-unit) —
 // the per-unit run is what broke when scheduled SYSTEMS/EACH lacked a cross-unit declare (only maps had one).
-// RUN: %arche build -o %t %s && %t | grep -qF "n=1"
-// RUN: %arche build --incremental -o %t.inc %s && %t.inc | grep -qF "n=1"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "n=1"
+// RUN: %arche build --pool-index=allow --incremental -o %t.inc %s && %t.inc | grep -qF "n=1"
 @default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { "./run_helper_lib" }
 #run seq({ mob_seed, bump, mob_report })

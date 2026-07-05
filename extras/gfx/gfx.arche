@@ -13,7 +13,7 @@ dims :: func(h: window) -> Eff(int, int) {
 
 /// The framebuffer as data — one `int` column of 0xRRGGBB pixels, row-major. gfx declares the shape; the
 /// driver owns and sizes the pool (`[W*H]Framebuffer`). Rasterizers write it through a `[]int` slice.
-Framebuffer :: arche { pixel :: int }
+Framebuffer :: arche { pixel }
 
 /// Fill the framebuffer with each window's `bg` colour (0xRRGGBB).
 clear :: system eff {
@@ -38,7 +38,7 @@ present :: system eff {
 
 /// A window-close event as data: empty while open, one row once closed. The driver owns `[1]Closed` and
 /// reacts (e.g. an `map (Closed) eff` that halts). `at` is the close stamp.
-Closed :: arche { at :: i64 }
+Closed :: arche { at }
 
 poll :: system eff {
   map (query { handle }) eff {

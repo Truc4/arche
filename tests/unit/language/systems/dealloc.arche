@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "p0i"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "p0i"
 // A sys mutates the column, then the archetype storage is released with `dealloc`.
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float }

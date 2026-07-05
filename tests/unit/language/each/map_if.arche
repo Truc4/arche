@@ -2,7 +2,7 @@
 // system, and branching is derived, not banned). An `if` runs the branchy body per element (scalar loop);
 // branch-free maps still vectorize / run on the GPU. Here: sign of each value. (Was `map_if_rejected` — the
 // old branch-free ban was lifted.)
-// RUN: %arche build -o %t %s && %t | grep -qF "v=1 0 1"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=1 0 1"
 #import { fmt }
 v :: int;
 N :: arche { v }

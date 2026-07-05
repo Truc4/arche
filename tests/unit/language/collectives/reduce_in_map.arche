@@ -1,7 +1,7 @@
 // `reduce` is legal inside a `map`: a per-element `reduce(+, <expr over Pool.col + this element>)` is the
 // neighbour reduction / self-join — each element folds over the whole pool. A map holding a reduce runs as a
 // scalar per-element loop (not the vectorized fusion). Here each row i gets (Σ B.px) * px_i = 6 * px_i.
-// RUN: %arche build -o %t %s && %t | grep -qF "o=6 12 18"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "o=6 12 18"
 #import { fmt }
 B :: arche { px :: float, out :: float }
 [3]B(3);

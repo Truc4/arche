@@ -143,6 +143,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_effect_without_eff]            = { "E0226", "effect_without_eff",            CLASS_ERROR, 1 },
 	[SEM_DIAG_write_set_mismatch]            = { "E0227", "write_set_mismatch",            CLASS_ERROR, 1 },
 	[SEM_DIAG_indexed_write_in_selector]     = { "E0228", "indexed_write_in_selector",     CLASS_ERROR, 1 },
+	[SEM_DIAG_self_binder_unqueried]         = { "E0229", "self_binder_unqueried",         CLASS_ERROR, 1 },
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
@@ -236,6 +237,10 @@ static void ensure_init(void) {
 	 * ignored drop — so it is an ERROR by default. `--discarded-ok=warn|allow` demotes it; declaring an
 	 * infallible pool policy (`?abort`/`?evict_*`) avoids it entirely. */
 	g_werror[SEM_LINT_discarded_ok] = 1;
+	/* W0029 pool_index_outside_query: hand-indexing a pool column (`Pool.col[i]`/`[0]`) outside a query is a
+	 * hard ERROR by default — pool values come from a query/map/system selector, never `[i]`. A lint (tunable
+	 * via `--pool-index=warn|allow` / `@allow(pool_index_outside_query)`) for scaffolding that must reach in. */
+	g_werror[SEM_LINT_pool_index_outside_query] = 1;
 	g_init_done = 1;
 }
 
@@ -312,7 +317,10 @@ static SemDiag *sem_emit_v(SemanticContext *ctx, SemDiagKind kind, SourceLoc loc
 	if (desc->class == CLASS_LINT) {
 		if (!g_enabled[kind])
 			return NULL;
-		if (sem_diag_slug_suppressed(ctx, desc->slug))
+		/* `pool_index_outside_query` is NOT silenced by a per-decl `@allow` — permitting direct pool access is a
+		 * deliberate WHOLE-BUILD choice via `--pool-index=allow`, not a casual decorator. Every other lint honors
+		 * `@allow(<slug>)`. */
+		if (kind != SEM_LINT_pool_index_outside_query && sem_diag_slug_suppressed(ctx, desc->slug))
 			return NULL;
 		severity = g_werror[kind] ? 1 : 0;
 	} else {
@@ -1045,6 +1053,13 @@ SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const
 	                 "type mismatch in '%s': cannot mix '%s' and '%s' — arche has no implicit numeric conversion", op,
 	                 lhs, rhs);
 }
+SemDiag *sem_emit_self_binder_unqueried(SemanticContext *ctx, SourceLoc loc, const char *binder, const char *col) {
+	return sem_emit_(ctx, SEM_DIAG_self_binder_unqueried, loc,
+	                 "self-binder '%s' reads component '%s', which is not queried — a `map (query {…} as %s)` "
+	                 "may only read the components in its query (add '%s' to the query)",
+	                 binder, col, binder, col);
+}
+
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type,
                                          const char *field) {
 	return sem_emit_(ctx, SEM_DIAG_field_on_non_archetype, loc, "type '%s' has no field '%s'", base_type, field);

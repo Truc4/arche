@@ -1,0 +1,13 @@
+// A per-decl `@allow(pool_index_outside_query)` does NOT silence the direct-access ban — permitting
+// `Pool.col[i]` is a deliberate WHOLE-BUILD choice (`--pool-index=allow`), not a casual decorator. So this
+// still fails to build even with the decorator present.
+// RUN: not %arche build -o %t %s
+B :: arche { n :: int }
+[4]B(4);
+
+@allow(pool_index_outside_query)
+bad :: system {
+  B.n[0] = 5;
+}
+
+#run seq({ bad })

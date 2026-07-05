@@ -2,7 +2,7 @@
 // `store` defines the shape (it comes in via the import); the datasheet states the components + the
 // storage requirement (no definition); the driver owns the real allocation and the device's system
 // drives it.
-// RUN: %arche build -o %t %s && %t | grep "req_ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "req_ok"
 @default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { store fmt }
 

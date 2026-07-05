@@ -1,6 +1,6 @@
 // A PURE `system` — only column/singleton writes (data work), no effects — needs no `eff` and is
 // unchanged by the pure-by-default flip. Writing columns is the kernel's purpose, not an effect.
-// RUN: %arche build -o %t %s && %t | grep -qF "v0=3"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v0=3"
 #import { fmt }
 v :: float;
 R :: arche { v }

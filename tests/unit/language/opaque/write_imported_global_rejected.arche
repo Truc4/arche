@@ -3,7 +3,7 @@
 // the arche-rpg `win: window; win = w;` hack relied on (`window` is the gfx device's opaque). Held in a pool
 // COLUMN, because a mutable opaque global is itself banned (W0022). (Previously used a `#file` mutable
 // `file` global; `file` was retired and W0022 now bans mutable opaque globals outright.)
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
+// RUN: %arche build --pool-index=allow -o %t %s > %t.out 2>&1 ; grep -qi "assign over opaque" %t.out
 #import { net }
 
 Holder :: arche { h :: socket }

@@ -154,6 +154,19 @@ struct SemanticContext {
 	/* Track which archetype we're analyzing a map for (NULL if not in map) */
 	const char *current_map_archetype;
 
+	/* The active self-binder name (`as me`) inside a map body, else NULL, with the self-binder MAP's OWN query
+	 * columns. `me.<col>` may read ONLY one of these (a source-agnostic query guarantees only those exist on the
+	 * matched shape). Checked against the map's own params, NOT any bound variable — an enclosing system's
+	 * columns are in scope too, but the self is the INNER map's element, so its query alone bounds `me`. */
+	const char *self_binder;
+	const ParamSummary *self_binder_params;
+	int self_binder_nparams;
+
+	/* A columnar `system (query {…} as Flock)` binds `Flock` to name the whole queried column: `Flock.<col>`
+	 * resolves against `system_binder_arch` (the query's matched shape), the neighbour fold domain. */
+	const char *system_binder;
+	const char *system_binder_arch;
+
 	/* Track the proc currently being analyzed (NULL if not in a proc body).
 	 * Used by each_field to verify its RHS is an `archetype` parameter of this proc. */
 	DeclSummary *current_proc;
@@ -178,6 +191,11 @@ struct SemanticContext {
 	int k_collect;
 	char **k_writes;
 	int k_write_count;
+	/* Stack of the ENCLOSING kernels' nodes carrying their declared `(writes)` (SN_WRITE_PARAM children), from
+	 * outermost [0] to the current kernel [depth-1]. Lets a nested fan write a column a surrounding kernel
+	 * already declared writable without re-declaring it (model A) — the permission lives once, on the owner. */
+	SyntaxView kwrite_stack[16];
+	int kwrite_depth;
 
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
@@ -1161,18 +1179,6 @@ static int alias_name_matches(const char *registered, const char *ref) {
 	return dot && strcmp(registered, dot + 1) == 0;
 }
 
-/* Like alias_name_matches but SYMMETRIC — matches whether the module qualifier (`game.pos`) is on the
- * registered decl name or on the reference. Used for tuple-group lookups across a device's module bands. */
-static int name_tail_matches(const char *a, const char *b) {
-	if (strcmp(a, b) == 0)
-		return 1;
-	const char *da = strrchr(a, '.');
-	if (da && strcmp(da + 1, b) == 0)
-		return 1;
-	const char *db = strrchr(b, '.');
-	return db && strcmp(a, db + 1) == 0;
-}
-
 static const char *resolve_type_alias(SemanticContext *ctx, const char *name) {
 	if (!ctx || !name)
 		return name;
@@ -1471,6 +1477,13 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 	char *idnt = sv_resolved_name(ctx, v);
 	int nf = sv_count(v, SN_FIELD_NAME);
 
+	/* `Flock.<col>` — the system query binder names the whole queried column. Resolve field access as if the
+	 * base were the query's matched archetype, so `Flock.pos`/`Flock.pos.x` check against its columns. */
+	if (nf > 0 && idnt && ctx->system_binder && ctx->system_binder_arch && strcmp(idnt, ctx->system_binder) == 0) {
+		free(idnt);
+		idnt = strdup(ctx->system_binder_arch);
+	}
+
 	/* `Enum.variant` is a compile-time constant — the old code folded it before any symbol/field
 	 * check. No diagnostics; its type is recorded by sem_expr_type_id. */
 	if (nf == 1 && enum_is_type(ctx, idnt)) {
@@ -1507,6 +1520,37 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 	 * base is itself a FIELD (not a NAME), so only the nested-tuple expansion `arch.tuple.comp`
 	 * fires — replicate that for nf==2 — and otherwise the simple base-NAME field checks apply. */
 	char *field_name = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
+
+	/* SOUNDNESS: a self-binder `me.<col>` may read ONLY a component the map QUERIED. A source-agnostic query
+	 * guarantees just the queried components exist on the matched shape, so reaching any other (`me.pos` when
+	 * the query is `{ nvel }`) is unsound — hard error (E0229). The queried columns are bound as is_param
+	 * variables; the first field after the binder must be one of them. */
+	if (ctx->self_binder && idnt && strcmp(idnt, ctx->self_binder) == 0) {
+		char *first = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+		/* `me.id` is the INTRINSIC read-only pool-row identity, not a queried component — the query hands it
+		 * (it isn't stored, never written, needs no `id` in the query). Accept it and skip the queried-check
+		 * and the generic column-field validation below (`id` is no archetype field). */
+		if (nf == 1 && first && strcmp(first, "id") == 0) {
+			free(first);
+			free(field_name);
+			free(idnt);
+			return;
+		}
+		int queried = 0;
+		for (int p = 0; p < ctx->self_binder_nparams && first; p++)
+			if (ctx->self_binder_params[p].name && strcmp(ctx->self_binder_params[p].name, first) == 0) {
+				queried = 1;
+				break;
+			}
+		if (!queried) {
+			sem_emit_self_binder_unqueried(ctx, field_loc, ctx->self_binder, first ? first : "?");
+			free(first);
+			free(field_name);
+			free(idnt);
+			return;
+		}
+		free(first);
+	}
 
 	/* nf>=2: nested `arch.tuple.comp` → arch must have a `tuple_comp` field. Old code only handled a
 	 * single level of nesting (base FIELD whose base is a NAME), i.e. nf==2. */
@@ -1566,7 +1610,7 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 					 * lowering. Accept the base here (codegen reads the flattened const). */
 					for (int ci = 0; ci < ctx->decl_count; ci++)
 						if (ctx->decls[ci] && ctx->decls[ci]->kind == DECL_CONST && ctx->decls[ci]->name &&
-						    name_tail_matches(ctx->decls[ci]->name, idnt) &&
+						    strcmp(ctx->decls[ci]->name, idnt) == 0 &&
 						    tyid_kind(ctx->ty_arena, ctx->decls[ci]->const_type_value_id) == TYK_TUPLE)
 							goto done;
 				}
@@ -1928,6 +1972,8 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
 		if (is_len_prop(fld) || is_pool_extent_prop(fld))
 			r = tyid_of_prim(ctx->ty_arena, PRIM_INT);
+		else if (nf == 1 && ctx->self_binder && idnt && strcmp(idnt, ctx->self_binder) == 0 && strcmp(fld, "id") == 0)
+			r = tyid_of_prim(ctx->ty_arena, PRIM_INT); /* `me.id` — intrinsic pool-row identity */
 		else if (nf == 1)
 			r = archetype_field_type_id(ctx, idnt, fld);
 		free(fld);
@@ -2332,7 +2378,7 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		int is_tuple_const = 0;
 		for (int ci = 0; ci < ctx->decl_count && !is_tuple_const; ci++) {
 			DeclSummary *cc = ctx->decls[ci];
-			if (cc && cc->kind == DECL_CONST && cc->name && name_tail_matches(cc->name, name) &&
+			if (cc && cc->kind == DECL_CONST && cc->name && strcmp(cc->name, name) == 0 &&
 			    tyid_kind(ctx->ty_arena, cc->const_type_value_id) == TYK_TUPLE)
 				is_tuple_const = 1;
 		}
@@ -3056,6 +3102,32 @@ static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const c
 	return 1;
 }
 
+/* Does kernel-node `bn` declare `col` in its `(writes)` (SN_WRITE_PARAM children)? */
+static int node_declares_write(SyntaxView bn, const char *col) {
+	if (!sv_present(bn) || !col)
+		return 0;
+	int n = sv_count(bn, SN_WRITE_PARAM);
+	for (int j = 0; j < n; j++) {
+		char *dn = sem_txt_dup(sv_token(sv_child_at(bn, SN_WRITE_PARAM, j), TOK_IDENT));
+		int eq = dn && strcmp(dn, col) == 0;
+		free(dn);
+		if (eq)
+			return 1;
+	}
+	return 0;
+}
+
+/* Is `col` a declared `(writes)` column of the current kernel OR any ENCLOSING kernel on the stack? A
+ * query-bound column named there is a legitimate write target — including a BUFFER (array) column
+ * (`framebuffer :: [N]int`) the borrowed-array rule would otherwise treat as read-only, and one a surrounding
+ * kernel owns that a nested fan writes without re-declaring (model A). */
+static int col_is_declared_write(SemanticContext *ctx, const char *col) {
+	for (int d = ctx->kwrite_depth - 1; d >= 0; d--)
+		if (node_declares_write(ctx->kwrite_stack[d], col))
+			return 1;
+	return 0;
+}
+
 static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 	if (!sv_present(v))
 		return;
@@ -3309,7 +3381,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			char *ln = rn ? sem_dupz(rn) : sv_name_expr_dup(target);
 			VariableInfo *pv = ln ? find_variable(ctx, ln) : NULL;
 			if (pv && !pv->is_own && !pv->is_out_place && pv->is_param &&
-			    type_is_byref_aggregate(ctx->ty_arena, pv->type_id))
+			    type_is_byref_aggregate(ctx->ty_arena, pv->type_id) && !col_is_declared_write(ctx, ln))
 				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
 			else if (pv && !pv->is_own && !pv->is_out_place && !pv->is_param && pv->borrows_local)
 				sem_emit_cannot_mutate_borrowed_local(ctx, loc, ln);
@@ -4570,6 +4642,12 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	/* Validate archetype exists */
 	ArchetypeInfo *arch = find_archetype(ctx, alloc->name);
 	if (!arch) {
+		/* An anonymous `[N]arche{…}` in a DEVICE impl: its synthetic `__shape_…` name (module-qualified as
+		 * `mod.__shape_…`) won't resolve — but a device impl can't allocate a pool at all, so stay silent here
+		 * and let `sem_check_device_impl_decls` emit the ONE clean "a device's impl cannot allocate a pool" hard
+		 * error instead of a confusing "shape is global". */
+		if (alloc->from_device_impl)
+			return;
 		const char *dot = alloc->name ? strrchr(alloc->name, '.') : NULL;
 		if (dot)
 			/* A shape is GLOBAL vocabulary — qualifying it is meaningless (only a device's systems are
@@ -4728,9 +4806,32 @@ static void sem_check_device_impl_decls(SemanticContext *ctx) {
 		 * device that uses a shape must define it where it uses it (so it resolves locally) — every
 		 * definition of the same shape coalesces by its canonical component types. Only TYPES (the
 		 * shared vocabulary, which belong in the datasheet) and STORAGE (the driver's) are forbidden. */
-		if (d->kind == DECL_ENUM)
+		/* A shape MAY live in the impl, but a component carrying an INLINE type (`Thing :: arche { extra :: int }`)
+		 * DEFINES that component's type here — inline `name :: T` is just sugar for a top-level `name :: T` type
+		 * decl, the device's shared vocabulary, which belongs in the datasheet. A BARE component (`{ val }`)
+		 * merely references a declared type and is fine. */
+		if (d->kind == DECL_ARCHETYPE) {
+			for (int fi = 0; fi < d->field_count; fi++)
+				if (sv_present(d->fields[fi].type_node)) {
+					const char *fn = d->fields[fi].name ? d->fields[fi].name : "?";
+					fprintf(stderr,
+					        "Error: a device's impl cannot define a type (inline component '%s.%s :: …') — a "
+					        "component type is shared vocabulary and belongs in its .ds.arche datasheet (write the "
+					        "bare '%s' here and declare its type in the datasheet)\n",
+					        nm0 ? nm0 : "?", fn, fn);
+					ctx->error_count++;
+				}
+			continue;
+		}
+		if (d->kind == DECL_ENUM || d->kind == DECL_SUM)
 			what = "define a type";
 		else if (d->kind == DECL_CONST && nm0 && is_type_alias(ctx, nm0)) /* type alias / opaque (not a value const) */
+			what = "define a type";
+		else if (d->kind == DECL_CONST && tyid_kind(ctx->ty_arena, d->const_type_value_id) == TYK_TUPLE &&
+		         !sv_present(d->const_value))
+			/* A tuple-group TYPE (`pos(x,y) :: float`) — a queryable component-type vocabulary — belongs in the
+			 * datasheet. (A named-vector VALUE const `CENTER(X,Y) :: (320,240)` HAS a value and is allowed: it is
+			 * a constant, not a shared type.) */
 			what = "define a type";
 		else if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARCHETYPE)
 			what = "allocate a pool";
@@ -6768,11 +6869,20 @@ static const char *bind_query_archetype(SemanticContext *ctx, DeclSummary *d) {
 		param_type = sem_expand_tuple_nominal(ctx, param_type);
 		for (int ci = 0; ci < ctx->decl_count; ci++) {
 			DeclSummary *cc = ctx->decls[ci];
-			if (cc && cc->kind == DECL_CONST && cc->name && name_tail_matches(cc->name, d->params[p].name) &&
+			if (cc && cc->kind == DECL_CONST && cc->name && strcmp(cc->name, d->params[p].name) == 0 &&
 			    tyid_kind(ctx->ty_arena, cc->const_type_value_id) == TYK_TUPLE) {
 				param_type = cc->const_type_value_id;
 				break;
 			}
+		}
+		/* A scalar component column collapses to its BACKING for the body: a datasheet `last :: i64` mints a
+		 * DISTINCT subtype, but as a column it must be writable from its backing (`last = <i64>`), exactly like an
+		 * inline `{ last :: i64 }`. Reads already collapse (columns are backing-interchangeable); align the write
+		 * side so the inline-vs-separate declaration is symmetric. Tuples/handles are untouched (no backing). */
+		if (tyid_kind(ctx->ty_arena, param_type) == TYK_NOMINAL) {
+			TypeId b = tyid_backing(ctx->ty_arena, param_type);
+			if (b != TYID_UNKNOWN)
+				param_type = b;
 		}
 		add_variable(ctx, d->params[p].name, param_type);
 		mark_last_param(ctx, d->params[p].is_own);
@@ -6821,6 +6931,10 @@ static void kernel_writes_end(SemanticContext *ctx, SyntaxView knode, const char
 				found = 1;
 			free(dn);
 		}
+		/* Not in THIS kernel's `(writes)`: a nested fan may write a column an ENCLOSING kernel already declared
+		 * writable (model A) — the current kernel is already popped, so the stack holds the enclosing chain. */
+		if (!found && col_is_declared_write(ctx, ctx->k_writes[i]))
+			found = 1;
 		if (!found)
 			missing = 1;
 	}
@@ -6866,13 +6980,26 @@ static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 	const char *old_arch = ctx->current_map_archetype;
 	if (sys->param_count > 0)
 		ctx->current_map_archetype = bind_query_archetype(ctx, sys);
+	/* `system (query {…} as Flock)`: bind `Flock` to the query's matched shape so `Flock.<col>` resolves as
+	 * that column (the neighbour fold domain of a nested `map (… as me)`). */
+	const char *old_sysbind = ctx->system_binder;
+	const char *old_sysbind_arch = ctx->system_binder_arch;
+	SyntaxView qbind = sv_child_at(sys->body_node, SN_QUERY_BIND, 0);
+	if (sv_present(qbind) && ctx->current_map_archetype) {
+		ctx->system_binder = sem_own_str(ctx, sem_txt_dup(sv_token(qbind, TOK_IDENT)));
+		ctx->system_binder_arch = ctx->current_map_archetype;
+	}
 	int sv_collect, sv_n;
 	char **sv_w;
 	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = sys->body_node;
+	ctx->kwrite_depth++;
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(sys->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(sys->body_node, i));
 	ctx->in_body = 0;
+	ctx->kwrite_depth--;
 	/* Pure by default: a `system` may run effects only with the `eff` permission. The walk recurses into any
 	 * inline `each`/`map (Q) eff`, so a system that runs effects through a nested kernel is caught too. */
 	if (!sv_present(sv_child_at(sys->body_node, SN_EFF, 0))) {
@@ -6882,6 +7009,8 @@ static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
 	}
 	kernel_writes_end(ctx, sys->body_node, "system", sys->name, sys->loc, sv_collect, sv_w, sv_n);
 	ctx->current_map_archetype = old_arch;
+	ctx->system_binder = old_sysbind;
+	ctx->system_binder_arch = old_sysbind_arch;
 	pop_scope(ctx);
 	ctx->current_proc = prev_proc;
 }
@@ -6910,10 +7039,14 @@ static void analyze_each_decl(SemanticContext *ctx, DeclSummary *each) {
 	int sv_collect, sv_n;
 	char **sv_w;
 	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = each->body_node;
+	ctx->kwrite_depth++;
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(each->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(each->body_node, i));
 	ctx->in_body = 0;
+	ctx->kwrite_depth--;
 	kernel_writes_end(ctx, each->body_node, "map", each->name, each->loc, sv_collect, sv_w, sv_n);
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
@@ -6944,9 +7077,15 @@ static void analyze_inline_fan(SemanticContext *ctx, SyntaxView f, int is_map) {
 	const char *old_arch = ctx->current_map_archetype;
 	ctx->current_map_archetype = bind_query_archetype(ctx, &ds);
 	SyntaxView selfbind = sv_child_at(f, SN_QUERY_BIND, 0);
+	const char *prev_self = ctx->self_binder;
+	const ParamSummary *prev_sp = ctx->self_binder_params;
+	int prev_snp = ctx->self_binder_nparams;
 	if (is_map && sv_present(selfbind) && ctx->current_map_archetype) {
 		char *self = sem_own_str(ctx, sem_txt_dup(sv_token(selfbind, TOK_IDENT)));
 		add_variable_with_archetype(ctx, self, TYID_UNKNOWN, ctx->current_map_archetype);
+		ctx->self_binder = self;
+		ctx->self_binder_params = ds.params;
+		ctx->self_binder_nparams = ds.param_count;
 	}
 	int prev_in_map = ctx->in_map;
 	if (is_map)
@@ -6954,13 +7093,20 @@ static void analyze_inline_fan(SemanticContext *ctx, SyntaxView f, int is_map) {
 	int sv_collect, sv_n;
 	char **sv_w;
 	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = f;
+	ctx->kwrite_depth++;
 	int old_in_body = ctx->in_body;
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(f); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(f, i));
 	ctx->in_body = old_in_body;
+	ctx->kwrite_depth--;
 	kernel_writes_end(ctx, f, "map", NULL, sem_node_loc(f.node), sv_collect, sv_w, sv_n);
 	ctx->in_map = prev_in_map;
+	ctx->self_binder = prev_self;
+	ctx->self_binder_params = prev_sp;
+	ctx->self_binder_nparams = prev_snp;
 	ctx->current_map_archetype = old_arch;
 	pop_scope(ctx);
 	free(ds.params);
@@ -6978,9 +7124,15 @@ static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
 	 * collapses `me.col`→`col`). Binding self is not an effect, so no `eff` is required (unlike the eff fan's
 	 * delete-handle `as w`, handled in analyze_each_decl). */
 	SyntaxView selfbind = sv_child_at(map->body_node, SN_QUERY_BIND, 0);
+	const char *prev_self = ctx->self_binder;
+	const ParamSummary *prev_sp = ctx->self_binder_params;
+	int prev_snp = ctx->self_binder_nparams;
 	if (sv_present(selfbind) && map_archetype) {
 		char *self = sem_own_str(ctx, sem_txt_dup(sv_token(selfbind, TOK_IDENT)));
 		add_variable_with_archetype(ctx, self, TYID_UNKNOWN, map_archetype);
+		ctx->self_binder = self;
+		ctx->self_binder_params = map->params;
+		ctx->self_binder_nparams = map->param_count;
 	}
 	int prev_in_map = ctx->in_map;
 	/* `map` is the pure per-element kernel: E0046 (transform-only) active. The effectful per-entity fan is
@@ -6989,12 +7141,19 @@ static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
 	int sv_collect, sv_n;
 	char **sv_w;
 	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = map->body_node;
+	ctx->kwrite_depth++;
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(map->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(map->body_node, i));
 	ctx->in_body = 0;
+	ctx->kwrite_depth--;
 	kernel_writes_end(ctx, map->body_node, "map", map->name, map->loc, sv_collect, sv_w, sv_n);
 	ctx->in_map = prev_in_map;
+	ctx->self_binder = prev_self;
+	ctx->self_binder_params = prev_sp;
+	ctx->self_binder_nparams = prev_snp;
 	ctx->current_map_archetype = old_map_archetype;
 	pop_scope(ctx);
 }
@@ -7454,16 +7613,15 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
 		TypeId elem = (strcmp(en, "opaque") == 0) ? tyid_of_nominal(arena, "opaque") : sem_tyid_of_name(ctx, en);
 		free(en);
+		/* Each dimension is a const-expression sub-node (`[16]`, `[SIZE]`, `[W * H]`) — CTFE-fold it. */
 		int ranks[16], nr = 0;
 		for (int i = 0; i < t.node->child_count && nr < 16; i++)
-			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
-				char buf[32];
-				int l = (int)t.node->children[i].as.token.length;
-				if (l > 31)
-					l = 31;
-				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
-				buf[l] = '\0';
-				ranks[nr++] = atoi(buf);
+			if (t.node->children[i].tag == SE_NODE) {
+				SyntaxView sz = {t.node->children[i].as.node, t.src};
+				int r = 0;
+				if (!semantic_try_const_int(ctx, sz, &r))
+					sem_emit_alloc_count_not_literal(ctx, sem_node_loc(sz.node)); /* array size must be const */
+				ranks[nr++] = r;
 			}
 		TypeId cur = elem;
 		for (int i = nr - 1; i >= 0; i--)
@@ -9772,6 +9930,12 @@ static SemanticContext *make_context(void) {
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
 	ctx->current_map_archetype = NULL;
+	ctx->self_binder = NULL;
+	ctx->self_binder_params = NULL;
+	ctx->self_binder_nparams = 0;
+	ctx->kwrite_depth = 0;
+	ctx->system_binder = NULL;
+	ctx->system_binder_arch = NULL;
 	ctx->current_proc = NULL;
 	ctx->current_func = NULL;
 	ctx->in_map = 0;
@@ -10299,18 +10463,13 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			if (is_array) {
 				ds->static_kind = STATIC_KIND_ARRAY;
 				ds->static_type_id = tyid_elem(ctx->ty_arena, full_id);
-				for (int i = 0; i < arr_ty.node->child_count; i++)
-					if (arr_ty.node->children[i].tag == SE_TOKEN &&
-					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
-						char buf[32];
-						int l = (int)arr_ty.node->children[i].as.token.length;
-						if (l > 31)
-							l = 31;
-						memcpy(buf, arr_ty.src + arr_ty.node->children[i].as.token.offset, l);
-						buf[l] = '\0';
-						ds->static_size = atoi(buf);
-						break;
-					}
+				/* Size from the (const-folded) array TypeId — the declared `[N]T` size may be a const expression
+				 * (`[W * H]char`), so read the interned length rather than scanning for a bare NUMBER token. */
+				if (fullk == TYK_ARRAY) {
+					int len = tyid_array_len(ctx->ty_arena, full_id);
+					if (len > 0)
+						ds->static_size = len;
+				}
 				ds->static_has_init = sv_present(initv);
 				ds->static_init = initv; /* the `{…}` literal — also drives element/shape checks */
 			} else {
@@ -10636,7 +10795,7 @@ static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid) {
 		return tid;
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *c = ctx->decls[i];
-		if (c && c->kind == DECL_CONST && c->name && name_tail_matches(c->name, ref) &&
+		if (c && c->kind == DECL_CONST && c->name && strcmp(c->name, ref) == 0 &&
 		    tyid_kind(ctx->ty_arena, c->const_type_value_id) == TYK_TUPLE)
 			return c->const_type_value_id;
 	}
@@ -11191,11 +11350,5 @@ const char *semantic_get_const_value(SemanticContext *ctx, const char *const_nam
 			return ctx->const_values[i];
 		}
 	}
-	/* Fallback: a module-qualified mismatch (`CENTER_X` vs a device's registered `game.CENTER_X`, or the
-	 * reverse) — match on the unqualified tail. Lets a named-vector const's flattened members resolve across
-	 * a device's module bands. */
-	for (int i = 0; i < ctx->const_count; i++)
-		if (name_tail_matches(ctx->const_names[i], const_name))
-			return ctx->const_values[i];
 	return NULL;
 }

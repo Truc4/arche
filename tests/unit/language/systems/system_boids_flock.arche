@@ -1,11 +1,12 @@
-// The full boids flock kernel in one file: the honest self-join (`system` neighbour COLUMNS ∘ nested `map`
-// self SCALARS) with tuple 2-vectors, tuple-valued reduces into locals (cohesion/separation), a scalar reduce
-// (neighbour count), funcs taking/returning tuples (near/push), and tuple∘scalar / tuple∘tuple arithmetic.
+// The full boids flock kernel: the SOUND self-join. `system (query {pos,vel} as Flock)` binds the whole
+// neighbour COLUMNS; the nested `map (query {pos,vel,nvel} as me)` binds THIS element. `Flock.pos`/`Flock.vel`
+// are the fold domain; `me.pos`/`me.vel` are self. Tuple 2-vectors, tuple-valued reduces into locals
+// (cohesion/separation), a scalar reduce (neighbour count), funcs taking/returning tuples (near/push).
 // Deterministic: 2 boids far apart so each sees ONLY itself (near→1 only for self; cnt=1). Then cohesion=
 // me.pos, alignment=me.vel, separation=0, so steer = (CENTER-me.pos)*CTR only, nvel = me.vel + steer.
 // b0 pos=(100,100) vel=(1,0): steer=(320-100,240-100)*0.5=(110,70); nvel=(1+110,0+70)=(111,70).
 // b1 pos=(500,400) vel=(0,2): steer=(320-500,240-400)*0.5=(-90,-80); nvel=(0-90,2-80)=(-90,-78).
-// RUN: %arche build -o %t %s && %t | grep -qF "v=111 70 -90 -78"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=111 70 -90 -78"
 #import { fmt }
 pos(x, y)  :: float;
 vel(x, y)  :: float;
@@ -35,13 +36,13 @@ seed :: system {
   B.vel.y = { 0.0, 2.0 };
 }
 
-flock :: system (query { pos, vel }) {
-  map (query { nvel } as me)(nvel) {
-    cnt        := reduce(+, near(me.pos, pos));
-    cohesion   := reduce(+, pos * near(me.pos, pos)) / cnt;
-    separation := reduce(+, push(me.pos, pos));
+flock :: system (query { pos, vel } as Flock) {
+  map (query { pos, vel, nvel } as me)(nvel) {
+    cnt        := reduce(+, near(me.pos, Flock.pos));
+    cohesion   := reduce(+, Flock.pos * near(me.pos, Flock.pos)) / cnt;
+    separation := reduce(+, push(me.pos, Flock.pos));
     steer      := (cohesion - me.pos) * 0.0 + separation * 1.0 + (CENTER - me.pos) * CTR;
-    me.nvel = me.vel + steer;
+    nvel = me.vel + steer;
   };
 }
 

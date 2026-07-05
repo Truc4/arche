@@ -3,7 +3,7 @@
 // device's `bump` system (which reads `foo`) is rewritten to read `bar`, so it runs over the
 // driver's `Thing { bar }` pool. Structural unification can't do this (foo != bar); only the
 // explicit binding can.
-// RUN: %arche build -o %t %s && %t | grep "implements_ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "implements_ok"
 #import { dev2 fmt }
 
 @implements(dev2.foo)

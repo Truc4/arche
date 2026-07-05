@@ -2,7 +2,7 @@
 // nested `map` querying per-element SCALARS, where the `reduce` folds the system's queried column. Today a
 // columnar `system(query)` can't host a nested `map` (G7), and `reduce` can't fold a system's bound column
 // (G8). Here each B row folds the whole `v` column, gated by its own `o`: o_i = (Σ v) * 1 = 6. RED until built.
-// RUN: %arche build -o %t %s && %t | grep -qF "o=6 6 6"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "o=6 6 6"
 #import { fmt }
 v :: float;
 o :: float;

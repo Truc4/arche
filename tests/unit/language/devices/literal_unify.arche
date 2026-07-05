@@ -1,6 +1,6 @@
 // An entity literal `Foo{…}` populates the named shape's pool, read back through `Foo.x`. (Entities
 // replaced the old positional `insert(arche{x,y}, …)` anonymous-literal target.)
-// RUN: %arche build -o %t %s && %t | grep "literal_ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "literal_ok"
 #import { fmt }
 Foo :: arche { x :: float, y :: float }
 

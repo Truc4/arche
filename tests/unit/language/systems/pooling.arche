@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "ok"
 // Pool reuse: column ops touch the live rows, a handle `delete` frees a slot, and a later
 // insert reuses freed capacity — column reads stay correct throughout.
 #import { fmt }

@@ -1,6 +1,6 @@
 // N-ary tuple groups: `(x, y)` is just the 2 case — `(x, y, z)`, `(a, b, c, d, e, f, g)`, … each mint N
 // named sub-columns, with whole-column writes and indexed reads.
-// RUN: %arche build -o %t %s && %t | grep -qF "t=1 3 5 g=7 a=1"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "t=1 3 5 g=7 a=1"
 #import { fmt }
 v3(x, y, z)             :: int;
 v7(a, b, c, d, e, f, g) :: int;

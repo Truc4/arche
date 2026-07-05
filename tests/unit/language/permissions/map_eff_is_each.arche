@@ -1,7 +1,7 @@
 // `map (Q) eff` IS the old `each`: the effectful per-entity fan. `eff` lifts the pure-map E0046
 // transform-only restriction, so control flow (`if`) and effects (`fmt.printf`) are permitted, and the
 // body runs per row. Here values above 2.5 are clamped, with a per-row print on the clamp.
-// RUN: %arche build -o %t %s && %t | tr '\n' ',' | grep -qF "clamped,clamped,1.0 2.0 2.5 2.5,"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | tr '\n' ',' | grep -qF "clamped,clamped,1.0 2.0 2.5 2.5,"
 #import { fmt }
 v :: float;
 R :: arche { v }

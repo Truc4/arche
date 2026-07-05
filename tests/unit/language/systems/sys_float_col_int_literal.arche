@@ -2,7 +2,7 @@
 // type wins; the value isn't truncated). LLVM needs a float constant (`2.0`) for an `fmul double`, so a
 // bare `2` must be converted. Mixed int-literal-into-float is fine (widening); the reverse (a float value
 // into an int column) is not — see sys_float_into_int_col.arche.
-// RUN: %arche build -o %t %s && %t | grep -qF "v=6 10 p=86 90"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=6 10 p=86 90"
 #import { fmt }
 pos(x, y) :: float;
 vel(x, y) :: float;

@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "msg=hello by=ada"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "msg=hello by=ada"
 // Regression: an archetype with char[N] columns once compiled only with a no-op main — the
 // column was under-sized and insert mis-lowered the string arg. Now two char[N] columns
 // round-trip. See arch/char_column.arche and

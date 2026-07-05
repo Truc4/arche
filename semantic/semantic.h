@@ -173,7 +173,8 @@ void semantic_set_lint_proc_not_primitive(int enabled, int werror);
 /* W0016 discarded_ok: ERROR by default — an `insert` into a fallible (`reject`) pool that ignores `ok`.
  * `--discarded-ok=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */
 void semantic_set_lint_discarded_ok(int enabled, int werror);
-/* W0029 pool_index_outside_query: WARN by default (pool values must come from a query, not `Pool.col[i]`).
+/* W0029 pool_index_outside_query: ERROR by default (pool values must come from a query, not `Pool.col[i]`);
+ * NOT silenced by @allow — only the `--pool-index` flag changes it.
  * `--pool-index=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */
 void semantic_set_lint_pool_index_outside_query(int enabled, int werror);
 /* W0026 large_stack_array: warn by default. `-Wno-large-stack-array` disables; `-Werror=large-stack-array`

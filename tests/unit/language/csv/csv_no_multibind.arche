@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && cd %repo && %t | grep "n="
+// RUN: %arche build --pool-index=allow -o %t %s && cd %repo && %t | grep "n="
 #import { io fmt }
 
 cb      :: char;

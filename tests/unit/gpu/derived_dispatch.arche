@@ -4,7 +4,7 @@
 // dispatch found no shader and SILENTLY fell back to the CPU. The placement said GPU; the win never ran.
 // `make test-derived-gpu` forces this map onto the GPU (ARCHE_FORCE_PLACE=gpu) and asserts a real
 // `gpu dispatch` happens (when a device is present) — pre-fix it never did. Output stays correct either way.
-// RUN: %arche build -o %t %s && %t | grep -qF "x0=0 x3=30"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "x0=0 x3=30"
 #import { fmt }
 x :: float;
 P :: arche { x }

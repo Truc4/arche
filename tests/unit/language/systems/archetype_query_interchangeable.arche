@@ -1,7 +1,7 @@
 // Archetypes and queries are INTERCHANGEABLE in the `map(X)` / `system(X)` selector: an archetype name
 // selects ALL of its columns, exactly like a named query would. Here both a `map` (pure) and a `system`
 // (effectful) run columnar transforms selected by the ARCHETYPE name `Ball`. Verified by reading cells.
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 Ball :: arche { pos(x, y) :: int color :: int }
 [8]Ball(2);

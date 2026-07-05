@@ -4,7 +4,7 @@
 // into a FLOAT column (`vel *= 2`) — IS fine (widening); see sys_float_col_int_literal.arche.
 // (The build is rejected today via the backend type check; a dedicated front-end diagnostic for float→int
 //  on a sys COLUMN is a follow-up — sys bodies aren't yet walked by the tycheck pass.)
-// RUN: ! %arche build -o %t %s
+// RUN: ! %arche build --pool-index=allow -o %t %s
 #import { fmt }
 v(x, y) :: int;
 M       :: arche { v }

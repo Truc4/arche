@@ -4,7 +4,7 @@
 // scalar columns too, so the generated `@arche_insert_Mover` helper takes scalar field args (NOT
 // by-value `%struct.pos` args, which LLVM rejects: "invalid type for function argument"). Regression test
 // for that miscompile, which only surfaced across the device/datasheet boundary (single-file flattened OK).
-// RUN: %arche build -o %t %s && %t | grep -qF "p=11 22 v=1 2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "p=11 22 v=1 2"
 #import { tgdev fmt }
 [1]Mover ?abort;
 seed :: system eff {

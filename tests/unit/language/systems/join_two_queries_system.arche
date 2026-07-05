@@ -2,7 +2,7 @@
 // system fans over the PRODUCT of the two queries. Mover (N rows) × Win (a [1] singleton) broadcasts —
 // every mover sees the one window's `id`, so `n = n + id` adds 99 to each row. RED until joins exist
 // (today the tuple selector doesn't parse / a cross-pool query matches 0 rows).
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 [8]Mover(3) ?abort;
 Mover :: arche { n :: int }

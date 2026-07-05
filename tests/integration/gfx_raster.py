@@ -88,7 +88,9 @@ def main():
         exe = os.path.join(work, 'draw')
         env = dict(os.environ)
         env['ARCHE_SELECT'] = 'gfx=headless'
-        build = subprocess.run([arche_bin, 'build', '-o', exe, 'draw.arche'],
+        # gfx rasterizers slice the driver-owned framebuffer pool at the composer top level — a deliberate
+        # direct-access opt-in (W0029 is error-by-default), so the consumer build passes --pool-index=allow.
+        build = subprocess.run([arche_bin, 'build', '--pool-index=allow', '-o', exe, 'draw.arche'],
                                cwd=work, capture_output=True, text=True, env=env)
         if build.returncode != 0:
             print("FAIL: headless build failed\n" + build.stdout + build.stderr, file=sys.stderr)

@@ -4,7 +4,7 @@
 // scalar singleton field like `Config.stiffness[0]` is shared across both). So the spring is written once
 // for the whole vector instead of per axis. Verifies the per-component result matches the hand-expanded
 // form exactly.
-// RUN: %arche build -o %t %s && %t | grep -qF "v=2 12 p=82 92"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=2 12 p=82 92"
 #import { fmt }
 pos(x, y)    :: int;
 vel(x, y)    :: int;

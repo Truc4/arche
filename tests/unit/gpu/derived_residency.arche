@@ -9,7 +9,7 @@
 //
 // The plain RUN below builds on the CPU (no --gpu), where the pass is a no-op and the value is correct anyway
 // — the derivation itself is asserted by the Makefile target under --gpu (ARCHE_COH_DEBUG).
-// RUN: %arche build -o %t %s && %t | grep -qF "g=4"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "g=4"
 #import { fmt }
 g  :: float;
 RP :: arche { g }

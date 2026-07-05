@@ -1,0 +1,9 @@
+// tgtypedev's impl. `bump` is legal behavior. BUT `dir(x, y) :: float;` defines a tuple-group TYPE in a
+// device's impl — a queryable component-type vocabulary that belongs in the `.ds.arche` datasheet, not the
+// impl. Support file for device_no_tuple_type.arche.
+// RUN: true
+bump :: map (query { val })(val) {
+  val = val + 1.0;
+}
+
+dir(x, y) :: float;

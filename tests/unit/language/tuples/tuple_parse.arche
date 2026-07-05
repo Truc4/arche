@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 pos(x, y) :: float;
 Particle  :: arche { pos_x, pos_y }

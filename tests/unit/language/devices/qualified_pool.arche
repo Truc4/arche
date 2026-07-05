@@ -1,7 +1,7 @@
 // A driver sizes a plain (path-imported) module's shape and reads it back — the caller picks the
 // storage size. `phys` is a plain module → it merges FLAT, so its `Particle` shape is bare (no
 // `phys.` prefix); the driver writes `Particle[8]`.
-// RUN: %arche build -o %t %s && %t | grep "qualified_pool_ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "qualified_pool_ok"
 #import { "./phys" fmt }
 
 [8]Particle ?abort;

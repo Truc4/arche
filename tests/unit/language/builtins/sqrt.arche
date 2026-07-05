@@ -1,5 +1,5 @@
 // The `sqrt` builtin — float square root, lowered to LLVM's `@llvm.sqrt.f32` intrinsic (no libm).
-// RUN: %arche build -o %t %s && %t | grep -qF "r=2 3 4 5"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "r=2 3 4 5"
 #import { fmt }
 x :: float;
 P :: arche { x }

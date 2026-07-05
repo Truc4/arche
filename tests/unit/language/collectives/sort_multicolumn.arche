@@ -3,7 +3,7 @@
 // Negated i32 key reverses the pool; each column's value at a row equals that row's ordinal, so post-sort
 // they stay aligned. (Narrow i8/i16 columns share the same cycle-apply code path; their permutation is
 // covered by sort_by_key-style small-n fixtures and sort_i8_key.)
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 k :: int;
 a :: int;

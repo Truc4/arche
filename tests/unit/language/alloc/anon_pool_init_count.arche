@@ -1,0 +1,27 @@
+// An ANONYMOUS pool with an init count `(1)` and NO trailing `;` — the `[C]arche {…}` block should
+// self-terminate even with a trailing `(M)`, exactly like `[C]arche {…}` does. The `(1)` gives it one live
+// row, so a nested-map scatter into its buffer runs (a `system` would slice the whole column regardless, but a
+// `map` needs the live row).
+// RUN: %arche build -o %t %s && %t | grep -qF "f0=10 f3=20 f5=30 f7=40"
+#import { fmt }
+[1]arche { fb :: [8]int }
+(1)
+Boid :: arche { i :: int, v :: int }
+[4]Boid(4);
+
+seed :: system {
+  Boid.i = { 0, 3, 5, 7 };
+  Boid.v = { 10, 20, 30, 40 };
+}
+
+paint :: map (query { fb })(fb) eff {
+  map (query { i, v })(fb) eff {
+    fb[i] = v;
+  };
+}
+
+show :: system (query { fb }) eff {
+  fmt.printf("f0=%d f3=%d f5=%d f7=%d\n", fb[0], fb[3], fb[5], fb[7]);
+}
+
+#run seq({ seed, paint, show })

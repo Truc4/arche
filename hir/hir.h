@@ -179,11 +179,15 @@ typedef struct {
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
-	int eff;         /* 1 if the `eff` permission was declared: the kernel may run effects */
-	int is_gpu;      /* 1 if `@gpu`: emitted as a GPU compute shader (pure MAP only) */
-	char **writes;   /* the declared `(writes)` permission list: bound columns the body may assign */
-	int write_count; /* 0 ⇒ no `(writes)` declared */
-	char *row_var;   /* MAP+eff `as w` row-handle binding (`handle(driver)` local), else NULL */
+	int eff;             /* 1 if the `eff` permission was declared: the kernel may run effects */
+	int is_gpu;          /* 1 if `@gpu`: emitted as a GPU compute shader (pure MAP only) */
+	char **writes;       /* the declared `(writes)` permission list: bound columns the body may assign */
+	int write_count;     /* 0 ⇒ no `(writes)` declared */
+	char *row_var;       /* MAP+eff `as w` row-handle binding (`handle(driver)` local), else NULL */
+	char *query_binder;  /* SYSTEM `(query {…} as Flock)`: `Flock.col` names the whole queried column (the
+	                      * neighbour fold domain of a nested `map (… as me)`), else NULL */
+	int has_self_binder; /* pure `map (Q as me)`: `me.col` is self (fan row), a bare queried col in a `reduce`
+	                      * is the neighbour fold domain — the self-join. Drives the fold-domain gate. */
 	SourceLoc loc;
 } HirKernelDecl;
 

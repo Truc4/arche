@@ -2,7 +2,7 @@
 // computed at i32 (loads promoted, literals i32), so the result must truncate to the column width before
 // the store — and (2) read back sign-extended for a SIGNED column, so a negative value round-trips.
 // Regression for both: `k = 0 - k` on a signed i8 and i16 column must yield -5, not 251 / 65531.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 
 k8 :: i8;

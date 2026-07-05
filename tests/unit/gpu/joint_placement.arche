@@ -6,7 +6,7 @@
 // while the SAME body as a `chain` of many maps over one pool goes on the GPU. `make test-joint-placement`
 // asserts this build-time contrast under a synthetic GPU profile; the DP's optimal SPLIT of a mixed chain is
 // covered by `test-placement` (membound→CPU, heavy→GPU in one cluster).
-// RUN: %arche build -o %t %s
+// RUN: %arche build --pool-index=allow -o %t %s
 #import { fmt }
 a :: float;
 A :: arche { a }

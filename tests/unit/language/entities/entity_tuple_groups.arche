@@ -1,6 +1,6 @@
 // RED until entities ship: tuple-group columns stay GROUPED in an entity literal — `pos: (1,2)` not four
 // flat positional values. This is the whole point: the entity matches the SHAPE as written, no flatten footgun.
-// RUN: %arche build -o %t %s && %t | grep -qF "p=1 2 v=3 4"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "p=1 2 v=3 4"
 #import { fmt }
 pos(x, y) :: float;
 vel(x, y) :: float;

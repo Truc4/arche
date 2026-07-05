@@ -1,6 +1,6 @@
 // A second `@gpu` map exercising plain float arithmetic (no select). Its emitted compute shader is
 // validated in `make test-gpu`; the CPU path must produce the same result here.
-// RUN: %arche build -o %t %s && %t | grep -qF "x0=0 x3=30"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "x0=0 x3=30"
 #import { fmt }
 x :: float;
 P :: arche { x }

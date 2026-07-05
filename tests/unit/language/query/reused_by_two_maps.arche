@@ -1,5 +1,5 @@
 // One named query, two maps. The query is the shared domain; each map is a distinct transform over it.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 pos :: float;
 vel :: float;

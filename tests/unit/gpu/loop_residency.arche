@@ -8,7 +8,7 @@
 // the derivation at build time via ARCHE_COH_DEBUG: `resident P` + `sync P before show` (inside the loop) and
 // NO `before control-flow` flush. The load-bearing-ness of the derived sync itself is covered by
 // `test-derived-residency` (same SCHED_GPU_SYNC mechanism, straight-line).
-// RUN: %arche build -o %t %s
+// RUN: %arche build --pool-index=allow -o %t %s
 #import { fmt }
 g :: float;
 P :: arche { g }

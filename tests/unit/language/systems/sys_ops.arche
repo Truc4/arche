@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "p0i"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "p0i"
 #import { fmt }
 Body :: arche { position :: float, velocity :: float }
 

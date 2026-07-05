@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "DEBUG:"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "DEBUG:"
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float }
 

@@ -3,7 +3,7 @@
 // the inner fan runs over a different pool and CAPTURES it. The current row index is saved/restored across
 // the nested loop, so the outer fan resumes correctly. This is how the renderer draws balls into a window
 // without singletons, broadcasts, or hand-indexing. Verified by cells.
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 W :: arche { wid :: int }
 P :: arche { v :: int }

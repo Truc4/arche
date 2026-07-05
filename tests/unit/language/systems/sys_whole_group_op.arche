@@ -3,7 +3,7 @@
 // `pos_x = pos_x + vel_x; pos_y = pos_y + vel_y`). Before, a group-level op silently NO-OP'd (`pos` is not
 // a real column, so codegen wrote nothing) — the reason the demo hand-expanded each axis. Multi-row, so
 // the per-component whole-column loop is exercised across rows.
-// RUN: %arche build -o %t %s && %t | grep -qF "p0=12 24 p1=106 208"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "p0=12 24 p1=106 208"
 #import { fmt }
 pos(x, y) :: int;
 vel(x, y) :: int;

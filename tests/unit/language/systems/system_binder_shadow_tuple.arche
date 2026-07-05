@@ -1,0 +1,35 @@
+// The self-join TUPLE shadow: `Flock.pos` (neighbour column, a {x,y} vector) vs `me.pos` (this element). The
+// map's flattened `pos_x`/`pos_y` shadow the system's, so the neighbour must come from the pool at the fold
+// counter — packed into a {float,float} value. o_i = Σ_j (pos_j − pos_i).
+// posx={1,2,3}: ox = 6 − 3·x → 3,0,−3.  posy={10,20,30}: oy = 60 − 3·y → 30,0,−30.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ox=3 0 -3 oy=30 0 -30"
+#import { fmt }
+pos(x, y) :: float;
+o(x, y)   :: float;
+B         :: arche { pos, o }
+[3]B(3);
+
+seed :: system {
+  B.pos.x = { 1.0, 2.0, 3.0 };
+  B.pos.y = { 10.0, 20.0, 30.0 };
+}
+
+run :: system (query { pos } as Flock) {
+  map (query { pos, o } as me)(o) {
+    me.o = reduce(+, Flock.pos - me.pos);
+  };
+}
+
+show :: system eff {
+  fmt.printf(
+    "ox=%.0f %.0f %.0f oy=%.0f %.0f %.0f\n",
+    B.o.x[0],
+    B.o.x[1],
+    B.o.x[2],
+    B.o.y[0],
+    B.o.y[1],
+    B.o.y[2],
+  );
+}
+
+#run seq({ seed, run, show })

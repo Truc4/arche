@@ -1,7 +1,7 @@
 // A `system` over a query operates on the COLUMNS the query gives you — a columnar transform applied
 // across every matched row, like `map` but effectful and schedulable. `n = n + 5` adds to every row of
 // the `n` column. Verified by reading the resulting cells.
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 [8]Acc(3);
 Acc :: arche { n :: int }

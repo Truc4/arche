@@ -1,7 +1,7 @@
 // `vstore`'s datasheet states the components `a`/`b` + a `Cell[4]` storage requirement, and `vstore`
 // defines the `Cell` shape (it comes in via the import). The driver provides the pool (>= the minimum
 // of 4) and runs the device's system. (Companion to requirement_met.arche.)
-// RUN: %arche build -o %t %s && %t | grep "predef_ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "predef_ok"
 @default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { vstore fmt }
 

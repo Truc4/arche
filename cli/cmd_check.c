@@ -17,6 +17,7 @@ enum {
 	C_SYS_FOREIGN_WRITE,
 	C_PROC_NOT_PRIMITIVE,
 	C_DISCARDED_OK,
+	C_POOL_INDEX,
 	C_WNO_LSA,
 	C_WERR_LSA
 };
@@ -40,6 +41,8 @@ static const ArgSpec k_check_specs[] = {
      "proc-not-primitive lint (W0030): error (default) | warn | allow"},
     {C_DISCARDED_OK, "--discarded-ok", ARG_VALUE, 0, 0, "<level>",
      "discarded-ok lint (W0016): error (default) | warn | allow"},
+    {C_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
+     "pool-index-outside-query lint (W0029): error (default) | warn | allow"},
     {C_WNO_LSA, "-Wno-large-stack-array", ARG_FLAG, 0, 0, NULL, "disable the large-stack-array lint (W0026)"},
     {C_WERR_LSA, "-Werror=large-stack-array", ARG_FLAG, 0, 0, NULL,
      "promote the large-stack-array lint (W0026) to an error"},
@@ -88,6 +91,11 @@ int check_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 	if (cli_apply_proc_leaf(args_value(&p, C_PROC_LEAF)) != 0) {
 		fprintf(stderr, "%s: --proc-leaf expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "check", "[flags] <input.arche>", k_check_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_pool_index(args_value(&p, C_POOL_INDEX)) != 0) {
+		fprintf(stderr, "%s: --pool-index expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "check", "[flags] <input.arche>", k_check_specs);
 		return ARCHE_USAGE;
 	}

@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 // New model: a tuple alias mints flat name-prefixed components (pos_x, pos_y); access is
 // flat (Particle.pos_x), never nested (no Particle.pos.x).
 #import { fmt }

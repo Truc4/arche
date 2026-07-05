@@ -6,7 +6,7 @@
 //
 // CPU build (no --gpu) falls back to the CPU and is correct either way — seed 10, three times v=(v*3+7)/2:
 // 10 → 18 → 30 → 48 (integer division truncates 37/2, 61/2, 97/2). All four rows are identical.
-// RUN: %arche build -o %t %s && %t | grep -qF "v0=48 v3=48"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v0=48 v3=48"
 #import { fmt }
 K :: 3;
 v :: int;

@@ -1,7 +1,7 @@
 // A NAMED query (`map(Movers)`) matches EVERY archetype that has all its columns — here two distinct
 // shapes — and a single `run` drives the map over both pools. The canonical idiom: define the query
 // once, run maps over it by name.
-// RUN: %arche build -o %t %s && %t | grep -qF "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 pos  :: float;
 vel  :: float;

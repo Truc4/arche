@@ -128,7 +128,7 @@ static const ArgSpec k_run_specs[] = {
     {R_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
     {R_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
-     "pool-index-outside-query lint (W0029): warn (default) | error | allow"},
+     "pool-index-outside-query lint (W0029): error (default) | warn | allow"},
     {R_PROC_NOT_PRIMITIVE, "--proc-not-primitive", ARG_VALUE, 0, 0, "<level>",
      "proc-not-primitive lint (W0030): error (default) | warn | allow"},
     {R_DISCARDED_OK, "--discarded-ok", ARG_VALUE, 0, 0, "<level>",

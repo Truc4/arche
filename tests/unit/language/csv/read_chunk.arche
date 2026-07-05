@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { io fmt }
 
 cb      :: char;

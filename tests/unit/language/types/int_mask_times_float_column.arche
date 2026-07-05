@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "ok"
 // Regression: a proc-level column expression using an int-column comparison as a 0/1 mask
 // multiplied into a float column — `float_col = float_col * (int_col > <int>)`. The README
 // documents this pattern ("Conditional Behavior", `vel = vel * (pos > 10)`). It once produced

@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "Loaded 1000 rows"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "Loaded 1000 rows"
 #import { parse io fmt }
 Transaction :: arche { price :: float, quantity :: int }
 

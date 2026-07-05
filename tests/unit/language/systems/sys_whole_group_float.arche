@@ -3,7 +3,7 @@
 // read (`Config.center[0]`) is a scalar — mixing a vectorized column with that scalar once miscompiled
 // (`sub i32` on a `<4 x double>`). The fix runs such a loop scalar. Mirrors sys_whole_group_singleton but
 // float; results must match the hand-expanded per-axis arithmetic exactly.
-// RUN: %arche build -o %t %s && %t | grep -qF "v=4 24 p=84 104"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=4 24 p=84 104"
 #import { fmt }
 pos(x, y)    :: float;
 vel(x, y)    :: float;

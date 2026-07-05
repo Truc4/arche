@@ -5,7 +5,7 @@
 // seed: v0=0, v7=7  ->  +3  ->  v0=3, v7=10.
 // The CPU build (here) runs `bump` on the CPU and `gpu.sync` is a no-op; the GPU path is covered by
 // `make test-gpu-exe`. Both must give the same result.
-// RUN: %arche build -o %t %s && %t | grep -qF "v0=3 v7=10"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v0=3 v7=10"
 #import { fmt }
 v :: float;
 R :: arche { v }

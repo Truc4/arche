@@ -1,6 +1,6 @@
 // Heapsort stability: all keys equal, distinct tags 1..40, n>=32 so it takes the heapsort path. A stable
 // sort must keep equal-key rows in input order — verified via the index tie-break in the comparator.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 v   :: float;
 tag :: int;

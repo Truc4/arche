@@ -14,3 +14,8 @@ window :: opaque;
 /// 0xRRGGBB pixels the rasterizers write and `present` blits — not a hidden shim buffer. The shape lives in
 /// gfx.arche; a driver owns `[W*H]Framebuffer`.
 [1]Framebuffer;
+
+/// The pixel column type (0xRRGGBB) and the close-stamp type — queried component vocabulary, so they
+/// live in the datasheet; the shapes referencing them stay in gfx.arche.
+pixel :: int;
+at    :: i64;

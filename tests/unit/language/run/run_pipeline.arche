@@ -2,7 +2,7 @@
 // (`seq`/`run` + the `once`/`forever` library funcs) is folded at COMPILE TIME (value-CTFE, Approach A)
 // to a constant tree, which codegen lowers to a direct-dispatch `@arche_run` the runtime calls. There is
 // no driver proc: a startup system seeds, two map runs advance, a report system prints. Output: x=2.
-// RUN: %arche build -o %t %s && %t | grep -qF "x=2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "x=2"
 #import { fmt }
 x       :: int;
 Counter :: arche { x }

@@ -1,7 +1,7 @@
 // Smoke: an archetype with several distinct components, populated and summed in a loop. Proves
 // component nominal-ness does not disturb pool layout / shape identity (cross-check set_identity,
 // alias_shared_pool). Prints total=100. (GREEN today; must STAY green.)
-// RUN: %arche build -o %t %s && %t | grep "total=100"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "total=100"
 #import { fmt }
 Body :: arche { px :: float, py :: float, mass :: float }
 [4]Body(4) {

@@ -4,7 +4,7 @@
 // columns (float ops were correct), so it masked this; this is the int counterpart. One column per
 // operator. NB: the longhand `a = a + 5` went through a different, correct path — which is why
 // hand-expanded code hid the bug. Compound assignment must work.
-// RUN: %arche build -o %t %s && %t | grep -qF "a=15 b=6 c=30 d=2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "a=15 b=6 c=30 d=2"
 #import { fmt }
 a :: int;
 b :: int;

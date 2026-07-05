@@ -1,7 +1,7 @@
 // Large n (>=32) integer key → the radix-sort path (not the small-n insertion path), plus the cycle-
 // following permutation apply at scale. scan builds 1..64, a negate map makes it -1..-64 (also exercises
 // the signed-key radix transform), so an ascending sort fully reverses the pool, permuting tag with it.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 k   :: int;
 tag :: int;

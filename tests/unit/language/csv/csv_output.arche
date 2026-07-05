@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
+// RUN: %arche build --pool-index=allow -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
 #import { io fmt }
 Task1Data :: arche { price :: float, quantity :: int, revenue :: float }
 

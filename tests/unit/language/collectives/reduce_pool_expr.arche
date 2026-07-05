@@ -2,7 +2,7 @@
 // a scalar, evaluated inside a per-element columnar `system`. The folded pool's `B.*` refs index the inner
 // fold counter; the enclosing bound columns (bare `px`/`py`) stay at the outer row. Here each boid counts how
 // many boids lie within radius 2 (self included) — the two clusters {0,1} and {20,21} each see exactly 2.
-// RUN: %arche build -o %t %s && %t | grep -qF "cnt=2 2 2 2"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "cnt=2 2 2 2"
 #import { fmt }
 px  :: float;
 py  :: float;
