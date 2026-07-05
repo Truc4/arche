@@ -143,6 +143,7 @@ const char *semantic_field_type_name(SemanticContext *ctx, const char *archetype
 
 /* Constant queries */
 const char *semantic_get_const_value(SemanticContext *ctx, const char *const_name);
+const char *semantic_qualified_const_name(SemanticContext *ctx, const char *bare);
 
 /* CTFE: fold `e` to a compile-time integer constant (literal / const / pure-func-of-constants).
  * Returns 1 and writes *out on success, 0 if `e` is not a compile-time-constant integer. */

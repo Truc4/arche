@@ -2522,7 +2522,7 @@ static int expr_needs_tuple_value_write(HirExpr *e) {
 		if (tgroup_lookup(e->data.name.name))
 			return 0; /* a bare group column (`pos`/`vel`) — suffixable per component */
 		if (g_lower_sem && semantic_get_const_value(g_lower_sem, e->data.name.name))
-			return 0; /* a scalar const — fine to clone into each component */
+			return 0; /* a const — scalar clones into each component; a tuple const suffixes to its member */
 		/* Anything else is a LOCAL (`w`, `spd`, `steer`): a tuple local can't be name-suffixed → value write. */
 		return 1;
 	case HIR_EXPR_BINARY:

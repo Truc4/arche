@@ -26,17 +26,19 @@ RECT = 0x00FF00
 CIRC = 0xFF0000
 
 PROG = (
-    # New model: gfx is query-driven. The driver owns the pools (a [1] Window + shape pools) and SCHEDULES
-    # the gfx draw systems by name; each draw op nests a fan over the window and a fan over its shapes (no
-    # procs, no joins). `boot` opens the window (running the open Eff) and seeds one disc + one rect.
+    # New model: gfx is query-driven and SOURCE-AGNOSTIC on the framebuffer — one `[1]` buffer entity whose
+    # `framebuffer :: [W*H]int` array it queries + indexes directly (no `Pool.col[i]`, so no --pool-index).
+    # The driver owns the buffer shape/size (a device can't define a buffer type) + all pools, and SCHEDULES
+    # the gfx draw systems by name; each op nests a fan over the window and a fan over its shapes.
     "#import { gfx }\n"
     "Window :: arche { handle :: window  bg :: int }\n"
     "Disc :: arche { pos(x, y) :: int  color :: int  r :: int }\n"
     "Rect :: arche { rx :: int  ry :: int  rw :: int  rh :: int  rcolor :: int }\n"
+    "Framebuffer :: arche { framebuffer :: [%d]int }\n"  # W*H — the driver owns + sizes the single buffer
     "[1]Window ?abort;\n"
     "[1]Disc ?abort;\n"
     "[1]Rect ?abort;\n"
-    "[4096]Framebuffer;\n"  # 64*64 — the driver owns gfx's framebuffer pool (gfx declares the shape)
+    "[1]Framebuffer(1);\n"
     "boot :: system eff {\n"
     "  gfx.open(%d, %d, \"t\")(win:);\n"
     "  insert(Window { handle: win, bg: %d });\n"
@@ -44,7 +46,7 @@ PROG = (
     "  insert(Rect { rx: 2, ry: 2, rw: 8, rh: 8, rcolor: %d });\n"   # covers x,y in [2,10)
     "}\n"
     "#run seq({ boot, gfx.clear, gfx.rect, gfx.circle, gfx.present })\n"
-) % (W, H, CLEAR, CIRC, RECT)
+) % (W * H, W, H, CLEAR, CIRC, RECT)
 
 MANIFEST = (
     "[lib]\n"
@@ -88,9 +90,9 @@ def main():
         exe = os.path.join(work, 'draw')
         env = dict(os.environ)
         env['ARCHE_SELECT'] = 'gfx=headless'
-        # gfx rasterizers slice the driver-owned framebuffer pool at the composer top level — a deliberate
-        # direct-access opt-in (W0029 is error-by-default), so the consumer build passes --pool-index=allow.
-        build = subprocess.run([arche_bin, 'build', '--pool-index=allow', '-o', exe, 'draw.arche'],
+        # gfx queries the framebuffer buffer + indexes the bound column — no hand pool-indexing, so the
+        # consumer build needs no --pool-index opt-out.
+        build = subprocess.run([arche_bin, 'build', '-o', exe, 'draw.arche'],
                                cwd=work, capture_output=True, text=True, env=env)
         if build.returncode != 0:
             print("FAIL: headless build failed\n" + build.stdout + build.stderr, file=sys.stderr)

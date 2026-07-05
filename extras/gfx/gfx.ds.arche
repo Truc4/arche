@@ -10,12 +10,7 @@
 /// scope exit via the `@drop(window)` on `close` (gfx.arche).
 window :: opaque;
 
-/// Framebuffer storage minimum (the driver owns + sizes the real pool). The framebuffer is DATA — a pool of
-/// 0xRRGGBB pixels the rasterizers write and `present` blits — not a hidden shim buffer. The shape lives in
-/// gfx.arche; a driver owns `[W*H]Framebuffer`.
-[1]Framebuffer;
-
-/// The pixel column type (0xRRGGBB) and the close-stamp type — queried component vocabulary, so they
-/// live in the datasheet; the shapes referencing them stay in gfx.arche.
-pixel :: int;
-at    :: i64;
+/// The framebuffer is a single-entity BUFFER — one `framebuffer :: [W*H]int` array of 0xRRGGBB pixels — owned
+/// and sized by the DRIVER (which knows the resolution). gfx queries `{ framebuffer }` source-agnostically and
+/// indexes the bound buffer, so its type/size live with the driver, not in this generic datasheet.
+at :: i64;

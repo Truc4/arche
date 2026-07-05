@@ -1,7 +1,7 @@
-/// Draw a filled disc per drawable entity — centre `pos`, radius `r`, colour `color` — into each window's
-/// framebuffer, clamped to its bounds.
-circle :: system eff {
-  view := Framebuffer.pixel[0: Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
+/// Draw a filled disc per drawable entity — centre `pos`, radius `r`, colour `color` — into the window's
+/// framebuffer buffer, clamped to its bounds. The framebuffer + window are `[1]` singletons bound by the
+/// system; the nested fan iterates the discs, each scattering into the one shared buffer.
+circle :: system (query { framebuffer })(framebuffer) eff {
   map (query { handle }) eff {
     dims(handle)(w:, h:);
     map (query { pos, color, r }) eff {
@@ -29,7 +29,7 @@ circle :: system eff {
           dx := xx - pos.x;
           dy := yy - pos.y;
           if (dx * dx + dy * dy <= r2) {
-            view[yy * w + xx] = color;
+            framebuffer[yy * w + xx] = color;
           }
           xx = xx + 1;
         }
@@ -40,10 +40,9 @@ circle :: system eff {
 }
 
 /// Draw a filled axis-aligned rectangle per drawable entity — top-left `rx,ry`, size `rw,rh`, colour
-/// `rcolor` — into each window's framebuffer, clamped to its bounds. (Components are `r`-prefixed so they
-/// don't shadow the window's `w`/`h` locals inside the fan.)
-rect :: system eff {
-  view := Framebuffer.pixel[0: Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
+/// `rcolor` — into the window's framebuffer buffer, clamped to its bounds. (Components are `r`-prefixed so
+/// they don't shadow the window's `w`/`h` locals inside the fan.)
+rect :: system (query { framebuffer })(framebuffer) eff {
   map (query { handle }) eff {
     dims(handle)(w:, h:);
     map (query { rx, ry, rw, rh, rcolor }) eff {
@@ -67,8 +66,8 @@ rect :: system eff {
         }
         xx := x0;
         for (; xx < x1;) {
-          view[yy * w + xx] = rcolor;
-          xx                = xx + 1;
+          framebuffer[yy * w + xx] = rcolor;
+          xx                       = xx + 1;
         }
         yy = yy + 1;
       }

@@ -1,0 +1,18 @@
+// A named-vector TUPLE const in a DEVICE's `#file` region, used in the device's map. Regression: the
+// flattened member registers qualified (`tcvec.__f1.CENTER_x`) while the reference stays bare, so the pack
+// read a nonexistent `CENTER_x` and packed `(0,0)` — the boid demo's `(CENTER - me.pos)` came out wrong.
+// RUN: %arche build -o %t %s && %t | grep "220 200"
+#import { tcvec fmt }
+
+[1]Pt(1);
+
+seed :: system {
+  Pt.pos.x = { 100.0 };
+  Pt.pos.y = { 40.0 };
+}
+
+show :: system (query { pos }) eff {
+  fmt.printf("%.0f %.0f\n", pos.x[0], pos.y[0]); // (320-100, 240-40)
+}
+
+#run seq({ seed, tcvec.shift, show })

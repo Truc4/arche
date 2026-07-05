@@ -1,0 +1,26 @@
+// A named-vector TUPLE const (`C(x,y) :: (…)`) used as a whole value inside a map — assigned to a group
+// column (`pos = C`) and in tuple arithmetic (`C - pos`, `C - me.pos`). Regressions: the flattened member
+// `C_x` was mis-tagged HIR_TYPE_TUPLE (its group `C` is a tuple group) so the bare-tuple pack read a
+// nonexistent `C_x_x` and yielded 0, packing `C` as `(0,0)`.
+// RUN: %arche build -o %t %s && %t | grep "220 200"
+#import { fmt }
+pos(x, y) :: float;
+C(x, y)   :: (320.0, 240.0);
+P         :: arche { pos }
+
+[1]P(1);
+
+seed :: system {
+  P.pos.x = { 100.0 };
+  P.pos.y = { 40.0 };
+}
+shift :: map (query { pos } as me)(pos) {
+  d := C - me.pos;
+  pos = d;
+}
+
+show :: system (query { pos }) eff {
+  fmt.printf("%.0f %.0f\n", pos.x[0], pos.y[0]); // (320-100, 240-40)
+}
+
+#run seq({ seed, shift, show })

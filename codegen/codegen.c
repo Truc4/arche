@@ -4370,7 +4370,20 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * lowering) with no direct value binding: pack its flattened per-lane columns (`pos_x`, `pos_y`) —
 		 * each read at the current row (folding / self-marker / auto-index all handled by the per-lane read) —
 		 * into a `{T,…}` aggregate value, so `.x`/`.y` and tuple arithmetic work on it. */
-		if (expr->resolved.tag == HIR_TYPE_TUPLE && !find_value(ctx, name) && expr->resolved.field_count > 0) {
+		/* A flattened tuple-const MEMBER (`C_x` from `C(x,y) :: (320,240)`) can be mis-tagged HIR_TYPE_TUPLE
+		 * because its group `C` is a tuple group — but it is a SCALAR value const, so read it directly rather
+		 * than packing (which would look up nonexistent `C_x_x`/`C_x_y` and yield 0). Distinguish it from the
+		 * GROUP const `C` (which DOES pack) by whether a sub-member const exists: `C` has `C_x`; `C_x` has no
+		 * `C_x_x`. */
+		int scalar_const_member = 0;
+		if (expr->resolved.tag == HIR_TYPE_TUPLE && ctx->sem_ctx && expr->resolved.field_count > 0 &&
+		    semantic_get_const_value(ctx->sem_ctx, name)) {
+			char probe[256];
+			snprintf(probe, sizeof(probe), "%s_%s", name, expr->resolved.fields[0].name);
+			scalar_const_member = semantic_get_const_value(ctx->sem_ctx, probe) == NULL;
+		}
+		if (expr->resolved.tag == HIR_TYPE_TUPLE && !find_value(ctx, name) && expr->resolved.field_count > 0 &&
+		    !scalar_const_member) {
 			char aggty[256];
 			tuple_llvm_type(&expr->resolved, aggty, sizeof(aggty));
 			char cur[256];
@@ -4378,6 +4391,15 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			for (int i = 0; i < expr->resolved.field_count; i++) {
 				char sub[160];
 				snprintf(sub, sizeof(sub), "%s_%s", name, expr->resolved.fields[i].name);
+				/* A flattened tuple-const member from a device `#file` const is registered under its
+				 * QUALIFIED name (`mod.__f1.CENTER_x`) but the reference here is bare (`CENTER`, un-renamed
+				 * because the tuple const yields no fileset HirDecl). If the bare member misses, resolve to the
+				 * qualified const name so the read below finds its value instead of yielding 0. */
+				if (ctx->sem_ctx && !find_value(ctx, sub) && !semantic_get_const_value(ctx->sem_ctx, sub)) {
+					const char *q = semantic_qualified_const_name(ctx->sem_ctx, sub);
+					if (q)
+						snprintf(sub, sizeof(sub), "%s", q);
+				}
 				HirExpr nm = {0};
 				nm.kind = HIR_EXPR_NAME;
 				nm.data.name.name = sub;
@@ -6406,6 +6428,11 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			int callee_wants_slice = callee_pt && callee_pt->tag == HIR_TYPE_ARRAY && !callee_is_extern;
 			if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
 				callee_wants_shaped_arr = 1;
+			/* An EXTERN (C ABI) `[]T` param takes a BARE element pointer (no fat-pointer len). An array pool
+			 * column (`framebuffer :: [W*H]int` passed to `gfx_be_present(px: []int)`) must decay to that
+			 * pointer with the element-typed `T*` — same as a shaped/slice arg, but without the trailing len. */
+			int callee_wants_extern_ptr = callee_is_extern && callee_pt &&
+			                              (callee_pt->tag == HIR_TYPE_ARRAY || callee_pt->tag == HIR_TYPE_SHAPED_ARRAY);
 
 			/* A tuple-typed param (`func(a: pos)`): pass a `{T,…}` aggregate by value. If the arg is already a
 			 * tuple VALUE (a name/literal/call result), `arg_bufs[i]` is the aggregate SSA. If it is a tuple
@@ -6445,7 +6472,8 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			 * element pointer (the auto-indexed array-column read). A non-extern `T[]` param is a (ptr,len)
 			 * slice — pass the column width N as the length (so e.g. `str.strlen(s)` sees the whole row, not
 			 * a ptr with a zero length); a shaped/extern param takes the bare pointer. */
-			if ((callee_wants_slice || callee_wants_shaped_arr) && expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
+			if ((callee_wants_slice || callee_wants_shaped_arr || callee_wants_extern_ptr) &&
+			    expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
 				ValueInfo *avi = find_value(ctx, expr->data.call.args[i]->data.name.name);
 				if (avi && avi->type == 4 && avi->arch_name) {
 					HirArchetypeDecl *aa = find_archetype_decl(ctx, avi->arch_name);

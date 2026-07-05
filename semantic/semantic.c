@@ -6875,15 +6875,6 @@ static const char *bind_query_archetype(SemanticContext *ctx, DeclSummary *d) {
 				break;
 			}
 		}
-		/* A scalar component column collapses to its BACKING for the body: a datasheet `last :: i64` mints a
-		 * DISTINCT subtype, but as a column it must be writable from its backing (`last = <i64>`), exactly like an
-		 * inline `{ last :: i64 }`. Reads already collapse (columns are backing-interchangeable); align the write
-		 * side so the inline-vs-separate declaration is symmetric. Tuples/handles are untouched (no backing). */
-		if (tyid_kind(ctx->ty_arena, param_type) == TYK_NOMINAL) {
-			TypeId b = tyid_backing(ctx->ty_arena, param_type);
-			if (b != TYID_UNKNOWN)
-				param_type = b;
-		}
 		add_variable(ctx, d->params[p].name, param_type);
 		mark_last_param(ctx, d->params[p].is_own);
 	}
@@ -11349,6 +11340,25 @@ const char *semantic_get_const_value(SemanticContext *ctx, const char *const_nam
 		if (strcmp(ctx->const_names[i], const_name) == 0) {
 			return ctx->const_values[i];
 		}
+	}
+	return NULL;
+}
+
+/* Resolve a BARE member name (`CENTER_x`) to the full name of a value const registered under it — either
+ * exactly, or QUALIFIED as `…​.CENTER_x` (a device `#file` tuple const flattens to `mod.__f1.CENTER_x` but is
+ * referenced bare). NULL if none. Used by the tuple-pack when a bare member misses. */
+const char *semantic_qualified_const_name(SemanticContext *ctx, const char *bare) {
+	if (!ctx || !bare)
+		return NULL;
+	for (int i = 0; i < ctx->const_count; i++)
+		if (strcmp(ctx->const_names[i], bare) == 0)
+			return ctx->const_names[i];
+	size_t bl = strlen(bare);
+	for (int i = 0; i < ctx->const_count; i++) {
+		const char *cn = ctx->const_names[i];
+		size_t cl = strlen(cn);
+		if (cl > bl + 1 && cn[cl - bl - 1] == '.' && strcmp(cn + cl - bl, bare) == 0)
+			return cn;
 	}
 	return NULL;
 }

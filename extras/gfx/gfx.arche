@@ -5,34 +5,29 @@ open :: func(w: int, h: int, own title: []char) -> Eff(window) {
 }
 
 /// A window's dimensions, as ONE Eff via the applicative product `zip` of two backend reads. A draw system
-/// binds both at once: `gfx.dims(handle)(w:, h:)`. The framebuffer itself is the driver-owned `Framebuffer`
-/// pool (below), sliced as `Framebuffer.pixel[0 : Framebuffer.capacity]` — not a shim-owned buffer.
+/// binds both at once: `gfx.dims(handle)(w:, h:)`. The framebuffer is the driver-owned single-entity buffer
+/// (`framebuffer :: [W*H]int`); gfx queries `{ framebuffer }` source-agnostically and indexes it directly.
 dims :: func(h: window) -> Eff(int, int) {
   return zip(gfx_be_w(h), gfx_be_h(h));
 }
 
-/// The framebuffer as data — one `int` column of 0xRRGGBB pixels, row-major. gfx declares the shape; the
-/// driver owns and sizes the pool (`[W*H]Framebuffer`). Rasterizers write it through a `[]int` slice.
-Framebuffer :: arche { pixel }
-
-/// Fill the framebuffer with each window's `bg` colour (0xRRGGBB).
-clear :: system eff {
-  view := Framebuffer.pixel[0: Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
+/// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
+/// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
+clear :: system (query { framebuffer })(framebuffer) eff {
   map (query { handle, bg }) eff {
     dims(handle)(w:, h:);
     n := w * h;
     for (i := 0; i < n; i += 1) {
-      view[i] = bg;
+      framebuffer[i] = bg;
     }
   };
 }
 
-/// Present the framebuffer (the driver-owned pool) to the window.
-present :: system eff {
-  view := Framebuffer.pixel[0: Framebuffer.capacity]; // slice at the composer top level (a query fan would auto-index it)
+/// Present the framebuffer buffer to the window (`px` is in-out per the FFI borrow rule; present only reads it).
+present :: system (query { framebuffer }) eff {
   map (query { handle }) eff {
     dims(handle)(w:, h:);
-    gfx_be_present(handle, view, w, h)(_:); // px is in-out (FFI borrow rule); present only reads it
+    gfx_be_present(handle, framebuffer, w, h)(_:);
   };
 }
 

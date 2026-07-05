@@ -1,0 +1,14 @@
+// tcvec's impl: a map that uses a named-vector TUPLE const (`CENTER`) declared in its `#file` region. The
+// const's flattened members register QUALIFIED (`tcvec.__f1.CENTER_x`) but the bare `CENTER` reference is
+// un-renamed — codegen resolves the member to its qualified name so it reads the value, not 0. Support file.
+// RUN: true
+Pt :: arche { pos }
+
+shift :: map (query { pos } as me)(pos) {
+  d := CENTER - me.pos;
+  pos = d;
+}
+
+#file
+
+CENTER(x, y) :: (320.0, 240.0);
