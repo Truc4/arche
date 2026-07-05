@@ -1,12 +1,13 @@
 // A bound entity inlines its literal at each `insert(e)` site, so reuse and conditional insertion both
 // work and respect control flow (the entity is only inserted where `insert(e)` actually runs).
-// RUN: %arche build -o %t %s && %t | grep -qF "v0=7 v1=7"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v0=7 v1=7"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { fmt }
 v :: int;
 B :: arche { v }
-[8]B;
+[8]B ?abort;
 
-main :: proc() {
+entry :: system eff {
   e := B { v: 7 };
   insert(e)(_:, _:); // reuse the same entity twice
   insert(e)(_:, _:);
@@ -16,3 +17,5 @@ main :: proc() {
   }
   fmt.printf("v0=%d v1=%d\n", B.v[0], B.v[1]);
 }
+
+#run entry

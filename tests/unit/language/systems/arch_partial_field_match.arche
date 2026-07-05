@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "ok"
 // A sys names a subset of components; it runs only over archetypes that have ALL of them.
 // `gravity (pos, mass)` matches Body (has `mass`) but NOT Particle (no `mass`), so Particle.pos
 // is left untouched while Body.pos advances by mass. (Body reuses the global `pos`/`vel`
@@ -8,21 +8,25 @@ Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
 
-[5]Particle;
+[5]Particle ?abort;
 
-[5]Body;
+[5]Body ?abort;
 
-gravity :: map (query { pos, mass }) {
+gravity :: map (query { pos, mass })(pos) {
   pos = pos + mass;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
   insert(Body { pos: 2.0, vel: 0.2, mass: 10.0 })(_:, _:);
-  run gravity;
+}
+
+verify :: system eff {
   ppi := Particle.pos[0] * 10.0;
   bpi := Body.pos[0] * 10.0;
-  fmt.assert(ppi == 10, "Particle.pos should stay 1.0 (no mass component)\n");
-  fmt.assert(bpi == 120, "Body.pos should be 12.0 (2.0 + mass 10.0)\n");
+  fmt.assert(ppi == 10, "Particle.pos should stay 1.0 (no mass component)\n")();
+  fmt.assert(bpi == 120, "Body.pos should be 12.0 (2.0 + mass 10.0)\n")();
   fmt.printf("ok\n");
 }
+
+#run seq({ seed, gravity, verify })

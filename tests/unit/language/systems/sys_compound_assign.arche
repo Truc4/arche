@@ -1,19 +1,23 @@
-// RUN: %arche build -o %t %s && %t | grep "ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "ok"
 // A `+=` compound assignment inside a sys body mutates the matched column in place.
 #import { fmt }
 
 Particle :: arche { pos :: float, vel :: float }
 
-[10]Particle;
+[10]Particle ?abort;
 
-bump :: map (query { pos, vel }) {
+bump :: map (query { pos, vel })(pos) {
   pos += vel;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(Particle { pos: 1.0, vel: 0.1 })(_:, _:);
-  run bump;
+}
+
+verify :: system eff {
   pi := Particle.pos[0] * 10.0;
-  fmt.assert(pi == 11, "compound add in sys failed\n");
+  fmt.assert(pi == 11, "compound add in sys failed\n")();
   fmt.printf("ok\n");
 }
+
+#run seq({ seed, bump, verify })

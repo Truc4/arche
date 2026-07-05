@@ -5,23 +5,28 @@
 // silences it — a deliberate single-shot write then compiles and runs once (here: g becomes 7).
 // (NB: a foreign write whose RHS reads an ITERATED column mixes two loop domains and won't codegen even
 //  under `allow` — that case is inherently ambiguous; see docs/explain/W0024.md.)
-// RUN: ! %arche build -o %t %s 2>%t.err
+// RUN: ! %arche build --pool-index=allow -o %t %s 2>%t.err
 // RUN: grep -qF "cannot write to 'Config'" %t.err
 // RUN: grep -qF "[map_writes_foreign_pool]" %t.err
-// RUN: %arche build --map-foreign-write=allow -o %t %s && %t | grep -qF "g=7"
+// RUN: %arche build --pool-index=allow --map-foreign-write=allow -o %t %s && %t | grep -qF "g=7"
 #import { fmt }
 gravity :: int;
 v       :: int;
 Config  :: arche { gravity }
 Thing   :: arche { v }
-[1]Config;
-[2]Thing;
+[1]Config ?abort;
+[2]Thing ?abort;
 bump :: map (query { v }) {
   Config.gravity[0] = 7; // foreign write from a system → W0024 (a single-shot write; runs once, not per row)
 }
-main :: proc() {
+seed :: system eff {
   insert(Config { gravity: 0 })(_:, _:);
   insert(Thing { v: 5 })(_:, _:);
-  run bump;
-  fmt.printf("g=%d\n", Config.gravity[0]); // 7 — the system's single-shot write took effect once
 }
+
+verify :: system eff {
+  fmt.printf("g=%d\n", Config.gravity[0]);
+  // 7 — the system's single-shot write took effect once;
+}
+
+#run seq({ seed, bump, verify })

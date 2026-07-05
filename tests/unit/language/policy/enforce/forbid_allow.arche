@@ -5,5 +5,7 @@
 helper :: func(x: int) -> int {
   return x;
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

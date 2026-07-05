@@ -6,17 +6,23 @@
   fflush  :: proc(stream: int);
 }
 
-print_float :: proc(f: float) {
-  printf("%g", f);
-  fflush(0);
+print_float :: func(f: float) -> Eff() {
+  return seq(printf("%g", f), fflush(0));
 }
-print :: proc(msg: []char) {
-  os.write(1, msg, msg.length);
+print :: func(msg: []char) -> Eff(i64) {
+  return os.write(1, msg, msg.length);
 }
-assert :: proc(condition: int, message: []char) {
-  if (condition == 0) {
-    fflush(0);
-    print(message);
-    os.exit(1);
-  }
+/// `assert(condition, message)` — abort with `message` iff `condition` is false (== 0). A pure `func`
+/// building a SELECTIVE `Eff`: `whenS` runs the `fail` leaf only on the failing branch (no `bind`). It is
+/// an `Eff`, so the call site RUNS it with the run-marker: `fmt.assert(x == 5, "x")();`.
+assert :: func(condition: int, message: []char) -> Eff() {
+  return whenS(condition == 0, fail(message));
+}
+
+/// Assertions in the flat-effect model: the CONDITION is pure control flow (a system's `if`); the FAILURE
+/// is an effect. `fail` is a pure func that BUILDS the abort effect (write the message to stderr, then
+/// exit nonzero); a system runs it on the failing branch — `if (x != 1) { fmt.fail("x\n")(_:); }`. No
+/// runtime conditional lives in a func (Eff-builders fold statically); the branch is the system's job.
+fail :: func(message: []char) -> Eff(i64) {
+  return seq(os.write(1, message, message.length), os.exit(1));
 }

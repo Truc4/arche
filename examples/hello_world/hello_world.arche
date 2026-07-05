@@ -1,4 +1,6 @@
 #import { fmt }
-main :: proc() {
-  fmt.print("Hello, World!\n");
+entry :: system eff {
+  fmt.print("Hello, World!\n")(_:);
 }
+
+#run entry

@@ -1,0 +1,10 @@
+// RUN: true
+// A library module that ALSO declares a `#run`. Imported by ../module_run_ignored.arche, where its `#run`
+// (and `greet`) must be IGNORED. By design silent. Not a standalone test — only imported.
+#import { fmt }
+
+greet :: system eff {
+  fmt.printf("from lib\n");
+}
+
+#run seq({ greet })

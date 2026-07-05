@@ -7,5 +7,7 @@ color :: enum { red, green, blue }
 bad :: func() -> color {
   return 5;
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

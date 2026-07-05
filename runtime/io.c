@@ -13,21 +13,13 @@
 #include <unistd.h>
 
 /* Returns `float` (f32), not `double`: arche `float` is f32, and the FFI return type must match the
- * caller's ABI or it reads the wrong register bytes (garbage). For sub-second timing prefer os_now_ms
- * (i64) — f32 monotonic seconds is coarse (~0.06s ULP at typical uptimes). */
+ * caller's ABI or it reads the wrong register bytes (garbage). For sub-second timing prefer `os.now_ms`
+ * (pure-arche `clock_gettime` via syscall) — f32 monotonic seconds is coarse (~0.06s ULP at typical
+ * uptimes). (The integer ms clock and the sleep now live in os.arche as pure-arche syscall wrappers.) */
 float os_now_sec(void) {
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (float)(ts.tv_sec + ts.tv_nsec * 1e-9);
-}
-
-/* Monotonic milliseconds — integer, for fixed-timestep loops (accumulate real elapsed ms, step the sim a
- * fixed dt at a time, so the simulation runs at the same rate regardless of frame rate). Monotonic: only
- * ever moves forward, immune to wall-clock/NTP jumps. */
-long long os_now_ms(void) {
-	struct timespec ts;
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 }
 
 /* The file/stdio family (stdin/stdout/stderr, fopen/fread/fwrite/fclose, fread_line,

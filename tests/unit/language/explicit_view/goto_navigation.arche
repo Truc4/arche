@@ -32,8 +32,10 @@ add :: func(a: int, b: int) -> int {
   return sum;
 }
 
-main :: proc() {
+entry :: system {
   p := add(2, 3);
   q := p;
   r := streq("a", "a");
 }
+
+#run entry

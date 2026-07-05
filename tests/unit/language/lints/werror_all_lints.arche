@@ -2,6 +2,8 @@
 // Here an unused local is a `proc_no_effect`/`unused_local` warning normally; under -Werror it fails.
 // RUN: %arche build -Werror -o %t %s > %t.out 2>&1 ; grep -qi "Lint error\|unused_local" %t.out
 // RUN: %arche build -o %t %s
-main :: proc() {
+entry :: system {
   x := 5;
 }
+
+#run entry

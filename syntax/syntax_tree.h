@@ -27,7 +27,7 @@ typedef enum {
 	SN_WORLD_DECL,
 	SN_ARCHETYPE_DECL,
 	SN_PROC_DECL,
-	SN_SYS_DECL,
+	SN_MAP_DECL,
 	SN_FUNC_DECL,
 	SN_FUNC_GROUP_DECL,
 	SN_STATIC_DECL,
@@ -35,14 +35,16 @@ typedef enum {
 	SN_DEFAULT_DECL, /* `@default(<kind>, <category>, <policy>)` — standalone directive setting the
 	                  * program's failure-policy default for one (effect-kind, op-category) cell */
 	SN_USE_DECL,
-	SN_REGION, /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
-	            * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */
+	SN_REGION,   /* `#module`/`#file`/`#foreign` region marker — banner (narrows following decls to
+	              * end-of-file) or, when it carries a `{ ... }` body, a bounded block of child decls */
+	SN_RUN_DECL, /* `#run <expr>` — the program's Schedule value; one expression child */
 
 	/* Structure */
 	SN_PARAM_LIST,
 	SN_PARAM,
-	SN_OUT_PARAM, /* an out-parameter of a proc: `name: T` in the second `(...)` list */
-	SN_OUT_ARG,   /* an out-argument at a proc call site: `name`, `name:`, or `name: T` */
+	SN_OUT_PARAM,   /* an out-parameter of a proc: `name: T` in the second `(...)` list */
+	SN_OUT_ARG,     /* an out-argument at a proc call site: `name`, `name:`, or `name: T` */
+	SN_WRITE_PARAM, /* a column in a kernel's `(writes)` permission list: `map (Q) (pos, vel) {…}` */
 	SN_FIELD_DECL,
 	SN_RETURN_TYPES, /* the `-> (T, ...)` of a func */
 	SN_ARG_LIST,     /* call argument list */
@@ -88,10 +90,14 @@ typedef enum {
 	SN_POLICY_EXPR,  /* policy value literal: `policy(in)->T{body}` — a failure-policy decl */
 	SN_GROUP_EXPR,   /* Odin-style overload group: `proc{a,b}` / `func{a,b}` */
 	SN_ARCH_EXPR,    /* archetype (record type) definition: `archetype{ fields }` */
-	SN_SYS_EXPR,     /* map definition: `map(<query>){body}` — runs over a query */
+	SN_MAP_EXPR,     /* map definition: `map(<query>){body}` — runs over a query */
+	SN_SYSTEM_EXPR,  /* system definition: `system { body }` — the composer; invoked by `#schedule` */
+	SN_EACH_EXPR,    /* each definition: `each(<query>){body}` — the per-element fan (scalars, control flow) */
 	SN_QUERY_EXPR,   /* query definition: `query { col, col }` — an archetype-selecting column set */
 	SN_ENUM_EXPR,    /* enum type definition: `enum { a, b = 2, c }` */
 	SN_ENUM_VARIANT, /* one enum variant: name + optional `= N` */
+	SN_SUM_EXPR,     /* sum (tagged-union) type definition: `sum { a(T), b([]Self), c }` */
+	SN_SUM_VARIANT,  /* one sum variant: name + optional `(type, ...)` payload type list */
 
 	/* Types (children of / refinements within a type position) */
 	SN_TYPE_REF, /* a type position: identifiers within are types */
@@ -99,6 +105,8 @@ typedef enum {
 	SN_TYPE_SHAPED_ARRAY,
 	SN_TYPE_TUPLE,
 	SN_TYPE_HANDLE,
+	SN_TYPE_EFF,  /* a not-yet-run effect value type: `Eff(T…)` — the parenthesized out-slot types. Kept
+	               * inside the SN_TYPE_REF..SN_TYPE_FUNC range so the "is a type node" guards include it. */
 	SN_TYPE_PROC, /* a proc type (bodiless signature): `proc(in)(out)` */
 	SN_TYPE_FUNC, /* a func type (bodiless signature): `func(in)->T` */
 
@@ -110,6 +118,8 @@ typedef enum {
 	SN_PARAM_NAME,    /* parameter name */
 	SN_CALLEE_NAME,   /* the callee identifier of a call expression */
 	SN_QUERY_REF,     /* a query name naming the query a `map(Name)` runs over */
+	SN_QUERY_BIND,    /* `as w` after an each query — binds the matched row's handle to `w` */
+	SN_EFF,           /* the `eff` permission marker trailing a map/system selector — kernel may run effects */
 	SN_ALLOC_TYPE,    /* the archetype name in `alloc Name(...)` */
 	SN_NAME_REF,      /* any other identifier reference (a variable) */
 	SN_POLICY_REF,    /* `!name` failure-policy marker trailing a fallible op (index/slice/call/pool-cap) */

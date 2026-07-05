@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "seg0=users seg1=posts total=10 eq=1"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "seg0=users seg1=posts total=10 eq=1"
 // A char[N] archetype column: insert string rows, then read each row back as a char[] (runtime-
 // indexed in a loop). Exercises the insert ABI (string pointer + whole-row memcpy), the per-row
 // column stride, and the shaped single-index read returning a slice. The stored words are 5 bytes
@@ -7,9 +7,9 @@
 #import { str fmt }
 Node :: arche { seg :: [32]char, id :: int }
 
-[8]Node;
+[8]Node ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Node { seg: "users", id: 7 })(_:, _:);
   insert(Node { seg: "posts", id: 9 })(_:, _:);
 
@@ -23,3 +23,5 @@ main :: proc() {
   eq := streq(r0[0: 5], "users");
   fmt.printf("seg0=%s seg1=%s total=%d eq=%d\n", r0, r1, total, eq);
 }
+
+#run entry

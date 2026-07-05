@@ -1,5 +1,7 @@
 // RUN: ! %arche build -o %t %s 2>%t.err
 // RUN: grep -qiF "only valid as a parameter type" %t.err
-main :: proc() {
+entry :: system {
   x: archetype = 0;
 }
+
+#run entry

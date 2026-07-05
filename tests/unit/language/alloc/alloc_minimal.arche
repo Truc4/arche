@@ -1,12 +1,14 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 Particle :: arche { pos :: float }
 
-[5]Particle;
+[5]Particle ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Particle { pos: 1.0 })(_:, _:);
   v  := Particle.pos[0];
   vi := v * 10.0;
-  fmt.assert(vi == 10, "value not 1.0\n");
+  fmt.assert(vi == 10, "value not 1.0\n")();
 }
+
+#run entry

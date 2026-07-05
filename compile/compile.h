@@ -41,4 +41,8 @@ int compile_source(const char *user_source, const char *source_path, const char 
  * program is well-formed, 1 otherwise (diagnostics printed to stderr). */
 int compile_check(const char *user_source, const char *source_path, const CompileOpts *opts);
 
+/* Derive whether to enable the GPU from the machine profile (`gpu_present`) + `glslc`, honoring an explicit
+ * force-on (--gpu) / force-off (--no-gpu, ARCHE_NO_GPU). Shared by `arche build` and `arche run`. */
+int compile_gpu_auto(int force_on, int force_off);
+
 #endif /* ARCHE_COMPILE_COMPILE_H */

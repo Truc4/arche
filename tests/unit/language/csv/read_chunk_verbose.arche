@@ -1,17 +1,21 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { io fmt }
 
 cb      :: char;
 CharBuf :: arche { cb }
 [65536]CharBuf;
 
-main :: proc() {
+entry :: system eff {
   io.open("tests/fixtures/data.csv")(fd:);
   fmt.printf("fd=%d\n", fd);
   if (fd > 0) {
     fmt.printf("about to call csv_read_chunk\n");
-    io.read_chunk(fd, CharBuf.cb[0: CharBuf.capacity], 65536)(v:);
+    scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
+    io.read_chunk(fd, 65536)(scratch, rd_v:);
+    v := CharBuf.cb[0: rd_v];
     fmt.printf("n=%d\n", v.length);
   }
-  io.close(move fd);
+  io.close(move fd)(_:);
 }
+
+#run entry

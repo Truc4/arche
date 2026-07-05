@@ -1,17 +1,24 @@
-// A callback that itself takes arguments: the bound proc is called directly with
-// the supplied args.
-// RUN: %arche build -o %t %s && %t | grep "n=7"
+// A callback threaded through nested higher-order procs (`outer` → `inner` → `cb`),
+// each monomorphized per call site; the callback arg is erased from the ABI.
+// Callbacks use the (deprecated) proc-callback feature, so relax W0030 for the leaf proc callbacks.
+// RUN: %arche build --proc-not-primitive=allow -o %t %s && %t | grep "hello"
 #import { fmt }
-logger :: proc(n: int)();
+h :: proc()();
 
-log_it :: proc(n: int)() {
-  fmt.printf("n=%d\n", n);
+hello :: proc()() {
+  fmt.printf("hello\n");
 }
 
-apply :: proc(cb: logger)() {
-  cb(7)();
+inner :: proc(cb: h)() {
+  cb()();
 }
 
-main :: proc() {
-  apply(log_it)();
+outer :: proc(cb: h)() {
+  inner(cb)();
 }
+
+entry :: system eff {
+  outer(hello)();
+}
+
+#run entry

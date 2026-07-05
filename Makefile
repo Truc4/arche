@@ -60,7 +60,7 @@ RUNTIME_PIC_OBJS = $(BUILD_DIR)/runtime/stack_check.pic.o $(BUILD_DIR)/runtime/i
 
 OBJS = $(SRCS:.c=.o)
 # CLI multitool: dispatch + table-driven arg parser + one object per subcommand.
-CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o $(BUILD_DIR)/cli/cmd_init.o $(BUILD_DIR)/cli/cmd_fill.o $(BUILD_DIR)/cli/cmd_inspect.o
+CLI_OBJS = $(BUILD_DIR)/cli/args.o $(BUILD_DIR)/cli/cli.o $(BUILD_DIR)/cli/resource.o $(BUILD_DIR)/cli/cmd_build.o $(BUILD_DIR)/cli/cmd_run.o $(BUILD_DIR)/cli/cmd_check.o $(BUILD_DIR)/cli/cmd_test.o $(BUILD_DIR)/cli/cmd_fmt.o $(BUILD_DIR)/cli/cmd_explain.o $(BUILD_DIR)/cli/cmd_analyze.o $(BUILD_DIR)/cli/cmd_completion.o $(BUILD_DIR)/cli/cmd_version.o $(BUILD_DIR)/cli/cmd_calibrate.o $(BUILD_DIR)/cli/cmd_init.o $(BUILD_DIR)/cli/cmd_fill.o $(BUILD_DIR)/cli/cmd_inspect.o
 # Satellite tools folded into the `arche` binary as subcommands (fmt, analyze): their objects join
 # the main link. The standalone arche-fmt / arche-analyzer binaries still build during the migration.
 FOLD_OBJS = $(BUILD_DIR)/syntax/format_syntax.o $(BUILD_DIR)/syntax/token_category.o $(BUILD_DIR)/arche_analyzer.o
@@ -74,7 +74,7 @@ ANALYZER_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUIL
 SYNTAX_ROUNDTRIP_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/arche_syntax_roundtrip.o
 SYNTAX_VIEW_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/unit/compiler/syntax_view_tests.o
 SEMANTIC_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/unit/compiler/semantic_tests.o
-CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
+CODEGEN_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/codegen/codegen.o $(BUILD_DIR)/codegen/gpu_glsl.o $(BUILD_DIR)/unit/compiler/codegen_tests.o
 LOWER_TEST_OBJS = $(BUILD_DIR)/lexer/lexer.o $(BUILD_DIR)/syntax/type_ref.o $(BUILD_DIR)/syntax/syntax_tree.o $(BUILD_DIR)/syntax/syntax_view.o $(BUILD_DIR)/hir/hir.o $(BUILD_DIR)/parser/parser.o $(BUILD_DIR)/semantic/semantic.o $(BUILD_DIR)/semantic/sem_model.o $(BUILD_DIR)/semantic/sem_hints.o $(BUILD_DIR)/semantic/sem_diagnostics.o $(BUILD_DIR)/semantic/sem_types.o $(BUILD_DIR)/semantic/tycheck.o $(BUILD_DIR)/lower/lower.o $(BUILD_DIR)/unit/compiler/lower_tests.o
 # Reload-runtime unit test: just the runtime object + the test driver (links libdl for dlopen/dlsym).
 HOTRELOAD_TEST_OBJS = $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/unit/runtime/hotreload_tests.o
@@ -292,10 +292,13 @@ test-gpu-run: $(TARGET)
 test-gpu-exe: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-exe: SKIP (glslc not found)"; exit 0; }
 	@mkdir -p $(BUILD_DIR)/gpu
-	@for t in scale:"x0=0 x3=30" physics_step:"p0=1 p7=8"; do \
+	@for t in scale:"x0=0 x3=30" physics_step:"p0=1 p7=8" resident:"v0=3 v7=10"; do \
 		name=$${t%%:*}; want=$${t#*:}; \
-		./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/$$name.exe tests/unit/gpu/$$name.arche >/dev/null 2>&1 \
-			|| { echo "test-gpu-exe: SKIP ($$name --gpu build failed; likely no libvulkan at link)"; exit 0; }; \
+		./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/$$name.exe tests/unit/gpu/$$name.arche >$(BUILD_DIR)/gpu/$$name.build 2>&1 \
+			|| { if grep -qiE 'Failed to optimize|undefined value|Failed to compile|Failed to generate|verification failed' $(BUILD_DIR)/gpu/$$name.build; then \
+					echo "test-gpu-exe: FAIL $$name — codegen error in --gpu build:"; cat $(BUILD_DIR)/gpu/$$name.build; exit 1; \
+				fi; \
+				echo "test-gpu-exe: SKIP ($$name --gpu link failed; likely no libvulkan)"; exit 0; }; \
 		out=$$(ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/$$name.exe 2>$(BUILD_DIR)/gpu/$$name.err); \
 		echo "$$out" | grep -qF "$$want" || { echo "test-gpu-exe: FAIL $$name — output [$$out] != [$$want]"; exit 1; }; \
 		if grep -q "gpu dispatch" $(BUILD_DIR)/gpu/$$name.err; then \
@@ -304,6 +307,157 @@ test-gpu-exe: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
 			echo "test-gpu-exe: SKIP $$name (no Vulkan device; CPU fallback output [$$want] correct)"; \
 		fi; \
 	done
+
+# DERIVED-DISPATCH gate (regression). A pure map with NO `@gpu` annotation, FORCED onto the GPU by the
+# placer (ARCHE_FORCE_PLACE=gpu). Asserts the derived placement actually DISPATCHES on the GPU — i.e. the
+# shader was embedded for a derived (un-annotated) map, not only for `@gpu` ones. Pre-fix this fell back to
+# the CPU silently (embed was gated on the `@gpu` flag) so no `gpu dispatch` ever ran. Output stays correct
+# (CPU fallback) with no device, so it SKIPs cleanly; on a Vulkan box it proves the GPU path ran.
+test-derived-gpu: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-derived-gpu: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@# Device-presence oracle: an EXPLICIT `@gpu` map. If even this won't dispatch, there is no usable
+	@# device → SKIP. If it DOES dispatch, a device is present, so the derived map MUST dispatch too —
+	@# anything less is the regression (derived placement that silently fell back to the CPU).
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-derived-gpu: SKIP (--gpu link failed for oracle; likely no libvulkan)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-derived-gpu: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@# Device is present. Build the derived (no-@gpu) map FORCED onto the GPU and require a real dispatch.
+	@ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/derived.exe tests/unit/gpu/derived_dispatch.arche >$(BUILD_DIR)/gpu/derived.build 2>&1 \
+		|| { echo "test-derived-gpu: FAIL — --gpu build of derived map failed:"; cat $(BUILD_DIR)/gpu/derived.build; exit 1; }
+	@out=$$(ARCHE_FORCE_PLACE=gpu ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/derived.exe 2>$(BUILD_DIR)/gpu/derived.err); \
+	echo "$$out" | grep -qF "x0=0 x3=30" || { echo "test-derived-gpu: FAIL — output [$$out] != [x0=0 x3=30]"; exit 1; }; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/derived.err \
+		|| { echo "test-derived-gpu: FAIL — device present (oracle dispatched) but DERIVED map fell back to CPU (shader not embedded for a non-@gpu placement)"; exit 1; }; \
+	echo "test-derived-gpu: PASS — derived (no @gpu) map dispatched on GPU, output [x0=0 x3=30]"
+
+# INTEGER GPU shader gate (regression). An `int`-column map (not float) with a named const + integer
+# division must dispatch on the GPU and compute the SAME truncating-integer result as the CPU. Guards the
+# type-aware emitter: an int SSBO, constant inlining, the i32 column bitcast/dispatch. Device-gated via the
+# same oracle as test-derived-gpu; SKIPs cleanly with no device (CPU fallback stays correct either way).
+test-gpu-int: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-int: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-gpu-int: SKIP (--gpu link failed for oracle; likely no libvulkan)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-gpu-int: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@# Device present: build the int map (@gpu) and require a real dispatch producing the integer result.
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/int.exe tests/unit/gpu/int_scale.arche >$(BUILD_DIR)/gpu/int.build 2>&1 \
+		|| { echo "test-gpu-int: FAIL — --gpu build of int map failed:"; cat $(BUILD_DIR)/gpu/int.build; exit 1; }
+	@out=$$(ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/int.exe 2>$(BUILD_DIR)/gpu/int.err); \
+	echo "$$out" | grep -qF "v0=48 v3=48" || { echo "test-gpu-int: FAIL — output [$$out] != [v0=48 v3=48] (int arithmetic/division wrong on GPU)"; exit 1; }; \
+	grep -q "gpu dispatch 'grind'" $(BUILD_DIR)/gpu/int.err \
+		|| { echo "test-gpu-int: FAIL — device present but int map fell back to CPU (int shader not emitted?)"; exit 1; }; \
+	echo "test-gpu-int: PASS — int map dispatched on GPU, integer result matches CPU [v0=48 v3=48]"
+
+# DERIVED-RESIDENCY gate (regression). A pool written by 2+ consecutive GPU maps then read on the host, with
+# NO `@resident` / `gpu.sync` — both are derived by the coherence pass. Two halves:
+#  (1) build-time (glslc-gated): the pass must DERIVE residency for the pool AND a sync before the host read
+#      (asserted via ARCHE_COH_DEBUG — deterministic, no device needed).
+#  (2) run-time (device-gated via the same oracle as test-derived-gpu): with the derived sync the host reads
+#      g=4; with the sync suppressed (ARCHE_COH_NO_SYNC=1) the resident pool is never downloaded → stale g=1.
+#      This proves the derived sync is load-bearing — a derived-resident pool with no sync IS a wrong result.
+test-derived-residency: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-derived-residency: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@# (1) Build-time derivation: residency + a sync before the host read must both be derived.
+	@dbg=$$(ARCHE_COH_DEBUG=1 ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/res.exe tests/unit/gpu/derived_residency.arche 2>&1) \
+		|| { echo "test-derived-residency: SKIP (--gpu build failed; likely no libvulkan)"; exit 0; }; \
+	echo "$$dbg" | grep -qF "COHERENCE resident RP" || { echo "test-derived-residency: FAIL — residency not derived for RP"; echo "$$dbg" | grep COHERENCE; exit 1; }; \
+	echo "$$dbg" | grep -qF "COHERENCE sync RP before show" || { echo "test-derived-residency: FAIL — sync not derived before the host read"; echo "$$dbg" | grep COHERENCE; exit 1; }
+	@# Device-presence oracle (shared with test-derived-gpu): if an explicit @gpu map won't dispatch, SKIP.
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-derived-residency: SKIP (--gpu link failed for oracle)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-derived-residency: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@# (2) Runtime: derived sync → correct (g=4); sync suppressed → stale (g=1) on a resident pool.
+	@ok=$$(ARCHE_FORCE_PLACE=gpu $(BUILD_DIR)/gpu/res.exe); \
+	echo "$$ok" | grep -qF "g=4" || { echo "test-derived-residency: FAIL — derived sync present but output [$$ok] != g=4"; exit 1; }
+	@ARCHE_COH_NO_SYNC=1 ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/res_nosync.exe tests/unit/gpu/derived_residency.arche >/dev/null 2>&1; \
+	stale=$$(ARCHE_FORCE_PLACE=gpu $(BUILD_DIR)/gpu/res_nosync.exe); \
+	echo "$$stale" | grep -qF "g=1" || { echo "test-derived-residency: FAIL — sync suppressed but output [$$stale] != stale g=1 (sync not load-bearing?)"; exit 1; }
+	@echo "test-derived-residency: PASS — derived @resident + gpu.sync (g=4 with sync, stale g=1 without)"
+
+# UPLOAD-SYNC gate (regression). A GPU-resident pool the host writes MID-STREAM must be refreshed on the
+# device (a derived arche_gpu_upload) before the next GPU read — the runtime uploads a resident buffer only
+# once, so without it the kernel reads stale VRAM. Device-gated via the same oracle as test-derived-gpu.
+# One-shot (no loop): seed→inc→inc→poke(CPU reset to 100)→inc→show. With the upload: 101. Without it
+# (ARCHE_COH_NO_UPLOAD, downloads kept): the 3rd inc reads the stale device value 3 → 4.
+test-upload-resident: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-upload-resident: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/oracle.exe tests/unit/gpu/scale.arche >$(BUILD_DIR)/gpu/oracle.build 2>&1 \
+		|| { echo "test-upload-resident: SKIP (--gpu link failed for oracle)"; exit 0; }
+	@ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/oracle.exe 2>$(BUILD_DIR)/gpu/oracle.err >/dev/null; \
+	grep -q "gpu dispatch" $(BUILD_DIR)/gpu/oracle.err || { echo "test-upload-resident: SKIP (no Vulkan device; CPU fallback)"; exit 0; }
+	@./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/upl.exe tests/unit/gpu/upload_resident.arche >$(BUILD_DIR)/gpu/upl.build 2>&1 \
+		|| { echo "test-upload-resident: FAIL — --gpu build failed:"; cat $(BUILD_DIR)/gpu/upl.build; exit 1; }
+	@ok=$$(ARCHE_GPU_DEBUG=1 $(BUILD_DIR)/gpu/upl.exe 2>$(BUILD_DIR)/gpu/upl.err); \
+	echo "$$ok" | grep -qF "g=101" || { echo "test-upload-resident: FAIL — derived upload present but output [$$ok] != g=101"; exit 1; }; \
+	grep -q "gpu upload" $(BUILD_DIR)/gpu/upl.err || { echo "test-upload-resident: FAIL — no gpu upload happened (host write not pushed to the resident buffer)"; exit 1; }
+	@ARCHE_COH_NO_UPLOAD=1 ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/upl_no.exe tests/unit/gpu/upload_resident.arche >/dev/null 2>&1; \
+	stale=$$($(BUILD_DIR)/gpu/upl_no.exe 2>/dev/null); \
+	echo "$$stale" | grep -qF "g=4" || { echo "test-upload-resident: FAIL — upload suppressed but output [$$stale] != stale g=4 (upload not load-bearing?)"; exit 1; }
+	@echo "test-upload-resident: PASS — derived upload refreshes the resident pool (g=101 with it, stale g=4 without)"
+
+# MODULE-NAME GPU shader-embed gate (regression). A module-qualified `@gpu` map (e.g. `store.bump`, `game.step`)
+# has a DOT in its name; the embedded-shader C registry must sanitize it to a valid C identifier
+# (`spv_store_bump`) while keeping the runtime lookup STRING (`"store.bump"`) intact. Before the fix, codegen
+# emitted `static const unsigned char spv_store.bump[]` → the generated arche_gpu_reg.c failed to compile.
+# Reuses the store-device driver (which schedules the module map `store.bump`), forced to GPU. glslc-gated;
+# a non-embed build failure (e.g. no libvulkan at link) SKIPs rather than fails.
+test-gpu-module-name: $(TARGET) $(BUILD_DIR)/runtime/gpu_runtime.o
+	@command -v glslc >/dev/null 2>&1 || { echo "test-gpu-module-name: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@out=$$(ARCHE_FORCE_PLACE=gpu ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/modname.exe tests/unit/language/devices/storage/requirement_met.arche 2>&1); rc=$$?; \
+	if echo "$$out" | grep -qE 'arche_gpu_reg\.c.*error|spv_[A-Za-z0-9_]*\.'; then \
+		echo "test-gpu-module-name: FAIL — module-qualified shader name produced an invalid C symbol:"; echo "$$out" | grep -iE 'spv_|error' | head -4; exit 1; \
+	fi; \
+	if [ $$rc -ne 0 ]; then echo "test-gpu-module-name: SKIP (--gpu build failed for a non-embed reason, e.g. no libvulkan)"; exit 0; fi; \
+	echo "test-gpu-module-name: PASS — module-qualified @gpu map embeds with a sanitized C symbol"
+
+# JOINT-PLACEMENT gate (regression). Residency-aware cluster costing: the greedy per-map estimate prices a
+# full transfer round-trip per dispatch, so a moderate map is placed on the CPU; the joint pass costs a chain
+# of consecutive maps over one pool as a UNIT (transfer once) and flips it to the GPU. A pure build-time
+# decision (from the profile) — no device needed, so this runs under a synthetic profile with no glslc/GPU
+# gate. Asserts the contrast: `solo` (size-1 cluster == greedy) → CPU, the same body in an 8-map `chain` → GPU.
+test-joint-placement: $(TARGET)
+	@mkdir -p $(BUILD_DIR)/joint
+	@printf 'gpu_present 1\ngpu_launch_us 138\npcie_up_gbps 1000000\npcie_down_gbps 1000000\ncpu_gflops 9.7\ngpu_gflops 170\ngpu_xfer_us 3995\n' > $(BUILD_DIR)/joint/machine.profile
+	@out=$$(ARCHE_PLACE_DEBUG=1 ARCHE_CACHE_DIR=$(BUILD_DIR)/joint ./$(TARGET) build --gpu -o $(BUILD_DIR)/joint/jp.exe tests/unit/gpu/joint_placement.arche 2>&1); \
+	echo "$$out" | grep -qE 'JOINT solo .*cluster=1 .*-> CPU' || { echo "test-joint-placement: FAIL — solo (size-1 cluster) not CPU"; echo "$$out" | grep JOINT; exit 1; }; \
+	echo "$$out" | grep -qE 'JOINT chain .*cluster=8 .*-> GPU' || { echo "test-joint-placement: FAIL — 8-map chain not amortized to GPU"; echo "$$out" | grep JOINT; exit 1; }; \
+	hc=$$(ARCHE_PLACE_DEBUG=1 ARCHE_CACHE_DIR=$(BUILD_DIR)/joint ./$(TARGET) build --gpu -o $(BUILD_DIR)/joint/hc.exe tests/unit/gpu/joint_loop_hostcut.arche 2>&1); \
+	echo "$$hc" | grep -qE 'JOINT light .*loop=1 resident=0.*-> CPU' || { echo "test-joint-placement: FAIL — light map in a loop with a host reader not kept on CPU (loop-residency ignored the host cut)"; echo "$$hc" | grep JOINT; exit 1; }; \
+	echo "test-joint-placement: PASS — greedy CPU solo vs joint GPU chain; host-cut loop keeps a light map on CPU"
+
+# LOOP-RESIDENCY gate (regression). A pool the GPU touches every loop iteration must be kept resident ACROSS
+# the back-edge, with the download derived as a `gpu.sync` inside the loop body (not a barrier flush before
+# the loop). BUILD-ONLY — the fixture is a `forever` loop that never returns, so this asserts the derivation
+# at build time (ARCHE_COH_DEBUG) and never executes it. glslc-gated (a GPU-placed map embeds a shader).
+test-loop-residency: $(TARGET)
+	@command -v glslc >/dev/null 2>&1 || { echo "test-loop-residency: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/gpu
+	@dbg=$$(ARCHE_COH_DEBUG=1 ./$(TARGET) build --gpu -o $(BUILD_DIR)/gpu/loopres.exe tests/unit/gpu/loop_residency.arche 2>&1) \
+		|| { echo "test-loop-residency: SKIP (--gpu build failed; likely no libvulkan)"; exit 0; }; \
+	echo "$$dbg" | grep -qF "COHERENCE resident P" || { echo "test-loop-residency: FAIL — pool not kept resident across the loop"; echo "$$dbg" | grep COHERENCE; exit 1; }; \
+	echo "$$dbg" | grep -qF "COHERENCE sync P before show" || { echo "test-loop-residency: FAIL — sync not derived inside the loop before the host read"; echo "$$dbg" | grep COHERENCE; exit 1; }; \
+	if echo "$$dbg" | grep -q "before control-flow"; then echo "test-loop-residency: FAIL — still flushing at a barrier (residency not carried across the loop)"; exit 1; fi; \
+	echo "test-loop-residency: PASS — pool resident across the loop; sync derived inside the body (no barrier flush)"
+
+# Derived-placement decision check (Slice 4): under a balanced synthetic machine profile, the build must
+# DERIVE heavy→GPU and membound→CPU (no annotations) for design_analysis/benchmarks/placement. Needs glslc
+# (a GPU-placed map embeds a shader); SKIP without it. The decision is a build-time fact (ARCHE_PLACE_DEBUG).
+test-placement: $(TARGET)
+	@command -v glslc >/dev/null 2>&1 || { echo "test-placement: SKIP (glslc not found)"; exit 0; }
+	@mkdir -p $(BUILD_DIR)/place
+	@printf 'gpu_present 1\ngpu_launch_us 100\npcie_up_gbps 10\npcie_down_gbps 10\ncpu_gflops 10\ngpu_gflops 2000\n' > $(BUILD_DIR)/place/machine.profile
+	@out=$$(ARCHE_PLACE_DEBUG=1 ARCHE_CACHE_DIR=$(BUILD_DIR)/place ./$(TARGET) build --gpu -o $(BUILD_DIR)/place/dp.exe design_analysis/benchmarks/placement/derived_placement.arche 2>&1); \
+	echo "$$out" | grep -qE 'PLACE membound:.*-> CPU' || { echo "test-placement: FAIL — membound not placed on CPU"; echo "$$out" | grep PLACE; exit 1; }; \
+	echo "$$out" | grep -qE 'PLACE heavy:.*-> GPU' || { echo "test-placement: FAIL — heavy not placed on GPU under a GPU-favorable profile"; echo "$$out" | grep PLACE; exit 1; }; \
+	echo "test-placement: PASS — derived membound→CPU, heavy→GPU (no annotations)"
 
 # Test folder with pattern: make test-folder FOLDER=path PATTERN="*.arche"
 test-folder: $(TARGET) $(BUILD_DIR)
@@ -518,16 +672,30 @@ install: all
 	@if command -v fish >/dev/null 2>&1; then \
 		d="$(DESTDIR)$(FISHCOMP_DIR)"; install -d "$$d" && $(TARGET) completion fish > "$$d/arche.fish" && echo "  fish  -> $$d/arche.fish"; \
 	fi
+	@# Calibrate this machine's CPU/GPU cost profile INTO the install (machine-global lib/arche), so
+	@# `arche build --gpu` derives placement with no env juggling — ATLAS/FFTW "tune at install" style.
+	@# Skipped for staged/packaged installs (DESTDIR set: the profile belongs to the TARGET machine, not the
+	@# build host) and via ARCHE_NO_CALIBRATE=1. Non-fatal: a box with no device writes a CPU-only profile,
+	@# and any failure only leaves the GPU un-derived — never breaks the install.
+	@if [ -z "$(DESTDIR)" ] && [ -z "$$ARCHE_NO_CALIBRATE" ]; then \
+		echo "calibrating machine profile into $(ARCHE_LIBDIR) (ARCHE_NO_CALIBRATE=1 to skip)..."; \
+		ARCHE_CACHE_DIR="$(ARCHE_LIBDIR)" "$(ARCHE_BINDIR)/arche" calibrate \
+			|| echo "  calibration skipped/failed — run 'arche calibrate' later to enable GPU placement"; \
+		chmod a+r "$(ARCHE_LIBDIR)/machine.profile" 2>/dev/null || true; \
+	else \
+		echo "skipping calibration (staged DESTDIR or ARCHE_NO_CALIBRATE) — run 'arche calibrate' on the target machine"; \
+	fi
 	@echo "installed arche $(ARCHE_VERSION) to $(DESTDIR)$(PREFIX) — open a new shell for completion"
 
 # Smoke-test relocatability: install to a throwaway prefix and compile+run from an unrelated cwd,
 # so the binary must resolve core/stdlib/runtime via the exe-relative layout (no in-tree paths).
+# ARCHE_NO_CALIBRATE=1: this checks resource resolution, not hardware probing — keep it fast + hermetic.
 test-install: all
-	@root=$$(mktemp -d); $(MAKE) -s install PREFIX=$$root BASHCOMP_DIR=$$root/bashcomp ZSHCOMP_DIR=$$root/zshcomp FISHCOMP_DIR=$$root/fishcomp >/dev/null; \
-	printf 'proc main() { printf("install-ok\\n"); }\n' > $$root/t.arche; \
+	@root=$$(mktemp -d); ARCHE_NO_CALIBRATE=1 $(MAKE) -s install PREFIX=$$root BASHCOMP_DIR=$$root/bashcomp ZSHCOMP_DIR=$$root/zshcomp FISHCOMP_DIR=$$root/fishcomp >/dev/null; \
+	printf '#import { fmt }\nentry :: system eff { fmt.printf("install-ok\\n"); }\n#run entry\n' > $$root/t.arche; \
 	out=$$(cd /tmp && $$root/bin/arche run $$root/t.arche); \
 	rm -rf $$root; \
 	[ "$$out" = "install-ok" ] && echo "test-install: PASS" || { echo "test-install: FAIL (got '$$out')"; exit 1; }
 
 # Phony targets
-.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install
+.PHONY: all run run-lexer test test-per-unit test-doc check-corpus test-semantic test-codegen test-codegen-unit test-lit test-lower test-asan test-gpu test-gpu-run test-gpu-exe test-derived-gpu test-derived-residency test-gpu-int test-loop-residency test-upload-resident test-gpu-module-name test-placement test-joint-placement memcheck clean clean-data bench-physics bench-strings bench-lifecycle bench-mixed format verify-syntax verify-fmt verify-codegen install test-install

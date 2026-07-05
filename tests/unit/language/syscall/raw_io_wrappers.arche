@@ -3,14 +3,17 @@
 // read-only, read some bytes, and echo a marker via raw write (`print`).
 // RUN: printf 'syscall-io\n' > /tmp/arche_raw_io.txt && %arche build -o %t %s && %t | grep "read ok"
 #import { fmt os }
-main :: proc() {
+entry :: system eff {
   os.open("/tmp/arche_raw_io.txt", 0)(fd:);
   if (fd > 0) {
     buf: [64]char;
-    os.read(fd, buf, 64)(v:);
-    os.close(fd);
+    os.read(fd, 64)(buf, rd_v:);
+    v := buf[0: rd_v];
+    os.close(fd)(_:);
     if (v.length > 0) {
-      fmt.print("read ok\n");
+      fmt.print("read ok\n")(_:);
     }
   }
 }
+
+#run entry

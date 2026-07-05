@@ -29,9 +29,14 @@ enum {
 	B_INCREMENTAL,
 	B_WHOLE_PROGRAM,
 	B_EXPORTED_MUTABLE,
+	B_PROC_LEAF,
 	B_SYS_FOREIGN_WRITE,
+	B_POOL_INDEX,
+	B_PROC_NOT_PRIMITIVE,
+	B_DISCARDED_OK,
 	B_EMIT_GPU,
 	B_GPU,
+	B_NO_GPU,
 	B_WNO_LSA,
 	B_WERR_LSA,
 };
@@ -69,12 +74,22 @@ static const ArgSpec k_build_specs[] = {
      "force a whole-program build (the default for build; full cross-device inlining)"},
     {B_EXPORTED_MUTABLE, "--exported-mutable", ARG_VALUE, 0, 0, "<level>",
      "exported-mutable-global lint (W0022): error (default) | warn | allow"},
+    {B_PROC_LEAF, "--proc-leaf", ARG_VALUE, 0, 0, "<level>",
+     "proc-calls-proc lint (W0028): warn (default) | error | allow"},
     {B_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
+    {B_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
+     "pool-index-outside-query lint (W0029): error (default) | warn | allow"},
+    {B_PROC_NOT_PRIMITIVE, "--proc-not-primitive", ARG_VALUE, 0, 0, "<level>",
+     "proc-not-primitive lint (W0030): error (default) | warn | allow"},
+    {B_DISCARDED_OK, "--discarded-ok", ARG_VALUE, 0, 0, "<level>",
+     "discarded-ok lint (W0016): error (default) | warn | allow"},
     {B_EMIT_GPU, "--emit-gpu", ARG_VALUE, 0, 0, "<dir>",
      "also emit a GLSL compute shader per `@gpu` map into <dir> (side artifact; CPU build unchanged)"},
     {B_GPU, "--gpu", ARG_FLAG, 0, 0, NULL,
-     "dispatch `run map @gpu` on the GPU at runtime (embeds SPIR-V; CPU fallback if no device/glslc)"},
+     "force GPU on (default: DERIVED from `arche calibrate`'s profile — on iff a device is present + glslc)"},
+    {B_NO_GPU, "--no-gpu", ARG_FLAG, 0, 0, NULL,
+     "force CPU-only (a portable, Vulkan-free binary); also via ARCHE_NO_GPU=1"},
     {B_WNO_LSA, "-Wno-large-stack-array", ARG_FLAG, 0, 0, NULL, "disable the large-stack-array lint (W0026)"},
     {B_WERR_LSA, "-Werror=large-stack-array", ARG_FLAG, 0, 0, NULL,
      "promote the large-stack-array lint (W0026) to an error"},
@@ -140,10 +155,30 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}
+	if (cli_apply_proc_leaf(args_value(&p, B_PROC_LEAF)) != 0) {
+		fprintf(stderr, "%s: --proc-leaf expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
 	/* W0024 tri-state — applied after `-Werror` so an explicit `--map-foreign-write=warn|allow` can
 	 * still demote it (W0024 is error-by-default; this is the dedicated opt-out). */
 	if (cli_apply_map_foreign_write(args_value(&p, B_SYS_FOREIGN_WRITE)) != 0) {
 		fprintf(stderr, "%s: --map-foreign-write expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_proc_not_primitive(args_value(&p, B_PROC_NOT_PRIMITIVE)) != 0) {
+		fprintf(stderr, "%s: --proc-not-primitive expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_discarded_ok(args_value(&p, B_DISCARDED_OK)) != 0) {
+		fprintf(stderr, "%s: --discarded-ok expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_pool_index(args_value(&p, B_POOL_INDEX)) != 0) {
+		fprintf(stderr, "%s: --pool-index expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "build", "[flags] <input.arche>", k_build_specs);
 		return ARCHE_USAGE;
 	}
@@ -252,7 +287,9 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		opts.link_paths[opts.link_count++] = p.hits[i].value;
 	}
 	opts.emit_gpu_dir = args_value(&p, B_EMIT_GPU); /* NULL if not passed */
-	opts.gpu = args_has(&p, B_GPU);
+	/* GPU is DERIVED from the machine profile (like placement), not a required flag: on iff a device is
+	 * present + glslc, unless forced. `--gpu` forces on, `--no-gpu`/`ARCHE_NO_GPU` forces CPU-only. */
+	opts.gpu = compile_gpu_auto(args_has(&p, B_GPU), args_has(&p, B_NO_GPU) || getenv("ARCHE_NO_GPU") != NULL);
 
 	int rc = compile_source(source, input_file, output_file, &opts);
 	free(source);

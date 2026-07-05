@@ -6,6 +6,8 @@
 #link {
   "m; echo pwned"
 }
-main :: proc() {
+entry :: system eff {
   fmt.printf("unreachable\n");
 }
+
+#run entry

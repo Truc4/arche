@@ -6,8 +6,8 @@
   "m"
 }
 
-cube_root :: proc(x: float)(r: float) {
-  clink_cbrt(x)(r);
+cube_root :: func(x: float) -> Eff(float) {
+  return clink_cbrt(x);
 }
 
 #module

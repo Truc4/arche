@@ -1,6 +1,6 @@
 // A `map(Name)` body may read a FOREIGN singleton pool (`Config`, a `[1]` shape it does not iterate),
 // alongside the iterated query columns — the named-query form preserves the foreign-pool read path.
-// RUN: %arche build -o %t %s && %t | grep -qF "v=4 24 p=84 104"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "v=4 24 p=84 104"
 #import { fmt }
 pos(x, y)    :: float;
 vel(x, y)    :: float;
@@ -8,21 +8,23 @@ center(x, y) :: float;
 k            :: float;
 Mover        :: arche { pos, vel }
 Config       :: arche { k, center }
-[1]Mover;
-[1]Config;
+[1]Mover ?abort;
+[1]Config ?abort;
 
 Movers :: query { pos, vel }
 
-step :: map (Movers) {
+step :: map (Movers)(vel, pos) {
   vel -= (pos - Config.center[0]) / Config.k[0];
   vel *= 2.0;
   pos += vel;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(Config { k: 10.0, center_x: 100.0, center_y: 200.0 })(_:, _:);
   insert(Mover { pos_x: 80.0, pos_y: 80.0, vel_x: 0.0, vel_y: 0.0 })(_:, _:);
-  run step;
+}
+
+verify :: system eff {
   fmt.printf(
     "v=%.0f %.0f p=%.0f %.0f\n",
     Mover.vel.x[0] * 1.0,
@@ -31,3 +33,5 @@ main :: proc() {
     Mover.pos.y[0] * 1.0,
   );
 }
+
+#run seq({ seed, step, verify })

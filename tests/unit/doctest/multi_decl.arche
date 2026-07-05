@@ -15,7 +15,7 @@ first :: func(a: int) -> int {
 ///
 /// # Example
 /// ```arche
-/// fmt.assert(second(3) == 9, "second broken\n");
+/// fmt.assert(second(3) == 9, "second broken\n")();
 /// ```
 second :: func(a: int) -> int {
   return a * a;

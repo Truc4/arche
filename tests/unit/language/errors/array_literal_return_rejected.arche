@@ -1,0 +1,16 @@
+// Returning an array LITERAL by value (`return {1000, 2}` from a `-> [N]T` func) is the same copy-out as
+// returning a named local array (arrays/../errors/array_local_return_rejected) — its storage is the callee's
+// frame, and array value-return is unimplemented. It must be a clear error, not silent garbage (it used to
+// build a `[N x i8]` global and hand back mangled values). The named-local form was already rejected; this
+// covers the direct-literal form that slipped through.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "copy-out" %t.out
+#import { fmt }
+
+mk :: func() -> [2]i64 {
+  return { 1000, 2 };
+}
+
+main :: proc() {
+  a := mk();
+  fmt.printf("%d %d\n", a[0], a[1]);
+}

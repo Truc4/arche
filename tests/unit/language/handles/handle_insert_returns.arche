@@ -2,9 +2,11 @@
 #import { fmt }
 Player :: arche { pos :: float }
 
-[10]Player;
+[10]Player ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Player { pos: 1.0 })(h:, _:);
-  fmt.print("slot 0 handle created");
+  fmt.print("slot 0 handle created")(_:);
 }
+
+#run entry

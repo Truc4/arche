@@ -6,13 +6,14 @@
 Particle :: arche { pos :: float, vel :: float }
 [10]Particle;
 log_step :: proc() {
-  fmt.print("step\n");
+  fmt.print("step\n")(_:);
 }
-move_sys :: map (query { pos, vel }) {
+move_sys :: map (query { pos, vel })(pos) {
   pos = pos + vel;
   log_step()();
 }
-main :: proc() {
+seed :: system eff {
   insert(Particle { pos: 1.0, vel: 2.0 })(_:, _:);
-  run move_sys;
 }
+
+#run seq({ seed, move_sys })

@@ -8,6 +8,8 @@
 @allow(proc_no_effect)
 noop :: proc()() {
 }
-main :: proc()() {
+entry :: system() {
   noop();
 }
+
+#run entry

@@ -8,6 +8,4 @@ step :: map (query { pos, vel }) {
   return;
 }
 
-main :: proc() {
-  run step;
-}
+#run seq({ step })

@@ -8,7 +8,13 @@ cell_int :: func(c: int, s: []char) -> int {
 }
 cell :: func { cell_float, cell_int }
 
+/// `load` is a compile-time REFLECTIVE GENERIC: it takes an `archetype` and walks its fields with
+/// `#each_field`, mapping CSV columns onto them. It is monomorphized per archetype at the call site — the
+/// same compile-time-generic shape as a callback proc, which proc-elimination leaves alone (it is not a
+/// result-dependent effectful sequence to decompose across systems). So an archetype-param proc is a
+/// recognized form, not the effectful-proc the ban targets — no `@allow` needed.
 load :: proc(arch: archetype, own path: []char) {
+  load_cols: [64]int;
   io.file_map(move path)(data:);
   io.file_size()(size: i64);
 
@@ -52,12 +58,8 @@ load :: proc(arch: archetype, own path: []char) {
     }
     pos = nl + 1;
   }
-  io.file_unmap(move data, size);
+  io.file_unmap(move data, size)();
 }
-
-#module
-
-load_cols: [64]int;
 
 #file
 

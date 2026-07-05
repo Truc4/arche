@@ -11,5 +11,7 @@ takes :: func(h: res) -> int {
 caller :: func() -> int {
   return takes(5);
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

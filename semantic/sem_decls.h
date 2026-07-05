@@ -67,6 +67,12 @@ typedef struct {
 	char **enum_variant_names; /* owned */
 	long *enum_variant_values;
 	int enum_variant_count;
+	/* sum (tagged union): per-variant name + payload type-node list (interned to TypeIds at registration) */
+	char **sum_variant_names;        /* owned; [sum_variant_count] */
+	SyntaxView **sum_variant_ptypes; /* owned; [v] = array of payload type-node views */
+	int *sum_variant_pcounts;        /* owned; [v] = payload count */
+	int sum_variant_count;
+	TypeId sum_type_id; /* the interned TYK_SUM identity (built two-phase), else UNKNOWN */
 	/* const (`name :: value` / `name : [type] : value`) */
 	SyntaxView const_value;     /* the RHS value node view (for resolve + loc), NULL node if none */
 	int const_value_kind;       /* ExpressionType of the RHS value (EXPR_LITERAL/EXPR_NAME/…), or -1 */
@@ -90,6 +96,7 @@ typedef struct {
 	int static_pool_count;          /* POOL: field 0 as an int if a literal, else -1 */
 	int static_init_length_present; /* POOL: 1 if an init_size argument was given */
 	int static_init_count;          /* POOL: the init_size (M in `Arch[N](M)`) as an int if a literal, else 0 */
+	char *overflow_policy;          /* POOL: the `[N]P ?handler` overflow policy name, or NULL (defaults to reject) */
 	/* device / datasheet provenance + suppressions (cross-decl sweeps read these) */
 	int from_device_impl;
 	int is_datasheet;
@@ -97,6 +104,9 @@ typedef struct {
 	int unit;              /* owning compilation unit: 0 = entry/root program, >0 = a module (UnitInterface.unit_id) */
 	DeclOrigin origin;     /* provenance of the owning unit; DECL_ORIGIN_ENTRY (0) for entry-file decls */
 	int is_drop;
+	int is_syscall; /* `@syscall(N)`: a typed direct syscall — its in/out lists ARE its mutation contract
+	                 * (a plain-in buffer is read-only, the kernel reads it; in-out is written), so it is
+	                 * exempt from the "extern mutates every in-param ⇒ buffers must be `own`" rule. */
 	char *drop_type;
 	char **allow_slugs;
 	int allow_slug_count;

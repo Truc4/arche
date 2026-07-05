@@ -1,9 +1,9 @@
 /// Parse a leading (optionally signed) integer; stops at the first non-digit, like libc atoi.
 ///
 /// ```arche
-/// fmt.assert(atoi("42") == 42, "atoi 42\n");
-/// fmt.assert(atoi("-7") == -7, "atoi -7\n");
-/// fmt.assert(atoi("13abc") == 13, "atoi stops at non-digit\n");
+/// fmt.assert(atoi("42") == 42, "atoi 42\n")();
+/// fmt.assert(atoi("-7") == -7, "atoi -7\n")();
+/// fmt.assert(atoi("13abc") == 13, "atoi stops at non-digit\n")();
 /// ```
 atoi :: func(s: []char) -> int {
   i    := 0;

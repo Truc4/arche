@@ -2,11 +2,11 @@
 // yet both are usable-as-float and may be combined (cross-component op result = left operand's
 // nominal). This is what makes an archetype "a unique collection of nominal types". Prints e=50.
 // (GREEN today; must STAY green — proves distinctness does not block component arithmetic.)
-// RUN: %arche build -o %t %s && %t | grep "e=50"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "e=50"
 #import { fmt }
 Particle :: arche { mass :: float, charge :: float }
 [4]Particle(4);
-main :: proc() {
+entry :: system eff {
   Particle.mass[0]   = 10.0;
   Particle.charge[0] = 5.0;
   m := Particle.mass[0]; // type: mass
@@ -14,3 +14,5 @@ main :: proc() {
   e: float = m * c; // mass * charge (same backing) -> allowed -> 50
   fmt.printf("e=%g\n", e);
 }
+
+#run entry

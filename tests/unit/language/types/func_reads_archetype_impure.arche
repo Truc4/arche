@@ -5,5 +5,7 @@ Player :: arche { x :: int }
 peek   :: func() -> int {
   return Player.x[0];
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

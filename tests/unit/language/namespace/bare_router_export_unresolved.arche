@@ -4,7 +4,9 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'init'" %t.out
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'route_init'" %t.out
 #import { router }
-main :: proc() {
+entry :: system {
   init();
   route_init();
 }
+
+#run entry

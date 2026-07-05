@@ -10,5 +10,7 @@ relay :: func(h: file) -> int {
   return diskc.tag(h) + diskd.stash(h);
 }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

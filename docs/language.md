@@ -1,7 +1,7 @@
 # The Arche language
 
 A reference for Arche's memory model, type map, declarations, and the
-`proc` / `func` / `map` split. For tooling (CLI, editor, build) see
+`func` / `system` / `map` split. For tooling (CLI, editor, build) see
 [tooling.md](tooling.md); for benchmarks see [performance.md](performance.md);
 for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 
@@ -14,12 +14,11 @@ for doc comments and doctests see [DOCTESTS.md](DOCTESTS.md).
 - [Array-oriented operations](#array-oriented-operations)
 - [Indexing](#indexing)
 - [Arrays and slices: `[N]T` values, `[]T` slices](#arrays-and-slices-nt-values-t-slices)
-- [Procedures (`proc`)](#procedures-proc)
+- [Effects: systems and effectful fans (`system`, `map … eff`)](#effects-systems-and-effectful-fans-system-map--eff)
 - [Maps (`map`)](#maps-map)
 - [Functions (`func`)](#functions-func)
-- [`proc` vs `map` vs `func`](#proc-vs-map-vs-func)
+- [`func` vs `map` vs `system`](#func-vs-map-vs-system)
 - [Enums and `match`](#enums-and-match)
-- [Compile-time callbacks](#compile-time-callbacks)
 - [Ownership: borrow, `move`, `copy`](#ownership-borrow-move-copy)
 - [Foreign resources: `opaque` types](#foreign-resources-opaque-types)
 - [Multiple outputs and mutate-in-place](#multiple-outputs-and-mutate-in-place)
@@ -65,14 +64,10 @@ Projectile :: arche { speed };
 [5000]Enemy(5000);
 [1000]Projectile(1000);
 
-initialize  :: map (query { active }) { active = 1; }
-update_loop :: map (query { speed })  { speed = speed + 1; }
+initialize  :: map (query { active }) (active) { active = 1; }
+update_loop :: map (query { speed }) (speed)  { speed = speed + 1; }
 
-main :: proc() {
-  run initialize;
-  run update_loop;
-  // implicit cleanup at end
-}
+#run seq({ initialize, update_loop }) // the schedule names the work; the runtime owns the loop
 ```
 
 **Why no dynamic memory?** Predictable memory usage (known at program start), zero
@@ -118,8 +113,8 @@ is initialized at link time — there is no startup code), but the variable is s
 a non-constant initializer is an error. Implicit `flag : int` is exactly `flag : int = 0`.
 
 **Name visibility and order.** All top-level names — definitions *and* mutable-storage bindings —
-are visible across the whole file regardless of order: a proc may read a global declared below it,
-just as it may call a func defined later. (Locals, by contrast, are visible only from their point
+are visible across the whole file regardless of order: a `system` may read a global declared below
+it, just as it may call a `func` defined later. (Locals, by contrast, are visible only from their point
 of introduction onward.)
 
 A type alias is **zero-cost** - it erases to its backing after checking. Operators resolve
@@ -137,7 +132,7 @@ This is the entire basis of foreign-resource safety (`file :: opaque` != `socket
 a := 3;
 b := 7;
 x := a < b;   // x is 0 or 1
-fmt.assert(x == 1, "a < b\n");
+fmt.assert(x == 1, "a < b\n")();
 ```
 
 **Fixed-width integers** are always available alongside `int`: `i8`/`u8`, `i16`/`u16`,
@@ -159,7 +154,7 @@ Convert between widths with a call-style cast (`sext`/`zext` to widen, `trunc` t
 offset: i64 = 5;
 small := i32(offset);   // truncate i64 -> i32
 wide: i64 = i64(small); // widen i32 -> i64
-fmt.assert(wide == 5, "round trip\n");
+fmt.assert(wide == 5, "round trip\n")();
 ```
 
 Integer literals adopt the type of their context (`x: i64 = 3000000000` types the literal
@@ -254,19 +249,19 @@ pos_x :: float;
 vel_x :: float;
 Particle :: arche { pos_x, vel_x };
 
-[1000]Particle(1000) { pos_x: 0.0, vel_x: 2.0 }
+[1000]Particle(1000) { pos_x: 0.0, vel_x: 2.0 };
 ```
 ```arche
 // updates each position by its velocity, across the whole column
 Particle.pos_x = Particle.pos_x + Particle.vel_x;
-fmt.assert(Particle.pos_x[0] == 2.0, "whole-column add\n");
+fmt.assert(Particle.pos_x[0] == 2.0, "whole-column add\n")();
 ```
 
 This iterates all elements, updating each position by its velocity. Inside a map the
 component type names are available directly:
 
 ```arche
-step :: map (query { pos_x, vel_x }) {
+step :: map (query { pos_x, vel_x }) (pos_x) {
   pos_x = pos_x + vel_x;
 }
 ```
@@ -339,9 +334,9 @@ length isn't statically known), so that is rejected.
 a: [8]int;
 for (i := 0; i < a.length; i = i + 1) { a[i] = 2; }
 total := sum(a);        // a decays to []int (a borrow) — a stays alive, .length == 8 at runtime
-fmt.assert(total == 16, "eight 2s sum to 16\n");
+fmt.assert(total == 16, "eight 2s sum to 16\n")();
 view := fill(move a);   // move a in (a consumed), mutate, hand the fat pointer back, rebind
-fmt.assert(sum(view) == 28, "0+1+...+7 == 28\n");
+fmt.assert(sum(view) == 28, "0+1+...+7 == 28\n")();
 ```
 
 **Sub-slicing.** `buf[lo:hi]` is a read-only borrowed sub-view — `{ptr+lo, hi-lo}`, no copy. `lo`/`hi`
@@ -355,8 +350,8 @@ for (i := 0; i < a.length; i = i + 1) { a[i] = 3; }
 n := 5;
 total := sum(a[2:5]);   // borrow elements 2..4 — a untouched
 mid := a[:n];           // prefix view; mid.length == n
-fmt.assert(mid.length == 5, "prefix length\n");
-fmt.assert(total == 9, "three 3s sum to 9\n");
+fmt.assert(mid.length == 5, "prefix length\n")();
+fmt.assert(total == 9, "three 3s sum to 9\n")();
 ```
 
 **Lifetime.** Storage lives in the stack frame that declared it and is reclaimed when that frame
@@ -367,48 +362,30 @@ dangle) — a returned slice must trace back to a buffer passed *in*.
 There is no `for x in array`. Iterate a buffer with a C-style `for (i := 0; i < xs.length; i = i + 1)`,
 and process archetype columns with a `map`.
 
-## Procedures (`proc`)
+## Effects: systems and effectful fans (`system`, `map … eff`)
 
-**Procedures DO things; functions ARE things.** This split is fundamental and shows up in the
-*signature itself* - a `func` and a `proc` differ in shape (the name is on the binding LHS;
-`proc`/`func` are RHS value forms):
+**Effects DO things; functions ARE things.** A `func` is *pure* — it can't call a `#foreign`
+extern, run an `Eff`, or `insert`/`delete`. Anything that performs an effect is a **system**: an
+action the schedule runs, never a value you call.
 
 ```
-area   :: func(w: int, h: int) -> int            // a value: one return, no side effects
-divmod :: proc(a: int, b: int)(q: int, r: int)   // an action: inputs (in), outputs (out)
+greet :: system eff { fmt.printf("hi\n"); }   // an action — scheduled, not called
 ```
 
-A procedure performs an **action**. It is **not a value** - it has no return type. Instead it
-declares its results as **out-parameters** in a second parameter list. An out-param is a
-caller-provided place the proc writes **in place**:
+A `system` takes **no parameters and returns nothing**. It is named in a `#run` schedule and the
+runtime runs it; a program's **entry point is a `#run` schedule**, not a decl named `main` (a `main`
+decl is a hard error, [E0225](explain/E0225.md)). To run an effect **per matching row**, use
+`map (query { … }) eff` — the effectful per-entity fan: where a plain `map` body is a branch-free column
+kernel, a `map … eff` body may branch, call, `insert`/`delete`, and run effects, once per row (this is
+what the removed `each` keyword spelled). Being a sequential per-element fan, it is a loop: `continue`
+skips the rest of the current element and advances to the next row (guard-clause style). There is no
+`break` — stopping a fan early is incoherent.
 
-```arche
-divmod :: proc(a: int, b: int)(q: int, r: int) {
-  q = a / b;          // write the out-params; no `return`
-  r = a - q * b;
-}
+`proc` is **reserved for the foreign boundary** — only a `#foreign`/`@syscall`/`@intrinsic`
+declaration (or a `@drop` hook) is a `proc`. A non-foreign `proc` is an error
+([W0030](explain/W0030.md)).
 
-main :: proc() {
-  divmod(17, 5)(q:, r:);          // call mirrors the signature: foo(in)(out)
-  fmt.printf("%d %d\n", q, r);    // q and r are declared by the out-args, scoped here
-  fmt.assert(q == 3 && r == 2, "17 / 5 = 3 rem 2\n");
-}
-```
-
-- **No return.** A `proc` is an action, never a value. `x := some_proc(...)` does not parse -
-  a proc call is a *statement*, written `foo(in)(out)`.
-- **Out-params are read-write places.** The caller supplies the slot (`name:` declares +
-  zero-inits it; `name` reuses an existing one); the proc may read and write it; the value is
-  the caller's afterward.
-- **In-out (a name in *both* lists).** The out occurrence shadows the in-list borrow, making it
-  a zero-copy *fill-in-place* slot: the body writes the buffer with no `own` and no `move`, and
-  the binding is never killed. For an `extern proc` the in-list also fixes the C argument order,
-  so an in-out name is a C argument written in place while an out-only name maps to the C
-  **return value**. (A borrowed in-out may be written but not `move`d - it is still the caller's
-  buffer.)
-- The out-list is optional: `proc main()` (or any effect-only action) simply has no outputs.
-
-Procedures are also used for setup, orchestration, and whole-collection array ops:
+A system handles setup, orchestration, and whole-collection array ops:
 
 ```arche
 pos_x :: float;
@@ -417,9 +394,11 @@ Particle :: arche { pos_x, vel_x };
 
 [1000]Particle(1000);
 
-advance :: proc() {
+advance :: system {
   Particle.pos_x = Particle.pos_x + Particle.vel_x;   // array op over the whole column
 }
+
+#run advance
 ```
 
 ## Maps (`map`)
@@ -431,23 +410,21 @@ pos_x :: float;
 vel_x :: float;
 Particle :: arche { pos_x, vel_x };
 
-[1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 }
+[1000]Particle(1000) { pos_x: 0.0, vel_x: 1.5 };
 
-step :: map (query { pos_x, vel_x }) {
+step :: map (query { pos_x, vel_x }) (pos_x) {
   pos_x = pos_x + vel_x;
 }
 ```
 
-A `proc` drives a map with the `run` statement (the map needs a pool whose shape
-supplies its components):
+A **schedule** drives a map by naming it in `#run` — the runtime owns the loop (there is no
+hand-written driver). The map needs a pool whose shape supplies its components:
 
 ```arche
-update :: proc() {
-  run step;
-}
+#run step
 ```
 
-- executes via the `run system_name` statement
+- executes when its name appears in a `#run` schedule (a bare leaf, or inside `seq`/`par`)
 - automatically matches any archetype in scope containing the required component types
 - binds those components inside the map body
 - operates on whole columns (array-first)
@@ -458,7 +435,7 @@ So a map over `pos` and `vel` applies to any archetype with those components (`P
 A map body is **only** column transforms (`col = expr`). It is a loopless, branch-free kernel:
 the runtime owns the iteration, so the same source vectorizes on the CPU today and runs on the
 GPU later. Control flow (`if`/`for`/`while`/`match`), loops, local bindings, and calls are
-rejected in a map body (E0046) — put those in a `func`/`proc`.
+rejected in a map body (E0046) — put those in a `func`, a `map (Q) eff`, or a `system`.
 
 ### Conditional behavior
 
@@ -471,7 +448,7 @@ pos :: float;
 Body :: arche { vel, pos };
 [8]Body(8);
 
-dampen :: map (query { vel, pos }) {
+dampen :: map (query { vel, pos }) (vel) {
   // kill velocity below a threshold (mask), and clamp with a branch-free select
   vel = vel * (pos > 10);
   vel = select(pos > 100.0, 0.0, vel);
@@ -484,7 +461,8 @@ per-element branch would defeat vectorization / GPU dispatch.
 
 ## Functions (`func`)
 
-A function **IS a value**: it computes one result from its inputs, with no side effects.
+A function **IS a value**: it computes results from its inputs, with no side effects. It is the
+**one non-foreign callable** — pure logic, whatever its shape.
 
 ```arche
 drag_factor :: func(x: float) -> float {
@@ -492,26 +470,44 @@ drag_factor :: func(x: float) -> float {
 }
 ```
 
-- **Exactly one return** - `-> T` is mandatory; there is no multi-return (that's what a
-  proc's out-list is for) and no `out` parameters.
-- **Pure** - a func body may not perform effects (call a proc, an extern, or a mutating
-  builtin); this is enforced as a hard error. Effects belong in a `proc`.
-- **Never `extern`.** `extern` always pairs with `proc` - a foreign C function is an *action*
-  (`extern proc`), never a `func`. There is no `unsafe` qualifier in the language.
-- Usable inside expressions; freely callable as a proc's **in**-argument (a func call is a
-  value), but never as an **out**-argument (a value is not a place).
+- **Results via `-> T` *or* an out-param list.** A `func` produces its result either as a single
+  `-> T` return *or* as an out-parameter list `(out, …)` — the form `proc` used to carry. A pure
+  computation that yields **several** values or fills a buffer is a `func(in)(out, …)`:
 
-## `proc` vs `map` vs `func`
+  ```arche
+  divmod :: func(a: int, b: int)(q: int, r: int) {
+    q = a / b;          // write the out-params; no `return`
+    r = a - q * b;
+  }
 
-| Kind   | Binding                   | Is it a value? | Purpose                        |
-| ------ | ------------------------- | -------------- | ------------------------------ |
-| `func` | `name :: func(in) -> T`   | yes            | pure computation, one return   |
-| `proc` | `name :: proc(in)(out)`   | no             | an action; writes out-params   |
-| `map`  | `name :: map (query {components})` | no     | data transform over archetypes |
+  entry :: system eff {
+    divmod(17, 5)(q:, r:);          // call mirrors the signature: foo(in)(out)
+    fmt.assert(q == 3 && r == 2, "17 / 5 = 3 rem 2\n")();
+  }
 
-- `func`: "compute a value" - `r := area(w, h)`
-- `proc`: "do this, writing the results into these places" - `divmod(17, 5)(q:, r:)`
-- `map`: "run this on _any data shaped like this_" - `run step;`
+  #run entry
+  ```
+
+- **Pure** - a func body may not perform effects (call a `#foreign` extern, run an `Eff`, or
+  `insert`/`delete`); this is enforced as a hard error. Effects belong in a `system`/`map`.
+- **Never foreign.** A foreign C function is a `proc` *inside* a `#foreign` block, never a `func`.
+  There is no `unsafe` qualifier in the language.
+- Usable inside expressions; a func call is a value, so it is freely usable as an **in**-argument,
+  but an out-result fills a caller place (`name:`), never an in-position.
+
+## `func` vs `map` vs `system`
+
+| Kind              | Binding                                    | Is it a value? | Purpose                                |
+| ----------------- | ------------------------------------------ | -------------- | -------------------------------------- |
+| `func`            | `name :: func(in) -> T` or `func(in)(out)` | yes (`-> T`)   | pure computation; results via return **or** out-params |
+| `system`          | `name :: system { … }`                     | no             | effects; scheduled by `#run` (`map (Q) eff` = the effectful per-row fan) |
+| `map`             | `name :: map (query {components}) (writes)` | no            | data transform over archetypes; declares the columns it writes |
+| `proc`            | `name :: proc(in)(out)` *(in `#foreign`)*  | no             | foreign/`@syscall`/`@intrinsic` primitive **only** |
+
+- `func`: "compute a value" - `r := area(w, h)`, or `divmod(17, 5)(q:, r:)` for multiple results
+- `system`: "do this effect" - named in a schedule (`#run entry`)
+- `map`: "run this on _any data shaped like this_" - `#run step`
+- `proc`: a foreign primitive — declared only inside a `#foreign` block
 
 ## GPU maps (`@gpu`)
 
@@ -526,20 +522,19 @@ vel :: float;
 Mover :: arche { pos, vel };
 [256]Mover(256);
 
-integrate :: map (query { pos, vel }) {
+@gpu
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel;
 }
 
-main :: proc() {
-  run integrate @gpu;
-}
+#run integrate
 ```
 
 - `@gpu` is **additive and transparent**: it never changes the result — it only enables GPU execution.
   A program behaves identically with or without a GPU present.
 - **`arche build --gpu`** produces a normal executable that actually runs each `@gpu` map on the GPU: the
-  map's shader is compiled to SPIR-V and embedded in the binary, and a `run map @gpu` dispatches it via an
-  in-binary Vulkan runtime. If there is no GPU (no device, no driver, or the build had no shader compiler),
+  map's shader is compiled to SPIR-V and embedded in the binary, and scheduling an `@gpu` map dispatches it
+  via an in-binary Vulkan runtime. If there is no GPU (no device, no driver, or the build had no shader compiler),
   the dispatch **falls back to the CPU map automatically** — so a `--gpu` binary is always correct. Because
   arche `float` is **f32 on both the CPU and the GPU**, the two paths are the same numeric machine: the GPU
   result matches the CPU bit-for-bit.
@@ -555,7 +550,7 @@ main :: proc() {
 ## Collectives (`reduce` / `scan` / `sort`)
 
 A `map` is per-element; a **collective** is a whole-column operation. The three collectives are
-compiler builtins, not keywords, and they run from a `proc` over a pool's columns:
+compiler builtins, not keywords, and they run from a `system` over a pool's columns:
 
 - **`reduce(op, Pool.col)`** folds a column to a scalar.
 - **`scan(op, Pool.col)`** overwrites each element with the inclusive prefix fold (a running
@@ -573,7 +568,7 @@ empty pool returns the identity.
 
 `reduce` is a **value** (use it in an expression — `total := reduce(+, N.col)`); `scan` and
 `sort` are **actions** (statements that mutate the column in place). This is the same value/action
-split as `func` vs `proc`.
+split as `func` vs `system`.
 
 ```arche
 #import { fmt }
@@ -581,7 +576,7 @@ score :: int;
 N :: arche { score };
 [5]N(5);
 
-tally :: proc() {
+tally :: system eff {
   N.score = { 5, 1, 4, 2, 3 };
   total := reduce(+, N.score); // 15
   best  := reduce(max, N.score); // 5
@@ -589,10 +584,12 @@ tally :: proc() {
   sort(N.score); // sorts the pool ascending by score
   fmt.printf("total=%d best=%d\n", total, best);
 }
+
+#run tally
 ```
 
 A collective is rejected inside a `map` body (E0047): a kernel sees one element at a time, so a
-whole-column reduction belongs in the driver.
+whole-column reduction belongs in a `system`.
 
 ## Totality and failure policies (`!policy`)
 
@@ -620,13 +617,14 @@ The only irreducible primitive is `_exit` (a libc extern); `abort` is just a pol
 
 Only `!abort` (or a user policy that calls `_exit`) *deliberately* terminates — `!undefined` can
 still fault as UB, and a buggy policy can leave the raw op out of bounds. But the deliberate crash is
-per-site rather than smeared over a whole proc:
+per-site rather than smeared over a whole system:
 
 - A **`func`'s** baseline default is `clamp`. An unannotated fallible op in a func clamps — it can't
   crash unless you explicitly opt into `!undefined`/`!abort` or a crashing custom policy.
-- A **`proc`'s** baseline default is `abort`. Either default is overridable per-decl with
-  `@default(<policy>)` (e.g. `@default(clamp) hot :: proc(){…}`), or globally with `--unchecked`
-  (→ `undefined`). The implicit default is surfaced as an editor inlay so it's never a surprise.
+- **Effectful code** (a `system`/`map`) has baseline default `abort`. Either default is
+  overridable per-decl with `@default(<policy>)` (e.g. `@default(clamp) hot :: system {…}`), or
+  globally with `--unchecked` (→ `undefined`). The implicit default is surfaced as an editor inlay
+  so it's never a surprise.
 
 The bounds prover decides the rest: a **provably-safe** access needs no policy (an explicit one is
 the dead-policy lint `W0018`); a **provably out-of-bounds** constant access is a compile error
@@ -648,6 +646,33 @@ A bounds policy binds `(len, i)` and **mutates `i`** (a divide policy binds and 
 @policy(divide) zero :: policy(a: int, b: int) { if (b == 0) { a = 0; b = 1; } }  // n/d → 0 when d==0
 ```
 
+### Pool overflow & `ok`
+
+A pool is the third policy category. `insert` resolves an overflow handler — per-call `?name` › the
+pool's declared `[N]P ?name` › `@default(proc, pool, X)` › the **`reject`** baseline — and the choice
+gates whether the call must handle `ok`:
+
+- **`reject`** (the default) is *fallible*: a full pool drops the row and reports `ok = 0`. Because the
+  insert can fail observably, the call **must handle `ok`** — bind it to a real name (not `_`). Discarding
+  it (`insert(P{…})(_:, _:)`) ignores a real failure: the `discarded_ok` lint, **error by default**
+  (`--discarded-ok=warn|allow` demotes it; `@allow(discarded_ok)` suppresses one site).
+- **`?abort`** crashes loudly on overflow (a full pool is a programmer error, like an out-of-bounds index),
+  and **`?evict_*`** custom policies make room. These are *infallible* — the caller never sees `ok = 0` —
+  so there is no `ok` to handle: `insert(P{…})` with no out-list (or `(h:)` for just the handle) is the
+  clean form. `delete(h)` is likewise infallible (it aborts on a stale handle).
+
+So you never silently ignore overflow: either the pool declares a visible policy that handles it, or you
+handle `ok` at the call site. A policy-less pool's implicit policy is surfaced as an editor inlay — a ghost
+`?reject` (or the `@default(proc, pool, X)` override) on the declaration — so the failure behaviour is never
+a surprise. A pool policy binds `(count, cap, ok, slot)` — set `ok = 0` to reject, or redirect `slot` to a
+victim row to evict:
+
+```arche
+[8]Conn ?abort;              // a full connection pool crashes — overflow is a bug here
+[64]Job ?evict_oldest;       // … or evict the oldest job to make room
+[16]Pending;                 // no policy → reject: every `insert` must check `ok`
+```
+
 ### Narrowing crash sources
 
 `!abort` is the *deliberate* crash site, and these flags ban it — but no single flag proves a build
@@ -667,7 +692,7 @@ The raw `!undefined` opt-out is already off by default; the flags control the *b
 To get close to a crash-free build you add `--no-abort` (the raw op is already off) **and** audit the
 policies you use (the bundled `clamp`/`zero`/`wrap` are total and don't call `_exit`; a policy you
 write is your responsibility). These apply to your code; the bundled core/stdlib are exempt, and
-`extern`/FFI procs are outside the map — a foreign C boundary is trusted, not policy-tracked.
+`#foreign`/FFI procs are outside the map — a foreign C boundary is trusted, not policy-tracked.
 
 ### Errors as values: `insert` / `delete`
 
@@ -685,10 +710,10 @@ Particle :: arche { mass, charge };
 ```arche
 insert(Particle{ mass: 1.0, charge: 0.1 })(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
 if (!ok) { fmt.printf("pool full\n"); } // handle the full-pool case at the call site
-fmt.assert(ok == 1, "insert succeeded\n");
-fmt.assert(Particle.mass[0] == 1.0, "inserted mass\n");
+fmt.assert(ok == 1, "insert succeeded\n")();
+fmt.assert(Particle.mass[0] == 1.0, "inserted mass\n")();
 delete(h)(ok:);                         // ok: 0 on generation exhaustion
-fmt.assert(ok == 1, "delete succeeded\n");
+fmt.assert(ok == 1, "delete succeeded\n")();
 ```
 
 Use `_` to discard either out (`insert(P{ x: … })(_:, _:)`). The legacy value form (`h := insert(…)`,
@@ -711,12 +736,14 @@ enums/integers — list every variant or add a `_` catch-all, else it's a compil
 error ([E0210](explain/E0210.md)). Each arm is `pattern : statement` (or a block):
 
 ```arche
-handle :: proc(m: Method)() {
+handle :: func(m: Method) -> int {
+  code := 0;
   match m {
-    Method.get    : fmt.printf("GET\n");
-    Method.post   : fmt.printf("POST\n");
-    Method.delete : fmt.printf("DELETE\n");
+    Method.get    : code = 1;
+    Method.post   : code = 2;
+    Method.delete : code = 3;
   }
+  return code;
 }
 ```
 
@@ -724,52 +751,31 @@ handle :: proc(m: Method)() {
 source, no function pointers. String patterns compare with the pure `streq` helper:
 
 ```arche
-home      :: proc()() { fmt.printf("home\n"); }
-about     :: proc()() { fmt.printf("about\n"); }
-not_found :: proc()() { fmt.printf("404\n"); }
-
-route :: proc(path: []char)() {
+route :: func(path: []char) -> int {
+  code := 0;
   match path {
-    "/"      : home()();
-    "/about" : about()();
-    _        : not_found()();
+    "/"      : code = 1;   // home
+    "/about" : code = 2;   // about
+    _        : code = 0;   // not found
   }
+  return code;
 }
+
+entry :: system eff {
+  fmt.assert(handle(Method.post) == 2, "POST -> 2\n")();
+  fmt.assert(route("/about") == 2, "/about -> 2\n")();
+}
+
+#run entry
 ```
 
 This `enum` + `match` pairing is how Arche does compile-time, exhaustive dispatch —
 the data-oriented alternative to runtime function-pointer tables (see
-[E0211](explain/E0211.md)).
-
-## Compile-time callbacks
-
-A proc/func-typed **parameter** is a callback: the caller passes a known proc/func
-by name, and the callee is **monomorphized** per call site so the call lowers to a
-**direct call** — there are no runtime function pointers (Arche has no runtime proc
-values). The proc/func type may be inline or a named alias:
-
-```arche
-done_handler :: proc()();                        // a proc TYPE (callable, structural)
-
-run_task :: proc(work: int, on_done: done_handler)() {
-  // ... do the work ...
-  on_done()();                                   // direct call to the bound proc
-}
-
-finish  :: proc()() { fmt.printf("done\n"); }
-cleanup :: proc()() { fmt.printf("cleaned\n"); }
-
-main :: proc() {
-  run_task(5, finish)();     // compiler specializes run_task for on_done = finish
-  run_task(9, cleanup)();    // …and a second specialization for on_done = cleanup
-}
-```
-
-The callback argument is erased from the generated ABI; the chosen behavior is
-encoded in *which* specialization is called. This covers "do X, then do Y when
-done" where Y is fixed at the call site (it can also be forwarded to another
-callback-taking proc). A proc/func type can be a parameter or a named binding, but
-**not** an archetype component ([E0211](explain/E0211.md)) — archetypes are data.
+[E0211](explain/E0211.md)). Arche has **no runtime function values** at all: there
+are no proc/func-typed parameters and no callback indirection — behavior is selected
+by data (a `match` arm, a row routed into a pool, the next `system` in a schedule),
+never by a stored pointer. The "callback" patterns this replaces are spelled out in
+[docs/design/callbacks-as-data.md](design/callbacks-as-data.md).
 
 ## Ownership: borrow, `move`, `copy`
 
@@ -805,18 +811,28 @@ A bare name handed to a **borrow** parameter (`xs: []T`) is *not* consumed — i
 source stays alive. So borrow-vs-move is read straight off the callee's signature (`[]T` borrows,
 `own []T` takes ownership); there is no separate borrow keyword at the call site.
 
-To **fill a caller buffer in place** you don't need `own` or `move` at all - use an **in-out**
-parameter (the same name in both the in-list and the out-list). The out occurrence shadows the
-in-list borrow, so the body writes the buffer in place and the binding is never killed:
+To **fill a caller buffer in place**, a `#foreign` extern declares the buffer as an **in-out**
+parameter (the same name in both lists) — the C-ABI shape. A non-foreign caller can't repeat that
+proc shape, so it exposes the extern as a `func` returning an **`Eff`**: under-apply the extern,
+writing `_` for the buffer in-slot, and let the *run site* allocate the buffer as the OUT. The
+buffer is never an in-argument to copy or `move` — it is allocated caller-side at the `(buf: …)`
+out-binding and filled in place:
 
 ```arche
 #foreign {
   read :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int);   // libc read(2)
 }
 
-read_into :: proc(fd: int, buf: []char, len: int)(buf: []char, n: int) {
-  read(fd, buf, len)(buf, n:);            // the extern fills the in-out buffer in place
+read_into :: func(fd: int, len: int) -> Eff([]char, int) {
+  return read(fd, _, len);   // `_` is the C-ABI in-slot; the buffer is the caller-allocated OUT
 }
+
+reader :: system eff {
+  read_into(0, 8)(buf: [8]char, n:);            // `:` allocates the OUT buffer the extern fills
+  fmt.printf("read %d bytes (first=%d)\n", n, buf[0]);
+}
+
+#run reader
 ```
 
 - **You can't move out of a borrow.** `move`-ing a borrowed (non-`own`) array parameter - which
@@ -856,7 +872,7 @@ sound  :: opaque;
   `[N]Foo` + generation-checked handles for capacity-bounded, use-after-free-safe storage.
 
 ```arche
-render :: proc() {
+render :: system eff {
   fb: [307200]int;                       // 640 * 480 framebuffer
   window_open("demo", 640, 480)(w:);
   window_present(w, fb, 640, 480)(fb);   // in-out: fb lent and handed back, stays live
@@ -866,23 +882,25 @@ render :: proc() {
 
 ## Multiple outputs and mutate-in-place
 
-A `func` returns exactly one value. To produce **several** results, or to mutate a value in
-place, use a `proc` and its out-parameter list `(out)` - the values are written into
-caller-provided places, never returned:
+A `func` produces results via a single `-> T` return **or** an out-parameter list `(out)`. To
+produce **several** results, or to mutate a value in place, give the `func` an out-param list -
+the values are written into caller-provided places, never returned (this is the form `proc` used
+to carry, now folded into the one pure callable):
 
 ```arche
-sum_diff :: proc(a: int, b: int)(s: int, d: int) {
+sum_diff :: func(a: int, b: int)(s: int, d: int) {
   s = a + b;
   d = a - b;
 }
 
 sum_diff(10, 3)(s:, d:);   // s = 13, d = 7 - declared + scoped by the out-args
-fmt.assert(s == 13 && d == 7, "sum and diff\n");
+fmt.assert(s == 13 && d == 7, "sum and diff\n")();
 ```
 
-**Filling a caller buffer (zero-copy in-out).** A name in *both* the in-list and the out-list
-is an **in-out** parameter: the caller lends a buffer (no `own`, no `move`, no copy), the proc
-fills it in place, and the same live binding is handed back through the out-arg:
+**Filling a caller buffer (zero-copy).** A buffer that a callee writes is exposed as a `func`
+returning an **`Eff`**: a `#foreign` extern declares the buffer as an in-out parameter (the C-ABI
+shape), and the wrapper under-applies it with `_` in the buffer in-slot. The buffer is then the
+**caller-allocated OUT** at the run site — no `own`, no `move`, no copy:
 
 ```arche
 file :: opaque;
@@ -891,16 +909,16 @@ file :: opaque;
   arche_csv_read_chunk :: proc(fd: file, buf: []char, size: int)(buf: []char, n: int);
 }
 
-read_chunk :: proc(fd: file, buf: []char, size: int)(buf: []char, n: int) {
-  arche_csv_read_chunk(fd, buf, size)(buf, n:);   // the extern fills the in-out buffer in place
+read_chunk :: func(fd: file, size: int) -> Eff([]char, int) {
+  return arche_csv_read_chunk(fd, _, size);   // `_` is the C-ABI in-slot; the buffer is the OUT
 }
 ```
 
-For an `extern proc`, the in-list maps the C argument order, an in-out name is an in-place
+For a `#foreign` proc, the in-list maps the C argument order, an in-out name is an in-place
 pointer write, and an **out-only** name maps to the C **return value** - so the same
-`(in)(out)` shape describes both Arche procs and foreign C functions.
+`(in)(out)` shape describes both a `func`'s out-params and a foreign C function.
 
-Out-args bind **left-to-right** in the proc's out-param order. Each is a new place (`x:`,
+Out-args bind **left-to-right** in the callable's out-param order. Each is a new place (`x:`,
 declared + zero-inited) or an existing live variable (`x`).
 
 ## Implicit loop codegen

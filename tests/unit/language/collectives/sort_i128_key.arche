@@ -1,6 +1,6 @@
 // i128 key, n>=32 → radix with 16 passes + the i128 signed-key transform (XOR i128 sign bit). Negated
 // 1..40 reverses on ascending sort.
-// RUN: %arche build -o %t %s && %t | grep -qF "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "PASS"
 #import { fmt }
 
 k :: i128;
@@ -13,16 +13,20 @@ N :: arche { k, tag }
   k: 1, tag: 1
 }
 
-negk :: map (query { k }) {
+negk :: map (query { k })(k) {
   k = 0 - k;
 }
 
-main :: proc() {
-  scan(+, N.k); // 1..40 (i128)
-  scan(+, N.tag); // 1..40
-  run negk; // k = -1..-40
-  sort(N.k); // ascending → reversal
-  fmt.assert(N.tag[0] == 40, "t0\n");
-  fmt.assert(N.tag[39] == 1, "t39\n");
+seed :: system {
+  scan(+, N.k);
+  scan(+, N.tag);
+}
+
+verify :: system eff {
+  sort(N.k);
+  fmt.assert(N.tag[0] == 40, "t0\n")();
+  fmt.assert(N.tag[39] == 1, "t39\n")();
   fmt.printf("PASS\n");
 }
+
+#run seq({ seed, negk, verify })

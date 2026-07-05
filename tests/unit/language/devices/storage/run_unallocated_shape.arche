@@ -4,10 +4,8 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "no storage for the shape" %t.out
 Foo :: arche { x :: float }
 
-s :: map (query { x }) {
+s :: map (query { x })(x) {
   x = x + 1.0;
 }
 
-main :: proc() {
-  run s;
-}
+#run seq({ s })

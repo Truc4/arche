@@ -1,0 +1,9 @@
+// inlinetypedev's impl. `bump` is legal behavior; `Thing`'s SHAPE may live here. BUT its component `extra :: int`
+// carries an INLINE type — sugar for a top-level `extra :: int` type decl, which is the device's shared
+// vocabulary and belongs in the `.ds.arche` datasheet. Support file for device_no_inline_component_type.arche.
+// RUN: true
+Thing :: arche { val, extra :: int }
+
+bump :: map (query { val })(val) {
+  val = val + 1.0;
+}

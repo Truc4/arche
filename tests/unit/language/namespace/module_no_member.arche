@@ -2,6 +2,8 @@
 // — not the misleading "Undefined variable 'm'" that a value-field access would give.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "module 'fmt' has no member 'nope'" %t.out
 #import { fmt }
-main :: proc() {
+entry :: system {
   fmt.nope(1);
 }
+
+#run entry

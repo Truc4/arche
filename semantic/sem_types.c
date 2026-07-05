@@ -36,8 +36,26 @@ typedef struct {
 			int count;
 		} tuple;
 		struct {
+			const char *name;            /* interned */
+			const char **variant_names;  /* interned; [variant_count] */
+			TypeId **variant_payloads;   /* [variant_count][payload_counts[v]] */
+			int *variant_payload_counts; /* [variant_count] */
+			int variant_count;
+			int complete; /* 0 until tyid_sum_complete fills the variants */
+		} sum;
+		struct {
 			const char *archetype_name;
 		} handle;
+		struct {
+			const char *extern_name;     /* interned; the under-applied extern's name, or NULL for a structural
+			                              * annotation `Eff(T…)` matched only on out-slots */
+			TypeId *out_slots;           /* [out_slot_count] — the types yielded when run */
+			const char **out_slot_names; /* [out_slot_count] — interned NAME per out-slot (a named parameter,
+			                              * not an anonymous return); NULL entry = unnamed. The names are
+			                              * intrinsic to the Eff (declarable as `Eff(buf: T, …)` or inferred
+			                              * from the constructing extern's out-params). */
+			int out_slot_count;
+		} eff;
 		struct {
 			TypeId *params;
 			int param_count;
@@ -77,9 +95,18 @@ void ty_arena_free(TypeArena *a) {
 		if (n->kind == TYK_TUPLE) {
 			free(n->data.tuple.names);
 			free(n->data.tuple.types);
-		} else if (n->kind == TYK_FUNC || n->kind == TYK_PROC || n->kind == TYK_SYS || n->kind == TYK_POLICY) {
+		} else if (n->kind == TYK_SUM) {
+			for (int v = 0; v < n->data.sum.variant_count; v++)
+				free(n->data.sum.variant_payloads[v]);
+			free(n->data.sum.variant_payloads);
+			free(n->data.sum.variant_payload_counts);
+			free(n->data.sum.variant_names);
+		} else if (n->kind == TYK_FUNC || n->kind == TYK_PROC || n->kind == TYK_MAP || n->kind == TYK_POLICY) {
 			free(n->data.func.params);
 			free(n->data.func.returns);
+		} else if (n->kind == TYK_EFF) {
+			free(n->data.eff.out_slots);
+			free(n->data.eff.out_slot_names); /* the name strings are interned (arena-owned); free only the array */
 		}
 	}
 	free(a->nodes);
@@ -159,6 +186,22 @@ TypeId tyid_backing(const TypeArena *a, TypeId t) {
 /* Is a value of type `from` usable where `to` is expected? `from == to`, or `from` is a distinct
  * subtype whose backing chain reaches `to` (one-way: `meters` usable as `float`, not vice versa). */
 int tyid_usable_as(const TypeArena *a, TypeId from, TypeId to) {
+	/* A concrete `Eff#extern(out…)` is usable as the STRUCTURAL annotation `Eff(out…)` with the same
+	 * out-slots: the build site mints the concrete one, while a func's declared `-> Eff(int,int)` is
+	 * structural (extern_name NULL). A structural target accepts any extern; a concrete target requires
+	 * the same extern. (Out-slots compared by id; arche has no Eff subtyping beyond this.) */
+	if (a && tyid_kind(a, from) == TYK_EFF && tyid_kind(a, to) == TYK_EFF) {
+		int nf = tyid_eff_out_count(a, from);
+		if (nf == tyid_eff_out_count(a, to)) {
+			int eq = 1;
+			for (int i = 0; i < nf && eq; i++)
+				if (tyid_eff_out_at(a, from, i) != tyid_eff_out_at(a, to, i))
+					eq = 0;
+			const char *te = tyid_eff_extern_name(a, to);
+			if (eq && (te == NULL || te == tyid_eff_extern_name(a, from)))
+				return 1;
+		}
+	}
 	for (TypeId t = from; t != TYID_UNKNOWN; t = tyid_backing(a, t))
 		if (t == to)
 			return 1;
@@ -221,6 +264,91 @@ TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId 
 	return push_node(a, node);
 }
 
+TypeId tyid_sum_forward(TypeArena *a, const char *name) {
+	const char *interned = intern_str(a, name);
+	for (int i = 1; i < a->node_count; i++) {
+		TypeNode *n = &a->nodes[i];
+		if (n->kind == TYK_SUM && n->data.sum.name == interned)
+			return (TypeId)i; /* already forwarded/completed under this name */
+	}
+	TypeNode node = {0};
+	node.kind = TYK_SUM;
+	node.data.sum.name = interned;
+	node.data.sum.complete = 0;
+	return push_node(a, node);
+}
+
+void tyid_sum_complete(TypeArena *a, TypeId sum, const char *const *variant_names,
+                       const TypeId *const *variant_payloads, const int *variant_payload_counts, int variant_count) {
+	if (!a || sum == 0 || (int)sum >= a->node_count)
+		return;
+	TypeNode *n = &a->nodes[sum];
+	if (n->kind != TYK_SUM || n->data.sum.complete)
+		return;
+	n->data.sum.variant_count = variant_count;
+	n->data.sum.variant_names = malloc((variant_count ? variant_count : 1) * sizeof(char *));
+	n->data.sum.variant_payloads = malloc((variant_count ? variant_count : 1) * sizeof(TypeId *));
+	n->data.sum.variant_payload_counts = malloc((variant_count ? variant_count : 1) * sizeof(int));
+	for (int v = 0; v < variant_count; v++) {
+		n->data.sum.variant_names[v] = intern_str(a, variant_names[v]);
+		int pc = variant_payload_counts[v];
+		n->data.sum.variant_payload_counts[v] = pc;
+		n->data.sum.variant_payloads[v] = malloc((pc ? pc : 1) * sizeof(TypeId));
+		for (int i = 0; i < pc; i++)
+			n->data.sum.variant_payloads[v][i] = variant_payloads[v][i];
+	}
+	n->data.sum.complete = 1;
+}
+
+const char *tyid_sum_name(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return NULL;
+	return a->nodes[t].data.sum.name;
+}
+
+int tyid_sum_variant_count(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return -1;
+	return a->nodes[t].data.sum.variant_count;
+}
+
+int tyid_sum_variant_index(const TypeArena *a, TypeId t, const char *nm) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM || !nm)
+		return -1;
+	const TypeNode *n = &a->nodes[t];
+	for (int v = 0; v < n->data.sum.variant_count; v++)
+		if (strcmp(n->data.sum.variant_names[v], nm) == 0)
+			return v;
+	return -1;
+}
+
+const char *tyid_sum_variant_name(const TypeArena *a, TypeId t, int v) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return NULL;
+	const TypeNode *n = &a->nodes[t];
+	if (v < 0 || v >= n->data.sum.variant_count)
+		return NULL;
+	return n->data.sum.variant_names[v];
+}
+
+int tyid_sum_variant_payload_count(const TypeArena *a, TypeId t, int v) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return -1;
+	const TypeNode *n = &a->nodes[t];
+	if (v < 0 || v >= n->data.sum.variant_count)
+		return -1;
+	return n->data.sum.variant_payload_counts[v];
+}
+
+TypeId tyid_sum_variant_payload_at(const TypeArena *a, TypeId t, int v, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_SUM)
+		return TYID_UNKNOWN;
+	const TypeNode *n = &a->nodes[t];
+	if (v < 0 || v >= n->data.sum.variant_count || i < 0 || i >= n->data.sum.variant_payload_counts[v])
+		return TYID_UNKNOWN;
+	return n->data.sum.variant_payloads[v][i];
+}
+
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name) {
 	const char *interned = intern_str(a, archetype_name);
 	for (int i = 1; i < a->node_count; i++) {
@@ -232,6 +360,93 @@ TypeId tyid_of_handle(TypeArena *a, const char *archetype_name) {
 	node.kind = TYK_HANDLE;
 	node.data.handle.archetype_name = interned;
 	return push_node(a, node);
+}
+
+/* Hash-cons an Eff node. Keyed on (extern_name, out_slots) so a structural `Eff(int,int)` (extern_name
+ * NULL) and a concrete `Eff#fwrite(int,int)` are DISTINCT ids — the run site uses the concrete extern,
+ * while a func's declared `-> Eff(int,int)` annotation is the structural one (checked on out-slots only). */
+static TypeId intern_eff(TypeArena *a, const char *extern_name, const TypeId *out_slots, const char *const *names,
+                         int out_slot_count) {
+	const char *interned = extern_name ? intern_str(a, extern_name) : NULL;
+	/* Intern each name up front so the hash-cons key and storage use pointer identity. */
+	const char *iname[64];
+	int has_name = 0;
+	for (int j = 0; j < out_slot_count; j++) {
+		const char *nm = (names && j < out_slot_count) ? names[j] : NULL;
+		iname[j < 64 ? j : 63] = nm ? intern_str(a, nm) : NULL;
+		if (nm)
+			has_name = 1;
+	}
+	for (int i = 1; i < a->node_count; i++) {
+		TypeNode *n = &a->nodes[i];
+		if (n->kind != TYK_EFF || n->data.eff.extern_name != interned || n->data.eff.out_slot_count != out_slot_count)
+			continue;
+		int eq = 1;
+		for (int j = 0; j < out_slot_count && eq; j++)
+			if (n->data.eff.out_slots[j] != out_slots[j])
+				eq = 0;
+		/* Names are part of the carried identity: two Effs with the same slot TYPES but different slot
+		 * NAMES are distinct nodes (each carries its own names). Assignability ignores names (see
+		 * tyid_assignable), so this does not affect structural compatibility. */
+		for (int j = 0; j < out_slot_count && eq && j < 64; j++) {
+			const char *en = n->data.eff.out_slot_names ? n->data.eff.out_slot_names[j] : NULL;
+			if (en != iname[j])
+				eq = 0;
+		}
+		if (eq)
+			return (TypeId)i;
+	}
+	TypeNode node = {0};
+	node.kind = TYK_EFF;
+	node.data.eff.extern_name = interned;
+	node.data.eff.out_slot_count = out_slot_count;
+	node.data.eff.out_slots = malloc((out_slot_count ? out_slot_count : 1) * sizeof(TypeId));
+	if (out_slot_count)
+		memcpy(node.data.eff.out_slots, out_slots, out_slot_count * sizeof(TypeId));
+	node.data.eff.out_slot_names = NULL;
+	if (has_name) {
+		node.data.eff.out_slot_names = malloc((out_slot_count ? out_slot_count : 1) * sizeof(const char *));
+		for (int j = 0; j < out_slot_count; j++)
+			node.data.eff.out_slot_names[j] = (j < 64) ? iname[j] : NULL;
+	}
+	return push_node(a, node);
+}
+
+TypeId tyid_of_eff_structural(TypeArena *a, const TypeId *out_slots, int out_slot_count) {
+	return intern_eff(a, NULL, out_slots, NULL, out_slot_count);
+}
+TypeId tyid_of_eff_concrete(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count) {
+	return intern_eff(a, extern_name, out_slots, NULL, out_slot_count);
+}
+/* Like the above but carries an explicit NAME per out-slot (a named parameter). `names[j]` may be NULL for
+ * an unnamed slot. `extern_name` NULL = structural (a declared `Eff(buf: T, …)` annotation). */
+TypeId tyid_of_eff_named(TypeArena *a, const char *extern_name, const TypeId *out_slots, const char *const *names,
+                         int out_slot_count) {
+	return intern_eff(a, extern_name, out_slots, names, out_slot_count);
+}
+const char *tyid_eff_out_name_at(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return NULL;
+	if (i < 0 || i >= a->nodes[t].data.eff.out_slot_count || !a->nodes[t].data.eff.out_slot_names)
+		return NULL;
+	return a->nodes[t].data.eff.out_slot_names[i];
+}
+const char *tyid_eff_extern_name(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return NULL;
+	return a->nodes[t].data.eff.extern_name;
+}
+int tyid_eff_out_count(const TypeArena *a, TypeId t) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return -1;
+	return a->nodes[t].data.eff.out_slot_count;
+}
+TypeId tyid_eff_out_at(const TypeArena *a, TypeId t, int i) {
+	if (!a || t == 0 || (int)t >= a->node_count || a->nodes[t].kind != TYK_EFF)
+		return TYID_UNKNOWN;
+	if (i < 0 || i >= a->nodes[t].data.eff.out_slot_count)
+		return TYID_UNKNOWN;
+	return a->nodes[t].data.eff.out_slots[i];
 }
 
 TypeId tyid_of_archetype_category(TypeArena *a) {
@@ -282,7 +497,7 @@ TypeId tyid_of_proc(TypeArena *a, const TypeId *params, int param_count, const T
 	return intern_callable(a, TYK_PROC, params, param_count, returns, return_count);
 }
 TypeId tyid_of_map(TypeArena *a, const TypeId *params, int param_count) {
-	return intern_callable(a, TYK_SYS, params, param_count, NULL, 0);
+	return intern_callable(a, TYK_MAP, params, param_count, NULL, 0);
 }
 TypeId tyid_of_policy(TypeArena *a, const TypeId *params, int param_count) {
 	return intern_callable(a, TYK_POLICY, params, param_count, NULL, 0);
@@ -416,18 +631,42 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 		snprintf(buf, buflen, "[%d]%s", n->data.array.len, inner);
 		break;
 	}
-	case TYK_TUPLE:
-		snprintf(buf, buflen, "tuple(%d)", n->data.tuple.count);
+	case TYK_TUPLE: {
+		/* Render the real shape, e.g. `(float, float)` — a bare `tuple(2)` says nothing about the lanes. */
+		int cnt = n->data.tuple.count;
+		int off = snprintf(buf, buflen, "(");
+		for (int i = 0; i < cnt && off > 0 && off < buflen; i++) {
+			char inner[128];
+			tyid_display(a, n->data.tuple.types[i], inner, sizeof(inner));
+			off += snprintf(buf + off, buflen - off, "%s%s", i ? ", " : "", inner);
+		}
+		if (off > 0 && off < buflen)
+			snprintf(buf + off, buflen - off, ")");
+		break;
+	}
+	case TYK_SUM:
+		snprintf(buf, buflen, "%s", n->data.sum.name ? n->data.sum.name : "sum");
 		break;
 	case TYK_HANDLE:
 		snprintf(buf, buflen, "handle(%s)", n->data.handle.archetype_name ? n->data.handle.archetype_name : "?");
 		break;
+	case TYK_EFF: {
+		char os[300] = "";
+		for (int i = 0; i < n->data.eff.out_slot_count; i++) {
+			char one[128];
+			tyid_display(a, n->data.eff.out_slots[i], one, sizeof(one));
+			size_t l = strlen(os);
+			snprintf(os + l, sizeof(os) - l, "%s%s", i ? ", " : "", one);
+		}
+		snprintf(buf, buflen, "Eff(%s)", os);
+		break;
+	}
 	case TYK_ARCHETYPE_CATEGORY:
 		snprintf(buf, buflen, "archetype");
 		break;
 	case TYK_FUNC:
 	case TYK_PROC:
-	case TYK_SYS:
+	case TYK_MAP:
 	case TYK_POLICY: {
 		/* Render each callable form in Arche's own spelling — `func(T, U) -> R`, `proc(T)(A)`,
 		 * `map(T)`, `policy(T)` — with the real param/return types (cf. Odin/Jai showing the types). */
@@ -453,7 +692,7 @@ const char *tyid_display(const TypeArena *a, TypeId t, char *buf, int buflen) {
 				tyid_display(a, n->data.func.returns[0], rs, sizeof(rs));
 			snprintf(buf, buflen, "func(%s) -> %s", ps, rs);
 		} else {
-			snprintf(buf, buflen, "%s(%s)", n->kind == TYK_SYS ? "map" : "policy", ps);
+			snprintf(buf, buflen, "%s(%s)", n->kind == TYK_MAP ? "map" : "policy", ps);
 		}
 		break;
 	}

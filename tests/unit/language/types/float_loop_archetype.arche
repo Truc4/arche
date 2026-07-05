@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 Nums :: arche { val :: float }
 
@@ -6,7 +6,7 @@ Nums :: arche { val :: float }
   val: 0.0,
 }
 
-main :: proc() {
+entry :: system eff {
   Nums.val[0] = 1.0;
   Nums.val[1] = 2.0;
   Nums.val[2] = 3.0;
@@ -18,5 +18,7 @@ main :: proc() {
     total = total + v;
     i     = i + 1;
   }
-  fmt.assert(total == 10.0, "float loop archetype failed\n");
+  fmt.assert(total == 10.0, "float loop archetype failed\n")();
 }
+
+#run entry

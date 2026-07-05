@@ -7,10 +7,8 @@ Thing :: arche { v :: int }
 
 [4]Thing;
 
-report :: proc(arch: archetype) {
-  fmt.printf("cap=%d\n", arch.capacity);
+entry :: system eff {
+  fmt.printf("cap=%d\n", Thing.capacity);
 }
 
-main :: proc() {
-  report(Thing);
-}
+#run entry

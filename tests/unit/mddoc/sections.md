@@ -12,7 +12,7 @@ helper :: func() -> int { return 1; }
 ```
 
 ```arche
-fmt.assert(helper() == 1, "section A broken\n");
+fmt.assert(helper() == 1, "section A broken\n")();
 ```
 
 ## Section B
@@ -23,5 +23,5 @@ helper :: func() -> int { return 2; }
 ```
 
 ```arche
-fmt.assert(helper() == 2, "section B broken\n");
+fmt.assert(helper() == 2, "section B broken\n")();
 ```

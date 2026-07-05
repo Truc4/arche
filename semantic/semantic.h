@@ -14,6 +14,11 @@ typedef struct SemanticContext SemanticContext;
  * side model by syntax tree node id (read by lowering). This is the only analysis entry. */
 SemanticContext *semantic_analyze_cst(const SyntaxNode *root, const char *src);
 
+/* Whole-program datasheet-storage validation (a device's `[N]Shape` requirement vs the driver's pool).
+ * Run by the COMPILER frontend after `semantic_analyze_cst`, never by the per-file analyzer — it needs the
+ * whole assembled program. Returns the number of errors emitted (also added to the context's error count). */
+int semantic_check_storage_requirements(SemanticContext *ctx);
+
 /* Register a `use`-module's syntax tree so semantic_analyze_cst can inline it (parallel to
  * lower_add_module). Call once per module before semantic_analyze_cst. */
 void semantic_add_module(const char *name, const SyntaxNode *root, const char *src, const char *filename,
@@ -41,6 +46,10 @@ void semantic_context_free(SemanticContext *ctx);
 /* The resolved-type side model (keyed by syntax tree node id); read by lowering. */
 SemModel *sem_context_model(SemanticContext *ctx);
 
+/* The overflow policy a pool with NO explicit `?handler` resolves to: `@default(proc, pool, X)` if set,
+ * else the `"reject"` baseline. Used by the analyzer to render the implicit pool-policy inlay. */
+const char *semantic_default_pool_policy(const SemanticContext *ctx);
+
 /* The interned TypeId arena (Phase 3); read by lowering's map_type_id. */
 TypeArena *sem_context_arena(SemanticContext *ctx);
 
@@ -50,6 +59,11 @@ SemHints *sem_context_hints(SemanticContext *ctx);
 /* Resolve a (possibly nominal-alias) type name through the alias chain to its
  * backing; returns `name` unchanged if not an alias. */
 const char *semantic_resolve_type_alias(SemanticContext *ctx, const char *name);
+
+/* One-step backing of an alias (`handle :: win` → "win"), NULL if not an alias. Walk this to recognise
+ * intermediate ancestors — a distinct subtype is usable AS any type in its backing chain, not only the
+ * ultimate backing. */
+const char *semantic_alias_backing_step(SemanticContext *ctx, const char *name);
 
 /* 1 if `name` is a registered type alias (tier-1 transparent OR tier-2 subtype). */
 int semantic_is_type_alias(SemanticContext *ctx, const char *name);
@@ -68,6 +82,7 @@ TypeId semantic_callable_type_alias(SemanticContext *ctx, const char *name);
 
 /* Enum support (used by lowering to resolve `Enum.variant` and bare variant patterns to int values). */
 int semantic_is_enum_type(SemanticContext *ctx, const char *name);
+int semantic_func_is_ctfe_only(SemanticContext *ctx, const char *name); /* sum-typed func → erased at lowering */
 int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out);
 int semantic_find_enum_variant(SemanticContext *ctx, const char *variant, long *out);
 
@@ -128,10 +143,15 @@ const char *semantic_field_type_name(SemanticContext *ctx, const char *archetype
 
 /* Constant queries */
 const char *semantic_get_const_value(SemanticContext *ctx, const char *const_name);
+const char *semantic_qualified_const_name(SemanticContext *ctx, const char *bare);
 
 /* CTFE: fold `e` to a compile-time integer constant (literal / const / pure-func-of-constants).
  * Returns 1 and writes *out on success, 0 if `e` is not a compile-time-constant integer. */
 int semantic_try_const_int(SemanticContext *ctx, SyntaxView e, int *out);
+
+/* Value-CTFE: fold a `#run` Schedule expression to a constant ScheduleTree (the runtime-dispatch IR),
+ * or NULL if it doesn't fold. Owns the returned tree (caller frees via schedule_tree_free). */
+struct ScheduleTree *semantic_try_const_schedule(SemanticContext *ctx, SyntaxView e);
 
 /* Lint configuration. Both lints are enabled by default. CLI flags
  * (--Wno-proc-could-be-func / --Wno-proc-no-effect) disable them;
@@ -145,6 +165,19 @@ void semantic_set_lint_exported_mutable_global(int enabled, int werror);
 /* W0024 map_writes_foreign_pool: error by default (see ensure_init). `--map-foreign-write=error|warn|allow`
  * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
 void semantic_set_lint_map_writes_foreign_pool(int enabled, int werror);
+/* W0028 proc_calls_proc: WARN by default (the flat-effect proc→proc ban). `--proc-leaf=error|warn|allow`
+ * maps to (enabled, werror) = (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_proc_calls_proc(int enabled, int werror);
+/* W0030 proc_not_primitive: the proc-elimination ban (a proc must be `#foreign`/primitive). DISABLED by
+ * default during the migration; enable (then werror) to enforce once stdlib is converted. */
+void semantic_set_lint_proc_not_primitive(int enabled, int werror);
+/* W0016 discarded_ok: ERROR by default — an `insert` into a fallible (`reject`) pool that ignores `ok`.
+ * `--discarded-ok=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_discarded_ok(int enabled, int werror);
+/* W0029 pool_index_outside_query: ERROR by default (pool values must come from a query, not `Pool.col[i]`);
+ * NOT silenced by @allow — only the `--pool-index` flag changes it.
+ * `--pool-index=error|warn|allow` maps to (1,1) / (1,0) / (0,0). */
+void semantic_set_lint_pool_index_outside_query(int enabled, int werror);
 /* W0026 large_stack_array: warn by default. `-Wno-large-stack-array` disables; `-Werror=large-stack-array`
  * (or bare `-Werror`) promotes to a hard error. */
 void semantic_set_lint_large_stack_array(int enabled, int werror);

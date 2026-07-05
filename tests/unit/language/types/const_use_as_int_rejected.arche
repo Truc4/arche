@@ -3,8 +3,10 @@
 // Tycheck (E0200) reports it as `binding: expected 'i32', got 'float'`.
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'i32', got 'float'" %t.out
 #import { fmt }
-PI   :: 3.14;
-main :: proc() {
+PI    :: 3.14;
+entry :: system eff {
   x: int = PI;
   fmt.printf("%d\n", x);
 }
+
+#run entry

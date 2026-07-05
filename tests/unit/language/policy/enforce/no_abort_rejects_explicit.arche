@@ -1,8 +1,10 @@
 // `--no-abort` rejects even a deliberate, explicit `!abort` (E0125) — the whole binary is asserted
 // crash-free.
 // RUN: %arche build --no-abort -o %t %s > %t.out 2>&1 ; grep -qi "no-abort forbids\|E0125" %t.out
-main :: proc() {
+entry :: system {
   a: [4]int;
   i := 9;
   x := a[i] !abort; // explicit !abort -> still rejected under --no-abort
 }
+
+#run entry

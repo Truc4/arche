@@ -1,17 +1,19 @@
 // A bare archetype component can reference a top-level tuple group; it expands to the
 // group's flat columns — `arche Particle { pos, vel }` == `{ pos_x, pos_y, vel_vx, vel_vy }`.
 // So you define the shape once and reference it by name, instead of spelling out members.
-// RUN: %arche build -o %t %s && %t | grep "px=1.5 py=2.1"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "px=1.5 py=2.1"
 #import { fmt }
 pos(x, y)   :: float;
 vel(vx, vy) :: float;
 Particle    :: arche { pos, vel }
 
-[5]Particle;
+[5]Particle ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Particle { pos_x: 1.0, pos_y: 2.0, vel_vx: 0.5, vel_vy: 0.1 })(_:, _:);
   Particle.pos_x = Particle.pos_x + Particle.vel_vx;
   Particle.pos_y = Particle.pos_y + Particle.vel_vy;
   fmt.printf("px=%g py=%g\n", Particle.pos_x[0], Particle.pos_y[0]);
 }
+
+#run entry

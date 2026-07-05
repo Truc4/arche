@@ -1,0 +1,26 @@
+// `@drop` fires on pool-row DELETE, queried by COLUMN TYPE: a column whose type has a registered
+// `@drop` destructor is released when its row is deleted, so a resource a row HOLDS (here a descriptor
+// kept as `res` data) is torn down on `delete`. No wrapper archetype — you park the resource column in
+// whatever archetype you like, and deleting the row fires the dtor. Open = insert, close = delete.
+// The dtor prints to prove it fired on the deleted row's data.
+// RUN: %arche build -o %t %s && %t | grep -qF "dropped fd=7"
+#import { fmt }
+
+res :: enum { none } // a distinct resource type (backed by a small int)
+
+// Any archetype with a `res` column gets close-on-delete — the resource is the column type, not a
+// named container.
+Thing :: arche { r :: res }
+[4]Thing ?abort;
+
+@drop(res)
+close_res :: proc(own r: res) {
+  fmt.printf("dropped fd=%d\n", i64(r)); // a real io dtor would `os.close(i64(r))(_:)` here
+}
+
+entry :: system eff {
+  insert(Thing { r: res(7) })(h:, _:);
+  delete(h)(_:); // fires close_res on the deleted row's `res` column → "dropped fd=7"
+}
+
+#run entry

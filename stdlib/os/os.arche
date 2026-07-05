@@ -1,53 +1,106 @@
+#import { mem }
+
 #foreign {
   os_now_sec  :: proc()(t: float);
-  os_now_ms   :: proc()(t: i64);
-  os_sleep_ms :: proc(ms: int);
   os_argc     :: proc()(n: int);
-  os_argv     :: proc(i: int)(s: []char);
+  os_argv     :: proc(i: int)(p: rawptr);
   os_argv_len :: proc(i: int)(n: i64);
 
   @intrinsic
   syscall :: proc(n: i64, a0: i64, a1: i64, a2: i64, a3: i64, a4: i64, a5: i64)(
     r: i64,
   );
+
+  @syscall(0)
+  sys_read :: proc(fd: i64, buf: []char, n: i64)(buf: []char, r: i64);
+  @syscall(1)
+  sys_write :: proc(fd: i64, buf: []char, n: i64)(r: i64);
+  @syscall(2)
+  sys_open :: proc(path: []char, flags: i64, mode: i64)(r: i64);
+  @syscall(35)
+  sys_nanosleep :: proc(req: []i64, rem: i64)(r: i64);
+  @syscall(228)
+  sys_clock :: proc(clk: i64, ts: [2]i64)(ts: [2]i64);
 }
 
-argv :: proc(i: int)(out: []char) {
-  os_argv(i)(raw:);
-  os_argv_len(i)(n:);
-  out = raw[0: n];
+/// A pure `func → Eff`: `zip` the address effect with the length effect (the applicative product), then
+/// `|> mem.bound` folds the (address, length) pair into a checked `[]char` slice INSIDE the Eff. `bound` is
+/// the single audited FFI pointer→slice door (an intrinsic; the address stays an inert `rawptr` until then).
+/// Callers are UNCHANGED: `os.argv(i)(out:)`.
+argv :: func(i: int) -> Eff([]char) {
+  return zip(os_argv(i), os_argv_len(i))
+    |> mem.bound;
 }
 
-sleep_ms :: proc(ms: int) {
-  os_sleep_ms(ms);
+/// The program's argument count — `os.argc()(n:)`. A `func → Eff` over the extern.
+argc :: func() -> Eff(int) {
+  return os_argc();
 }
 
-now_ms :: proc()(t: i64) {
-  os_now_ms()(t);
+/// Monotonic-clock / nanosleep PRIMITIVES (`func → Eff`). The timespec `ts` is a caller-owned `[2]i64`
+/// (`{ sec, nsec }`). `clock_mono` declares it IN-OUT — the kernel fills it, surfaced as the single out-slot;
+/// `ms_of` cooks the filled timespec; `nanosleep` declares `req` plain-in (read-only, the kernel reads it).
+/// The timespec→ms cook rides INSIDE the Eff via `|> ms_of` (see `now_ms`), so callers just bind the ms:
+///   os.now_ms()(now:);                                 // the common case — one line, no buffer
+///   os.clock_mono()(ts:);  now := ms_of(ts);           // the raw timespec, if you want it
+clock_mono :: func() -> Eff([2]i64) {
+  return sys_clock(1, _);
+}
+ms_of :: func(ts: []i64) -> i64 {
+  return ts[0] * 1000 + ts[1] / 1000000;
+}
+nanosleep :: func(req: []i64) -> Eff(i64) {
+  return sys_nanosleep(req, 0);
 }
 
-open :: proc(path: []char, flags: int)(fd: int) {
-  syscall(2, path, flags, 0, 0, 0, 0)(r:);
-  fd = i32(r);
-}
-read :: proc(fd: int, buf: []char, len: int)(out: []char) {
-  syscall(0, fd, buf, len, 0, 0, 0)(r:);
-  n := i32(r);
-  if (n < 0) {
-    n = 0;
+/// Sleep `ms` milliseconds (nanosleep) — a `func → Eff` over `nanosleep`. `req` = timespec { sec, nsec }
+/// the kernel reads; built element-by-element (NOT an array literal — that path miscompiles `[N]i64`). A
+/// nonpositive `ms` clamps to 0 (a zero timespec is a kernel no-op), preserving the old "don't sleep" guard.
+/// Run it like any Eff: `os.sleep_ms(16)(_:)`.
+sleep_ms :: func(ms: int) -> Eff(i64) {
+  m := i64(ms);
+  if (m < 0) {
+    m = 0;
   }
-  out = buf[0: n];
+  req: [2]i64;
+  req[0] = m / 1000;
+  req[1] = (m % 1000) * 1000000;
+  return nanosleep(req);
 }
-write :: proc(fd: int, buf: []char, len: int) {
-  syscall(1, fd, buf, len, 0, 0, 0)(_r:);
+
+/// Monotonic milliseconds — a pure `func → Eff(i64)`: `|> ms_of` folds the kernel-written timespec OUT-slot
+/// to ms INSIDE the Eff (fmap-over-buffer), so the timespec is run-internal scratch the caller never sees.
+/// Run it like any Eff: `now := 0; os.now_ms()(now:)`.
+now_ms :: func() -> Eff(i64) {
+  return clock_mono()
+    |> ms_of;
 }
-close :: proc(fd: int) {
-  syscall(3, fd, 0, 0, 0, 0, 0)(_r:);
+
+/// `|> fd_of` folds the raw i64 syscall result into the `int` fd. The cook is a pure finalizer applied to
+/// the run's single out-slot; callers are UNCHANGED (`os.open(path, flags)(fd:)`).
+fd_of :: func(r: i64) -> int {
+  return i32(r);
 }
-lseek :: proc(fd: int, off: i64, whence: int)(pos: i64) {
-  syscall(8, fd, off, whence, 0, 0, 0)(r:);
-  pos = r;
+open :: func(path: []char, flags: int) -> Eff(int) {
+  return sys_open(path, flags, 0)
+    |> fd_of;
 }
-exit :: proc(code: int) {
-  syscall(231, code, 0, 0, 0, 0, 0)(_r:);
+/// The buffer is the caller-allocated OUT (the kernel fills it); `r` is the byte count (negative errno on
+/// failure — the caller cooks it). Variable-size, so the caller gives the size at the out-binding:
+/// `read(fd, len)(buf: [256]char, n:); data := buf[0:n]`. `_` is the C-ABI in-slot shadow.
+read :: func(fd: int, len: int) -> Eff([]char, i64) {
+  return sys_read(fd, _, len);
+}
+/// `buf` is read-only (the kernel reads it); the out-slot is the byte count. `os.write(1, buf, n)(_:)`.
+write :: func(fd: int, buf: []char, len: int) -> Eff(i64) {
+  return sys_write(fd, buf, len);
+}
+close :: func(fd: int) -> Eff(i64) {
+  return syscall(3, fd, 0, 0, 0, 0, 0);
+}
+lseek :: func(fd: int, off: i64, whence: int) -> Eff(i64) {
+  return syscall(8, fd, off, whence, 0, 0, 0);
+}
+exit :: func(code: int) -> Eff(i64) {
+  return syscall(231, code, 0, 0, 0, 0, 0);
 }

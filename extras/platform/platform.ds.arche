@@ -1,14 +1,5 @@
-// `platform` device — OS-specific conventions (name, path separator, null device).
-// Not a standalone test (exercised by demo.arche).
+//! `platform` device — OS-specific conventions (name, path separator, null device). This datasheet's
+//! presence marks `platform/` a device; interchangeable `linux/` and `windows/` backends supply the
+//! behaviour, and the build target selects which one merges (arche.toml `[target.<name>]`, or
+//! `arche build --target <name>`).
 // RUN: true
-//
-// This is the device DATASHEET: its presence marks `platform/` a device. The behavior lives in two
-// interchangeable backends — `linux/` and `windows/` — and the active build TARGET picks which one
-// merges. Select it in arche.toml:
-//
-//     target = "linux"            # one switch
-//     [target.linux]   platform = "linux"
-//     [target.windows] platform = "windows"
-//
-// or on the command line: `arche build --target windows ...`. The importer always writes the same
-// `platform.name()` / `platform.sep()` calls; only which file backs them changes.

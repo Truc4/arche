@@ -1,0 +1,22 @@
+// A `:=` local in a pure `map` — pure SSA, unrelated to branching, so no longer banned (E0046 lift). The
+// local must be PER-ELEMENT (recomputed each row), not hoisted to the whole-column top level: a map with a
+// local runs as a scalar per-element loop. Here `d := px * 2` then `out = d + 1` → {2*px + 1} per row.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "o=5 7 9"
+#import { fmt }
+B :: arche { px :: float, out :: float }
+[3]B(3);
+
+t :: map (query { px, out })(out) {
+  d := px * 2.0;
+  out = d + 1.0;
+}
+
+seed :: system {
+  B.px = { 2.0, 3.0, 4.0 };
+}
+
+verify :: system eff {
+  fmt.printf("o=%.0f %.0f %.0f\n", B.out[0], B.out[1], B.out[2]);
+}
+
+#run seq({ seed, t, verify })

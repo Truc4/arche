@@ -206,6 +206,7 @@ static void synchronize(Parser *parser) {
 		case TOK_ARCHETYPE:
 		case TOK_PROC:
 		case TOK_MAP:
+		case TOK_SYSTEM:
 		case TOK_FUNC:
 		case TOK_LET:
 		case TOK_FOR:
@@ -311,6 +312,15 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 		out->is_type_meta = 1;
 		return parse_func_sig(parser, 0);
 	}
+	/* `system` as a TYPE — a system reference (the payload of the Schedule `run` leaf). The `system`
+	 * keyword in type position denotes the category of systems; the actual identity is a compile-time
+	 * reference captured at construction. Wrapped as SN_TYPE_REF carrying the `system` token. */
+	if (check(parser, TOK_SYSTEM)) {
+		advance(parser);
+		out->syntax_kind = SN_TYPE_REF;
+		out->is_type_meta = 1;
+		return 1;
+	}
 
 	/* Prefix array/slice type: `[]T` (slice, runtime length) or `[N]T` / `[a][b]T` (fixed-size).
 	 * The element type FOLLOWS the brackets. Indexing (`a[i]`) is a separate production, unaffected.
@@ -322,19 +332,17 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 			advance(parser); /* '[' */
 			if (check(parser, TOK_RBRACKET)) {
 				advance(parser); /* ']' — slice dimension */
-			} else if (check(parser, TOK_NUMBER)) {
-				advance(parser); /* size */
+			} else {
+				/* Fixed-size dimension: a compile-time const EXPRESSION (a literal `16`, a NAME `SIZE`, or
+				 * arithmetic `W * H`) parsed as a sub-expression node and CTFE-folded downstream — same as a
+				 * pool's `[C]` capacity. */
+				if (!parse_expression(parser))
+					return 1;
 				any_number = 1;
 				if (!match(parser, TOK_RBRACKET)) {
-					error(parser, "Expected ']' after array size");
+					error(parser, "Expected ']' after array size expression");
 					return 1;
 				}
-			} else {
-				error(parser, "Expected ']' or integer size after '['");
-				while (!check(parser, TOK_RBRACKET) && !check(parser, TOK_EOF))
-					advance(parser);
-				if (check(parser, TOK_RBRACKET))
-					advance(parser);
 			}
 		}
 		/* element type name (a primitive or name, optionally qualified `mod.Name`) */
@@ -361,6 +369,7 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 	}
 
 	int is_handle = (parser->current.length == 6 && strncmp(parser->current.start, "handle", 6) == 0);
+	int is_eff = (parser->current.length == 3 && strncmp(parser->current.start, "Eff", 3) == 0);
 	int is_type_kw = (parser->current.length == 4 && strncmp(parser->current.start, "type", 4) == 0);
 	int is_archetype = (parser->current.length == 9 && strncmp(parser->current.start, "archetype", 9) == 0);
 	int is_opaque = (parser->current.length == 6 && strncmp(parser->current.start, "opaque", 6) == 0);
@@ -407,6 +416,25 @@ static int parse_type_inner(Parser *parser, TypeForm *out) {
 		return 1;
 	}
 
+	/* Eff(T…) — a not-yet-run effect value (the flat effect model §3). The parenthesized list is the
+	 * out-slot types it yields when run. A built-in type constructor (no generics); the paren form is
+	 * deliberately distinct from handle<…>'s angle brackets. Each out-slot is a child type node. */
+	if (is_eff && check(parser, TOK_LPAREN)) {
+		advance(parser); /* ( */
+		if (!check(parser, TOK_RPAREN)) {
+			do {
+				if (!parse_type(parser))
+					return 0;
+			} while (match(parser, TOK_COMMA));
+		}
+		if (!match(parser, TOK_RPAREN)) {
+			error(parser, "Expected ')' to close the Eff(...) out-slot type list");
+			return 0;
+		}
+		out->syntax_kind = SN_TYPE_EFF;
+		return 1;
+	}
+
 	/* `archetype` / `opaque` bare-category names parse like an ordinary type name (the syntax tree
 	 * records the keyword token; semantic interprets it). The array/slice suffix is NO LONGER
 	 * accepted here — array types are PREFIX (`[]T` / `[N]T`), parsed at the top of this function. */
@@ -441,6 +469,11 @@ static int parse_tuple_name_group(Parser *parser) {
 		error(parser, "Expected `::` and a shared type after tuple name group `(a, b) :: T`");
 		return 0;
 	}
+	/* The RHS after `::` is EITHER a shared type (`pos (x, y) :: float` — a column-group shape) OR a VALUE
+	 * (`CENTER (X, Y) :: (320.0, 240.0)` — a named-vector constant). A value starts with `(`, a number, a
+	 * string, or a unary `-`; anything else is a type name. */
+	if (check(parser, TOK_LPAREN) || check(parser, TOK_NUMBER) || check(parser, TOK_STRING) || check(parser, TOK_MINUS))
+		return parse_expression(parser);
 	if (!parse_type(parser))
 		return 0;
 	return 1;
@@ -598,19 +631,22 @@ static int parse_proc_out_list(Parser *parser) {
 	return 1;
 }
 
-/* A func's single return type: `-> T`. Optional only for a bare extern (absent ⇒ void);
- * mandatory for an ordinary func. */
+/* A func's results: either a single `-> T` return, or an out-parameter list `(out, …)` for multiple
+ * results / an in-place fill (the form `proc` used to carry; `proc` is now foreign-only, so a func is
+ * the one non-foreign callable and owns both shapes). A bare extern may have neither (⇒ void). */
 static int parse_func_return(Parser *parser, int is_extern) {
 	if (match(parser, TOK_ARROW)) {
 		if (check(parser, TOK_LPAREN)) {
-			error(parser, "a func has exactly one return type — use a `proc` with an out-parameter list "
-			              "`(out)` for multiple results or an in-place fill");
+			error(parser, "a `->` return is a single type; for multiple results drop the `->` and write an "
+			              "out-parameter list `(out, …)` instead");
 			return 0;
 		}
 		if (!parse_type(parser))
 			return 0;
+	} else if (check(parser, TOK_LPAREN)) {
+		return parse_proc_out_list(parser); /* a func may produce results via an out-param list */
 	} else if (!is_extern) {
-		error(parser, "Expected '->'");
+		error(parser, "Expected '->' or an out-parameter list '(...)'");
 		return 0;
 	}
 	return 1;
@@ -813,7 +849,8 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	 * the name references the archetype shape whose singleton pool to allocate. */
 	if (check(parser, TOK_LBRACKET)) {
 		*out_kind = SN_STATIC_DECL;
-		advance(parser);               /* '[' */
+		int saw_block = 0; /* an `arche {…}` shape or `{V}` init block was opened → the decl self-terminates */
+		advance(parser);   /* '[' */
 		if (!parse_expression(parser)) /* capacity expression */
 			return 0;
 		if (!match(parser, TOK_RBRACKET)) {
@@ -838,6 +875,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 			syntax_wrap(parser, arch_cp, SN_ARCH_EXPR);
+			saw_block = 1;
 		} else if (!check(parser, TOK_IDENT)) {
 			error(parser, "Expected an archetype name or `arche {…}` after pool capacity (e.g. `[8]Particle`)");
 			return 0;
@@ -878,6 +916,7 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			}
 			if (!match(parser, TOK_RBRACE))
 				error(parser, "Expected '}' after pool init block");
+			saw_block = 1;
 		}
 		/* `Name[C] ?handler` — the pool's overflow handler policy (storage-level, not the archetype
 		 * schema). Wrapped in SN_POLICY_REF; every `insert(Name,…)` defaults to it. `?` (handler), not
@@ -892,7 +931,13 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* the handler ident */
 			syntax_wrap(parser, pol_cp, SN_POLICY_REF);
 		}
-		require_decl_terminator(parser); /* required; `;` optional after a `}` body */
+		/* A pool decl that opened an `arche {…}` shape or `{V}` init block self-terminates — a trailing `(M)`
+		 * init count / `?policy` (which end on `)`/ident, not `}`) does NOT force a `;`. `[1]arche {…}(1)` is
+		 * complete, like `[1]arche {…}`. A blockless `[C]Name(M)` still needs its `;`. */
+		if (saw_block)
+			match(parser, TOK_SEMI); /* optional */
+		else
+			require_decl_terminator(parser);
 		return 1;
 	}
 
@@ -1064,6 +1109,38 @@ static int parse_link_region(Parser *parser, SyntaxNodeKind *out_kind) {
 	return 1;
 }
 
+/* `#run <expr>` or `#run { e1, e2, … }` — the program's Schedule value(s) the runtime executes. The
+ * block form is region-style (trailing comma allowed) and runs its entries in order (an implicit `seq`);
+ * the bare form is a single expression (e.g. `forever(seq({ run(a), run(b) }))`). Either way the children
+ * are EXPRESSION nodes folded at lowering. */
+static int parse_run_region(Parser *parser, SyntaxNodeKind *out_kind) {
+	advance(parser); /* consume '#run' */
+	*out_kind = SN_RUN_DECL;
+	if (check(parser, TOK_LBRACE)) {
+		advance(parser); /* consume '{' */
+		if (check(parser, TOK_RBRACE)) {
+			error(parser, "empty `#run { }` — list one or more Schedule expressions");
+			return 0;
+		}
+		while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+			if (!parse_expression(parser))
+				return 0;
+			if (!match(parser, TOK_COMMA))
+				break;
+		}
+		if (!match(parser, TOK_RBRACE)) {
+			error(parser, "expected '}' to close `#run { ... }`");
+			return 0;
+		}
+		return 1;
+	}
+	if (!parse_expression(parser)) {
+		error(parser, "expected a Schedule expression after `#run`");
+		return 0;
+	}
+	return 1;
+}
+
 static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	*out_kind = SN_ERROR;
 
@@ -1113,6 +1190,20 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			/* `@intrinsic` marks a (foreign) decl whose calls the backend lowers to a built-in
 			 * instruction (e.g. the raw `syscall`) instead of an ordinary call. No arguments —
 			 * recognition is by this marker on the decl, not by the symbol's (mangleable) name. */
+			advance(parser);
+			continue;
+		}
+		if (cur_ident_is(parser, "gpu", 3)) {
+			/* `@gpu` marks a `map` decl for GPU compute dispatch: the schedule emits a compute shader for it
+			 * and dispatches on the GPU (falling back to CPU). No arguments — the marker lives on the decl
+			 * (replaces the retired `run map @gpu` site, now that dispatch is by bare name in `#run`). */
+			advance(parser);
+			continue;
+		}
+		if (cur_ident_is(parser, "resident", 8)) {
+			/* `@resident` marks a pool decl whose columns stay GPU-resident across `@gpu` dispatches
+			 * (uploaded once, reused, downloaded only at a `gpu.sync(Pool)`). No arguments — a marker on
+			 * the decl, read in lowering (syntax_decl_has_resident_decorator). */
 			advance(parser);
 			continue;
 		}
@@ -1182,6 +1273,29 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			advance(parser); /* consume ')' */
 			continue;
 		}
+		if (cur_ident_is(parser, "syscall", 7)) {
+			/* `@syscall(N)` decl decorator — marks a `#foreign` proc as a typed direct syscall number N.
+			 * Calls emit the raw syscall asm with the proc's in-params as args (buffers ptrtoint'd); a
+			 * buffer the kernel writes is declared in-out (same name in the out-list), so the write is
+			 * honest rather than scribbling through a read-only borrow. N is read by a token scan in lower. */
+			advance(parser); /* consume 'syscall' */
+			if (!check(parser, TOK_LPAREN)) {
+				error(parser, "Expected '(' after @syscall — give the syscall number, e.g. @syscall(0)");
+				return 0;
+			}
+			advance(parser); /* consume '(' */
+			if (!check(parser, TOK_NUMBER)) {
+				error(parser, "Expected a syscall number inside @syscall(...)");
+				return 0;
+			}
+			advance(parser); /* consume the number */
+			if (!check(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')' to close @syscall(...)");
+				return 0;
+			}
+			advance(parser); /* consume ')' */
+			continue;
+		}
 		if (cur_ident_is(parser, "allow", 5)) {
 			advance(parser);
 			if (!check(parser, TOK_LPAREN)) {
@@ -1235,7 +1349,7 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			continue;
 		}
 		error(parser, "Unknown decorator (recognized: @allow_pure_proc, @allow(<slug>), @drop(<type>), @intrinsic, "
-		              "@implements(<device>.<req>, …), @policy(<category>))");
+		              "@gpu, @implements(<device>.<req>, …), @policy(<category>))");
 		return 0;
 	}
 
@@ -1300,6 +1414,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	case TOK_HASH_LINK:
 		/* `#link { "lib" ... }` — system libraries to link (block form only). */
 		return parse_link_region(parser, out_kind);
+	case TOK_HASH_RUN:
+		/* `#run <expr>` — the program's Schedule value. */
+		return parse_run_region(parser, out_kind);
 	default:
 		/* Top-level declarations: an IDENT-led binding (const / static buffer) or a prefix pool
 		 * alloc (`[C]Name…`, which leads with `[`) — see parse_static_decl. */
@@ -1344,6 +1461,64 @@ static int parse_bracket_index_or_slice(Parser *parser, int *out_slice) {
 	}
 	if (!match(parser, TOK_RBRACKET)) {
 		error(parser, "Expected ']'");
+		return 0;
+	}
+	return 1;
+}
+
+/* After a map/system/each selector, an optional bare `eff` permission marker may
+ * precede the `{` body: `system (Q) eff { … }`. `eff` is a CONTEXTUAL keyword (it is
+ * a permission only here; elsewhere it is an ordinary identifier — e.g. an `Eff` local
+ * named `eff`), so we match the ident text and wrap it as an SN_EFF marker the lowerer
+ * detects. Absent ⇒ the kernel is pure (running effects is then a hard error). */
+static int parse_opt_eff(Parser *parser) {
+	if (cur_ident_is(parser, "eff", 3)) {
+		int e_cp = syntax_cp(parser);
+		advance(parser); /* consume 'eff' */
+		syntax_wrap(parser, e_cp, SN_EFF);
+		return 1;
+	}
+	return 0;
+}
+
+/* Optional `as w` row-binder inside a fan's parens (`map (query {…} as w) eff`) — binds the matched row's
+ * generation-checked handle to `w` (a `handle(driver)` local) for `delete(w)(ok:)` / relationship filters.
+ * `as` is a contextual keyword. Returns 1 if a binder was parsed. */
+static int parse_opt_row_bind(Parser *parser) {
+	if (cur_ident_is(parser, "as", 2)) {
+		advance(parser); /* consume 'as' */
+		if (!check(parser, TOK_IDENT)) {
+			error(parser, "Expected a name after 'as' — `map (query {…} as w) eff` binds the matched row as `w`");
+			return 0;
+		}
+		int b_cp = syntax_cp(parser);
+		advance(parser); /* the binder name */
+		syntax_wrap(parser, b_cp, SN_QUERY_BIND);
+		return 1;
+	}
+	return 0;
+}
+
+/* Optional `(writes)` permission list after a kernel selector — the bound columns the body may assign:
+ * `map (Movers) (pos, vel) { … }`. A comma list of bare column names, each wrapped SN_WRITE_PARAM. It sits
+ * between the selector `)` and the optional `eff`. Returns 1 if a list was parsed. */
+static int parse_opt_writes(Parser *parser) {
+	if (!check(parser, TOK_LPAREN))
+		return 0;
+	advance(parser); /* consume '(' */
+	if (!check(parser, TOK_RPAREN)) {
+		do {
+			if (!check(parser, TOK_IDENT)) {
+				error(parser, "Expected a column name in the `(writes)` list — `map (Movers) (pos, vel) { … }`");
+				return 0;
+			}
+			int w_cp = syntax_cp(parser);
+			advance(parser); /* the column name */
+			syntax_wrap(parser, w_cp, SN_WRITE_PARAM);
+		} while (match(parser, TOK_COMMA) && !check(parser, TOK_RPAREN));
+	}
+	if (!match(parser, TOK_RPAREN)) {
+		error(parser, "Expected ')' to close the `(writes)` list");
 		return 0;
 	}
 	return 1;
@@ -1430,7 +1605,7 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 	if (check(parser, TOK_MAP)) {
 		advance(parser); /* consume 'map' */
-		*out_kind = SN_SYS_EXPR;
+		*out_kind = SN_MAP_EXPR;
 		if (!match(parser, TOK_LPAREN)) {
 			error(parser, "Expected '(' after 'map'");
 			return 0;
@@ -1451,10 +1626,65 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 			error(parser, "Expected a query in `map(...)` — a name `map(Movers)` or a literal `map(query {…})`");
 			return 0;
 		}
+		/* optional `as` row-binder. On the effectful fan (`… eff`) it binds the matched row's delete-handle
+		 * `w` for `delete(w)`; on a PURE map it binds a column self-binder `me` — `me.<col>` is THIS element's
+		 * bound column value (an rvalue + assignable lvalue), used to disambiguate self from an enclosing
+		 * system's same-named column. Binding self is not an effect, so the pure form needs no `eff`. */
+		parse_opt_row_bind(parser);
+		if (check(parser, TOK_COMMA)) {
+			error(parser, "maps don't support joins — a map runs over ONE query; to combine pools, nest a "
+			              "`map (…) eff` inside another (cross-pool work is explicit nesting, not a join)");
+			return 0;
+		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')'");
 			return 0;
 		}
+		/* optional `(writes)` permission list — the bound columns this map assigns. */
+		parse_opt_writes(parser);
+		/* `map (Q) eff` is the EFFECTFUL per-entity fan — it routes to the SN_EACH_EXPR machinery (per-row
+		 * body with control flow + effects), the same kernel the removed `each` keyword produced. A plain
+		 * `map` stays the pure branch-free column transform (SN_MAP_EXPR, E0046-restricted). */
+		if (parse_opt_eff(parser)) {
+			*out_kind = SN_EACH_EXPR;
+		}
+		return parse_block_body(parser);
+	}
+	if (check(parser, TOK_SYSTEM)) {
+		advance(parser); /* consume 'system' */
+		*out_kind = SN_SYSTEM_EXPR;
+		/* `system { body }` runs once. `system(Q) { body }` fans over a query. `system(Q1, Q2) { body }` is
+		 * a JOIN — a comma-separated tuple of source-agnostic queries, each wrapped as its own child. */
+		if (check(parser, TOK_LPAREN)) {
+			advance(parser); /* consume '(' */
+			do {
+				if (check(parser, TOK_QUERY)) {
+					int q_cp = syntax_cp(parser);
+					advance(parser); /* consume 'query' */
+					if (!parse_query_columns(parser))
+						return 0;
+					syntax_wrap(parser, q_cp, SN_QUERY_EXPR);
+				} else if (check(parser, TOK_IDENT)) {
+					int ref_cp = syntax_cp(parser);
+					advance(parser); /* the query name */
+					syntax_wrap(parser, ref_cp, SN_QUERY_REF);
+				} else {
+					error(parser, "Expected a query in `system(...)` — a name `system(Drawables)` or a literal "
+					              "`system(query {…})`");
+					return 0;
+				}
+				/* optional `as Flock` query-binder — `Flock.<col>` names the whole queried COLUMN (the neighbour
+				 * fold domain of a nested `map (… as me)`), distinct from `me.<col>` (this element). */
+				parse_opt_row_bind(parser);
+			} while (match(parser, TOK_COMMA));
+			if (!match(parser, TOK_RPAREN)) {
+				error(parser, "Expected ')'");
+				return 0;
+			}
+			/* optional `(writes)` permission list — the bound columns this system assigns. */
+			parse_opt_writes(parser);
+		}
+		parse_opt_eff(parser);
 		return parse_block_body(parser);
 	}
 	if (check(parser, TOK_ENUM)) {
@@ -1490,10 +1720,12 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 		}
 		return 1;
 	}
-
 	if (check(parser, TOK_IDENT)) {
 		int prim_name_cp = syntax_cp(parser);
 		int is_table = cur_ident_is(parser, "table", 5);
+		/* `sum` is a CONTEXTUAL keyword (not a hard token — `sum` is far too common an identifier):
+		 * recognized only as the value-form `Name :: sum { … }`. Checked before the entity-literal `{`. */
+		int is_sum = cur_ident_is(parser, "sum", 3);
 		/* `reduce`/`scan` take a monoid operator as their FIRST argument — `+`, `*`, or a named op
 		 * (`min`/`max`). The operator forms (`+`/`*`) aren't expressions, so the call-arg parse below
 		 * accepts an operator token there and wraps it as a literal carrying the op text. */
@@ -1513,6 +1745,40 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 				return 0;
 			}
 			*out_kind = SN_NAME_EXPR;
+			return 1;
+		}
+
+		/* `sum { variant(types), … }` — a tagged-union type definition. Checked before the entity
+		 * literal (which also leads `IDENT {`): a sum body is variant constructors, not `field: val`. */
+		if (is_sum && check(parser, TOK_LBRACE)) {
+			*out_kind = SN_SUM_EXPR;
+			advance(parser); /* consume '{' */
+			while (!check(parser, TOK_RBRACE) && !check(parser, TOK_EOF)) {
+				int v_cp = syntax_cp(parser);
+				if (!check(parser, TOK_IDENT)) {
+					error(parser, "Expected sum variant name");
+					return 0;
+				}
+				advance(parser); /* variant name */
+				if (match(parser, TOK_LPAREN)) {
+					if (!check(parser, TOK_RPAREN)) {
+						do {
+							if (!parse_type(parser))
+								return 0;
+						} while (match(parser, TOK_COMMA));
+					}
+					if (!match(parser, TOK_RPAREN)) {
+						error(parser, "Expected ')' to close sum variant payload");
+						return 0;
+					}
+				}
+				syntax_wrap(parser, v_cp, SN_SUM_VARIANT);
+				match(parser, TOK_COMMA); /* optional separator */
+			}
+			if (!match(parser, TOK_RBRACE)) {
+				error(parser, "Expected '}' to close sum");
+				return 0;
+			}
 			return 1;
 		}
 
@@ -1665,12 +1931,22 @@ static int parse_primary_expr(Parser *parser, SyntaxNodeKind *out_kind) {
 	}
 
 	if (match(parser, TOK_LPAREN)) {
-		parse_expression(parser);
-		match(parser, TOK_COMMA); /* tolerate a trailing comma — trailing commas are valid in every list */
+		/* `(a, b, …)` with >1 element is a tuple VALUE literal (`SN_TUPLE_LIT`) — a real 2-vector value
+		 * `(320.0, 240.0)`; `(e)` (or `(e,)`) is just a grouped expression. Mirrors the entity-field path. */
+		int nelem = 0;
+		if (!check(parser, TOK_RPAREN)) {
+			do {
+				if (check(parser, TOK_RPAREN)) /* trailing comma */
+					break;
+				if (!parse_expression(parser))
+					return 0;
+				nelem++;
+			} while (match(parser, TOK_COMMA));
+		}
 		if (!match(parser, TOK_RPAREN)) {
 			error(parser, "Expected ')' after expression");
 		}
-		syntax_wrap(parser, prim_start, SN_PAREN_EXPR);
+		syntax_wrap(parser, prim_start, nelem > 1 ? SN_TUPLE_LIT : SN_PAREN_EXPR);
 		return 1;
 	}
 
@@ -1789,6 +2065,8 @@ static int binop_prec(TokenKind k) {
 		return 2;
 	case TOK_PIPE_PIPE:
 		return 1;
+	case TOK_PIPE_GT:
+		return 1; /* |> binds loosest: `ext(a, b) |> fin` groups the call as the left operand */
 	default:
 		return -1;
 	}
@@ -2123,50 +2401,9 @@ static int parse_statement(Parser *parser) {
 		goto cleanup;
 	}
 
-	/* check for run statement */
-	if (check(parser, TOK_RUN)) {
-		advance(parser); /* consume 'run' */
-
-		if (!check(parser, TOK_IDENT)) {
-			error(parser, "Expected system name");
-			parser->recursion_depth--;
-			goto cleanup;
-		}
-		advance(parser); /* system name (leading segment) */
-
-		/* Qualified system name: `run device.integrate` — a driver runs an imported device's
-		 * system. Consume the `.IDENT` chain; the dotted name is reassembled in lowering. */
-		while (check(parser, TOK_DOT)) {
-			advance(parser); /* '.' */
-			if (!check(parser, TOK_IDENT)) {
-				error(parser, "Expected an identifier after `.` in a qualified system name");
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-			advance(parser);
-		}
-
-		/* optional `@gpu` dispatch marker: `run step @gpu;` requests GPU compute dispatch (and emits a
-		 * compute shader for the map). The decision lives at the call site — the same kernel can run on
-		 * the CPU from one driver and the GPU from another. */
-		if (check(parser, TOK_AT)) {
-			advance(parser); /* '@' */
-			if (!check(parser, TOK_IDENT) || !cur_ident_is(parser, "gpu", 3)) {
-				error(parser, "Expected `gpu` after `@` in a run statement (only `@gpu` is recognized)");
-				parser->recursion_depth--;
-				goto cleanup;
-			}
-			advance(parser); /* 'gpu' */
-		}
-
-		if (!match(parser, TOK_SEMI)) {
-			error(parser, "Expected ';'");
-		}
-
-		stmt_kind = SN_RUN_STMT;
-		ok = 1;
-		goto cleanup;
-	}
+	/* The `run <map>` STATEMENT is RETIRED — a map/each/system is dispatched ONLY by naming it in `#run`
+	 * (a system body never dispatches). `run` is no longer a keyword; `run X;` now parses as two
+	 * identifiers and errors. GPU dispatch moved to a `@gpu` decorator on the map decl. */
 
 	if (check(parser, TOK_MATCH)) {
 		advance(parser); /* consume 'match' */

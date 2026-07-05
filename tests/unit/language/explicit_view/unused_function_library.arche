@@ -4,7 +4,7 @@
 // RUN: test $(%build/arche-analyzer --dump %s 2>/dev/null | grep -c "W0013 unused_function") -eq 0
 #import { fmt }
 api_one :: proc() {
-  fmt.print("one\n");
+  fmt.print("one\n")(_:);
 }
 api_two :: func(a: int) -> int {
   return a + 1;

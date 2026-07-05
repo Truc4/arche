@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "system_ran"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "system_ran"
 #import { fmt }
 Task :: arche { val :: int }
 
@@ -6,12 +6,13 @@ Task :: arche { val :: int }
   val: 5,
 }
 
-double_val :: map (query { val }) {
+double_val :: map (query { val })(val) {
   val = val * 2;
 }
 
-main :: proc() {
-  run double_val;
+verify :: system eff {
   fmt.printf("system_ran\n");
-  fmt.assert(Task.val[0] == 10, "val not 10\n");
+  fmt.assert(Task.val[0] == 10, "val not 10\n")();
 }
+
+#run seq({ double_val, verify })

@@ -1,0 +1,23 @@
+// GAP (idiomatic-boids-gaps.md G2/G3): a tuple used as a VALUE — a func param/return with `.x`/`.y` access
+// and tuple arithmetic — is unsupported ("type 'pos' has no field 'x'"). RED until tuples are value types.
+// RUN: %arche build -o %t %s && %t | grep -qF "s=4 8"
+#import { fmt }
+pos(x, y) :: float;
+P         :: arche { pos }
+[1]P(1);
+
+add :: func(a: pos, b: pos) -> pos {
+  return a + b;
+}
+
+seed :: system {
+  P.pos.x = { 1.0 };
+  P.pos.y = { 2.0 };
+}
+
+show :: system (query { pos }) eff {
+  s := add(pos, pos);
+  fmt.printf("s=%.0f %.0f\n", s.x * 2.0, s.y * 2.0);
+}
+
+#run seq({ seed, show })

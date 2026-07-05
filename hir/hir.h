@@ -23,6 +23,8 @@ typedef enum {
 	HIR_TYPE_ARCHETYPE, /* bare-category `archetype` parameter type */
 	HIR_TYPE_OPAQUE,    /* opaque: pointer-width C-owned cell */
 	HIR_TYPE_FUNC,      /* a callable value: proc/func type (structural) */
+	HIR_TYPE_EFF,       /* a not-yet-run effect value `Eff(T…)`: compile-time only — a func returning it is
+	                     * an Eff builder (erased from emission; inlined at the run site). No runtime type. */
 } HirTypeTag;
 
 typedef struct HirType HirType;
@@ -70,14 +72,36 @@ typedef enum {
 	HIR_DECL_WORLD,
 	HIR_DECL_ARCHETYPE,
 	HIR_DECL_PROC,
-	HIR_DECL_MAP,
+	HIR_DECL_KERNEL, /* `map` / `map (Q) eff` / `system` — one decl, kind+eff select the codegen path */
 	HIR_DECL_FUNC,
 	HIR_DECL_FUNC_GROUP,
 	HIR_DECL_STATIC,
 	HIR_DECL_CONST,
 	HIR_DECL_DEFAULT, /* `@default(<kind>, <category>, <policy>)` program default directive */
 	HIR_DECL_QUERY,   /* `Name :: query {cols}` — a named column set; emits no code, resolves collectives */
+	HIR_DECL_RUN,     /* `#run <expr>` — the program's Schedule, folded to a constant ScheduleTree */
 } HirDeclKind;
+
+/* A compile-time-folded Schedule node (Approach A: `#run`'s value-CTFE result). The runtime never sees
+ * this — codegen walks it to emit a direct-dispatch function (@arche_run). `sym` is a system/map name
+ * (SCHED_RUN) or a predicate func name (SCHED_WHEN); children are sub-schedules. No function pointers. */
+typedef enum {
+	SCHED_RUN,
+	SCHED_SEQ,
+	SCHED_PAR,
+	SCHED_LOOP,
+	SCHED_WHEN,
+	SCHED_HALT,
+	SCHED_GPU_SYNC,
+	SCHED_GPU_UPLOAD
+} SchedKind;
+typedef struct ScheduleTree {
+	SchedKind kind;
+	char *sym; /* SCHED_RUN: system/map name; SCHED_WHEN: predicate func name; SCHED_GPU_SYNC: pool name; else NULL */
+	struct ScheduleTree **children;
+	int child_count;
+} ScheduleTree;
+void schedule_tree_free(ScheduleTree *t);
 
 typedef enum {
 	HIR_STATIC_ARCHETYPE,
@@ -99,6 +123,10 @@ struct HirField {
 	FieldKind kind;
 	char *name;
 	HirType *type;
+	/* The column's source-declared type name (e.g. "fd", "socket"), preserved even when `type` lowers
+	 * to a primitive (an enum column lowers to its backing int, losing the nominal). Used to match a
+	 * `@drop`-registered resource type on row delete (close-on-delete). NULL when not applicable. */
+	char *decl_type_name;
 	SourceLoc loc;
 };
 
@@ -119,21 +147,54 @@ typedef struct {
 	int out_param_count;
 	int is_extern;
 	int is_drop;      /* 1 if this proc is a `@drop` destructor (own opaque param is the type it destroys) */
+	char *drop_type;  /* `@drop(<Type>)` named type. For an OPAQUE dtor it equals the param's opaque name;
+	                   * for an ARCHETYPE (pool-row) dtor it names the archetype, and the params name the
+	                   * columns of the dying row the dtor reads. NULL when not a `@drop`. */
 	int is_intrinsic; /* 1 if `@intrinsic`: calls lower to a built-in instruction (e.g. raw syscall) */
+	int syscall_num;  /* `@syscall(N)`: a typed direct syscall #N — calls emit the syscall asm with the
+	                   * proc's in-params as args (buffers ptrtoint'd), the written buffer declared in-out.
+	                   * -1 = not a syscall extern. Lets a syscall honestly model a written buffer. */
 	HirStmt **stmts;
 	int stmt_count;
 	SourceLoc loc;
 } HirProcDecl;
 
+/* The two kernel kinds of the unified model. MAP = handed each element individually (per-entity); a pure
+ * `map` is MAP with `eff==0`, the effectful per-entity fan (`map (Q) eff`, the old `each`) is MAP with
+ * `eff==1`. SYSTEM = handed whole columns / a run-once composer. */
+typedef enum {
+	HIR_KERNEL_MAP,
+	HIR_KERNEL_SYSTEM,
+} HirKernelKind;
+
+/* One kernel declaration for all of `map` / `map (Q) eff` / `system` (collapsed from the former
+ * HirMapDecl / HirEachDecl / HirSystemDecl). The (kind, eff) pair selects the codegen path:
+ *   MAP    && !eff → pure per-element transform (branch-free; @gpu-eligible)
+ *   MAP    &&  eff → per-element effectful fan (the old `each`; control flow + effects)
+ *   SYSTEM         → whole-column / run-once composer (param_count==0 ⇒ run-once). */
 typedef struct {
 	char *name;
-	HirParam **params;
+	HirKernelKind kind;
+	HirParam **params; /* query columns, flattened; SYSTEM with param_count==0 is run-once */
 	int param_count;
 	HirStmt **stmts;
 	int stmt_count;
-	int is_gpu; /* 1 if `@gpu`: the kernel is emitted as a GPU compute shader (SSBO per column) */
+	int eff;             /* 1 if the `eff` permission was declared: the kernel may run effects */
+	int is_gpu;          /* 1 if `@gpu`: emitted as a GPU compute shader (pure MAP only) */
+	char **writes;       /* the declared `(writes)` permission list: bound columns the body may assign */
+	int write_count;     /* 0 ⇒ no `(writes)` declared */
+	char *row_var;       /* MAP+eff `as w` row-handle binding (`handle(driver)` local), else NULL */
+	char *query_binder;  /* SYSTEM `(query {…} as Flock)`: `Flock.col` names the whole queried column (the
+	                      * neighbour fold domain of a nested `map (… as me)`), else NULL */
+	int has_self_binder; /* pure `map (Q as me)`: `me.col` is self (fan row), a bare queried col in a `reduce`
+	                      * is the neighbour fold domain — the self-join. Drives the fold-domain gate. */
 	SourceLoc loc;
-} HirMapDecl;
+} HirKernelDecl;
+
+typedef struct {
+	ScheduleTree *tree; /* the folded Schedule (owns it) */
+	SourceLoc loc;
+} HirRunDecl;
 
 typedef struct {
 	char *name;
@@ -158,6 +219,10 @@ typedef struct {
 	HirType **return_types;
 	int return_type_count;
 	int is_extern;
+	int is_intrinsic;    /* 1 if `@intrinsic`: a bodyless PURE primitive whose calls lower to a built-in
+	                      * instruction (e.g. `bound(p: rawptr, n) -> []char` = inttoptr + checked slice),
+	                      * not a real LLVM function. Usable as a pure `|>` finalizer. Codegen checks this
+	                      * flag (not the name) + dispatches by name. */
 	int is_policy;       /* lowered from a `policy` form: a failure-policy MACRO, inlined at fallible op sites
 	                      * (operands bound as mutable locals), never emitted as its own LLVM function. */
 	int policy_category; /* for a policy: 1=bounds (index/slice), 2=pool (insert), 3=divide. So a `clamp`
@@ -173,6 +238,9 @@ typedef struct {
 	 * rows the driver must provide), not an allocation: it never emits storage; the driver's own pool
 	 * for the same shape must meet the minimum. Set only for HIR_STATIC_ARCHETYPE from a datasheet. */
 	int is_requirement;
+	/* `@resident`: the pool's columns stay GPU-resident across `@gpu` map dispatches (uploaded once,
+	 * reused, downloaded only at a `gpu.sync(Pool)`). Set only for HIR_STATIC_ARCHETYPE. */
+	int is_resident;
 	union {
 		struct {
 			char *archetype_name;
@@ -221,13 +289,14 @@ struct HirDecl {
 		HirWorldDecl *world;
 		HirArchetypeDecl *archetype;
 		HirProcDecl *proc;
-		HirMapDecl *map;
+		HirKernelDecl *kernel; /* map / map+eff / system (kind+eff select the path) */
 		HirQueryDecl *query;
 		HirFuncDecl *func;
 		HirFuncGroupDecl *func_group;
 		HirStaticDecl *static_decl;
 		HirConstDecl *constant;
 		HirDefaultDecl *default_decl;
+		HirRunDecl *run;
 	} data;
 };
 
@@ -253,6 +322,8 @@ typedef enum {
 	HIR_STMT_RETURN,
 	HIR_STMT_MULTI_BIND,
 	HIR_STMT_EACH_FIELD,
+	HIR_STMT_EACH,  /* an inline per-element fan — an anonymous `each(Q) { … }` used as a statement, emitted
+	                 * in place so its body sees the enclosing scope (nested fans). Same payload as the decl. */
 	HIR_STMT_BLOCK, /* a scoped statement sequence (desugaring target, e.g. match) */
 } HirStmtKind;
 
@@ -341,6 +412,7 @@ struct HirStmt {
 		HirReturnStmt return_stmt;
 		HirMultiBindStmt multi_bind;
 		HirEachFieldStmt each_field;
+		HirKernelDecl *each_stmt; /* HIR_STMT_EACH — the inline fan (MAP+eff, name == NULL); reuses the decl payload */
 		HirBlockStmt block;
 	} data;
 };

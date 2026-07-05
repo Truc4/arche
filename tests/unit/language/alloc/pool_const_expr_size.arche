@@ -1,0 +1,17 @@
+// LOCK test: a pool's capacity `[C]` and init count `(M)` already accept const EXPRESSIONS (they parse as
+// expressions and CTFE-fold). `[SIZE]B(SIZE)` allocates + inits SIZE rows. Guards this existing behavior.
+// RUN: %arche build -o %t %s && %t | grep -qF "10 20 30"
+#import { fmt }
+SIZE :: 3;
+B    :: arche { n :: int }
+[SIZE]B(SIZE);
+
+seed :: system {
+  B.n = { 10, 20, 30 };
+}
+
+show :: map (query { n }) eff {
+  fmt.printf("%d ", n);
+}
+
+#run seq({ seed, show })

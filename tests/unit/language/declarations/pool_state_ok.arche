@@ -10,6 +10,8 @@ Counter :: arche { val }
   val: 7
 }
 
-main :: proc() {
-  fmt.print("ok\n");
+entry :: system eff {
+  fmt.print("ok\n")(_:);
 }
+
+#run entry

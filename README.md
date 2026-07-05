@@ -29,9 +29,11 @@ binary. (If you skipped `make install`, use `./build/arche` in place of `arche`.
 // hello.arche
 #import { fmt }
 
-main :: proc() {
-  fmt.print("Hello, World!\n")();
+entry :: system eff {
+  fmt.printf("Hello, World!\n");
 }
+
+#run entry
 ```
 
 ```sh
@@ -63,35 +65,44 @@ way to write code.
 - **Database-style data model** - archetypes are tables defined by a set of component types; a map is a query that runs over every matching table.
 - **No implicit heap** - all storage is static and planned upfront, so memory behavior is fully predictable. That's a property of the *language core*, **not** a ceiling on the data model: "no dynamic allocation" does **not** mean "no dynamic archetypes". **Dynamic (resizable) archetypes — the backbone of a full ECS — are on the roadmap as a library** built on the same columnar model, once the core language matures; the core just doesn't bake in implicit allocation.
 - **Libraries as devices & drivers** - a *device* is a library that declares shapes + maps but owns no storage; the *driver* (your program) picks the pool sizes and runs the device's maps. A hardware metaphor for dependency injection: the storage owner is always the caller, never the library. See [docs/devices.md](docs/devices.md).
+- **Automatic CPU/GPU placement** - because the whole program is static - fixed pools, a folded `#run` schedule - Arche decides *where each kernel runs* and *which columns stay GPU-resident* **at build time and jointly across kernels**, with no `@gpu` annotations and no runtime scheduler. It measures the machine once (`arche calibrate`) and freezes the choice, so a run of maps over one pool is costed as a resident cluster - the GPU transfer paid once, not per dispatch - and host↔device syncs are derived from the schedule's data flow. See [docs/design/static-mapper.md](docs/design/static-mapper.md).
 - **The "function," split four ways** - most languages overload one `function` keyword for jobs that have nothing in common. Arche gives each job its own form, and the grammar enforces the split (see below).
-- **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` defaults to `clamp`, so an unannotated op in one can't crash; a `proc` defaults to `!abort`, the deliberate crash site. `--no-abort` bans every abort site (implicit or explicit) — but that is **not** a whole-build crash-free *proof*: a custom `policy` is your own code (it can call `_exit` or leave an op out of bounds). `!undefined` (the raw unchecked op, UB if out of range) is **forbidden by default** — `--allow-undefined` opts back in — so the remaining risk is just the policies you write.
+- **Crashes are opt-in and visible** - the rare op that can still fail at runtime (an out-of-bounds index, a full pool) carries a *failure policy* right at the site: `a[i] !clamp`, `n / d !zero`, `a[i] !undefined`. A `func` defaults to `clamp`, so an unannotated op in one can't crash; effectful code (a `system`/`map`) defaults to `!abort`, the deliberate crash site. `--no-abort` bans every abort site (implicit or explicit) — but that is **not** a whole-build crash-free *proof*: a custom `policy` is your own code (it can call `_exit` or leave an op out of bounds). `!undefined` (the raw unchecked op, UB if out of range) is **forbidden by default** — `--allow-undefined` opts back in — so the remaining risk is just the policies you write.
 
 ### The "function," split four ways
 
 A traditional `function` is asked to be a value, an effect, a loop, and an error handler all at once.
-Arche refuses that overload: it splits the one keyword into **four distinct forms**, and the grammar
-won't let you blur them. The shape of a declaration *tells you what it does*.
+Arche refuses that overload: it splits the work into **distinct forms**, and the grammar won't let you
+blur them. The shape of a declaration *tells you what it does*.
 
-| Form     | Binding                     | Is a value? | Job |
-| -------- | --------------------------- | ----------- | --- |
-| `func`   | `name :: func(in) -> T`     | **yes**     | pure computation — one return, no side effects, **total by default** (unannotated ops clamp) |
-| `proc`   | `name :: proc(in)(out)`     | no          | an action — does things; writes results into caller-provided out-params |
-| `map`    | `name :: map (query {components})` | no    | a data transform — runs over **every** archetype carrying those components |
-| `policy` | `name :: policy(len, i)`    | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
+| Form              | Binding                                 | Is a value? | Job |
+| ----------------- | --------------------------------------- | ----------- | --- |
+| `func`            | `name :: func(in) -> T` or `func(in)(out)` | **yes** (`-> T`) | pure computation — results via one return **or** an out-param list, no side effects, **total by default** (unannotated ops clamp) |
+| `system`          | `name :: system [(query{…})] [(writes)] [eff]` | no   | **whole-column** work — the body runs **once** over entire columns (a bulk op, a reduction, or the *composer*). Selector and writes are optional (a bare `system eff` is the composer); `eff` lets it run effects (I/O, `insert`/`delete`, an `Eff`), and an inline `map (query{…}) eff` fans one per matching row |
+| `map`             | `name :: map (query{…}) (writes) [eff]` | no      | **per-element** transform — the body runs once per matching row over the columns it selects, declaring the ones it writes. A pure map is branchless and **GPU-eligible**; `+ eff` is the effectful per-row fan (what used to be `each`) |
+| `policy`          | `name :: policy(len, i)`                | no          | a failure macro — inlined at a fallible op (`a[i] !clamp`) to resolve the failure *at the site* |
+
+`proc` is **reserved for the foreign boundary** — `#foreign`/`@syscall`/`@intrinsic` primitive
+declarations and `@drop` hooks. You never write a non-foreign `proc`; pure logic is a `func`, effects
+are a `system`/`map`. A program's entry point is a `#run` schedule, not a decl named `main`.
 
 ```
-area   :: func(w: int, h: int) -> int         // value:    r := area(w, h)
-divmod :: proc(a: int, b: int)(q:, r:)        // action:   divmod(17, 5)(q:, r:)
-step   :: map (query { pos, vel }) { pos = pos + vel; }  // transform: run step;
-clamp  :: policy(len: int, i: int) { … }      // failure:  v := xs[k] !clamp
+area   :: func(w: int, h: int) -> int                    // value:     r := area(w, h)
+divmod :: func(a: int, b: int)(q:, r:)                   // results:   divmod(17, 5)(q:, r:)
+greet  :: system eff { fmt.printf("hi\n"); }                 // effect:    scheduled by #run
+step   :: map (query { pos, vel }) (pos) { pos = pos + vel; }  // transform: #run step
+clamp  :: policy(len: int, i: int) { … }                 // failure:   v := xs[k] !clamp
 ```
 
 Why bother? Each split buys a real guarantee the overloaded keyword can't:
 
-- **`func` vs `proc` — value vs effect.** A `func` is pure by construction (calling a proc/extern/
-  mutating builtin from one is a hard error) and **total by default** (its baseline policy is
-  `clamp`, so an unannotated fallible op can't crash). A proc is the only thing that *does*. So
-  purity and the totality default are readable straight off the keyword — no annotations, no effect
+- **`func` vs `system` — value vs effect.** A `func` is pure by construction (calling an extern,
+  running an `Eff`, or a mutating builtin from one is a hard error) and **total by default** (its
+  baseline policy is `clamp`, so an unannotated fallible op can't crash). A `func` still produces
+  **multiple** results or fills a buffer — through an out-param list `(out, …)` — it just stays pure.
+  A `system`/`map` is the only thing that *can* do effects — and only when its signature carries
+  **`eff`**; without it, a `system`/`map` is pure column work (a bulk op or transform), and an effect
+  is a hard error. So effects are readable straight off the signature — no `eff`, no side effects; no
   inference.
 - **`map` — the loop isn't yours to write.** A map runs over a *query* — a set of *components*,
   not tables — and the compiler runs it over every matching archetype, generating the column loop.
@@ -112,21 +123,22 @@ Particle :: arche {
   vel :: float,
 }
 
-[100]Particle(100) { vel: 0.1 } // 100 live particles; pos starts at 0, vel at 0.1
+[100]Particle(100) { vel: 0.1 }; // 100 live particles; pos starts at 0, vel at 0.1
 
-integrate :: map (query { pos, vel }) {
+integrate :: map (query { pos, vel }) (pos) {
   pos = pos + vel; // whole-column update — no explicit loop
 }
 
-main :: proc() {
-  run integrate; // runs over every archetype carrying pos + vel
-  fmt.print("stepped\n")();
+report :: system eff {
+  fmt.printf("stepped\n");
 }
+
+#run seq({ integrate, report }) // the schedule names the work; the runtime owns the loop
 ```
 
-A `map` automatically matches any archetype carrying the components it names; `run` executes
-it over every matching column. See the [language reference](docs/language.md) for archetypes,
-the `proc`/`func`/`map` split, ownership, and more.
+A `map` automatically matches any archetype carrying the components it names; naming it in a
+`#run` schedule executes it over every matching column. See the [language reference](docs/language.md)
+for archetypes, the `func`/`system`/`map` split, ownership, and more.
 
 ## Command-line interface
 
@@ -175,9 +187,10 @@ Each is covered in depth in the [language reference](docs/language.md).
 - **Database-style archetypes** - a shape is a _set_ of component types, so `{a, b}` and
   `{b, a}` are the same table and share one pool; columns are reached by type name, not field
   name.
-- **`func` / `proc` / `map` / `policy`** - the overloaded "function" split four ways: a pure
-  functional value, a procedural action, a data transform over tables, and a failure-handling
-  macro; the distinctions are enforced by the grammar itself.
+- **`func` / `system` / `map` / `policy`** - the overloaded "function" split four ways: a pure
+  functional value, an effectful action, a data transform over tables, and a failure-handling
+  macro; the distinctions are enforced by the grammar itself. (`proc` is reserved for the
+  `#foreign` boundary.)
 - **Ownership without a GC or borrow-checker zoo** - read-only borrow by default; opt into
   `own` + caller `move` (zero-copy) / `copy` (memcpy).
 - **Implicit loops** - whole-column ops have no element loop in source; the compiler generates
@@ -185,7 +198,7 @@ Each is covered in depth in the [language reference](docs/language.md).
 
 ## Documentation
 
-- [Language reference](docs/language.md) - memory model, types, archetypes, `proc`/`func`/`map`, ownership, foreign resources
+- [Language reference](docs/language.md) - memory model, types, archetypes, `func`/`system`/`map`, ownership, foreign resources
 - [Performance](docs/performance.md) - benchmarks and what drives them
 - [Tooling](docs/tooling.md) - CLI, editor/LSP, build targets, diagnostics
 - [Doc comments & doctests](docs/DOCTESTS.md)
@@ -197,8 +210,8 @@ Each is covered in depth in the [language reference](docs/language.md).
 🚧 **Alpha - core infrastructure working.**
 
 Working: lexer, parser, semantic analysis (symbol table, scopes, type checking), LLVM codegen
-to native executables, `func`/`proc`/`map` with the grammar-enforced split, `extern proc` C
-FFI, archetype allocation / indexing / column + tuple access, proc out-params and zero-copy
+to native executables, `func`/`system`/`map` with the grammar-enforced split, `#foreign proc` C
+FFI, archetype allocation / indexing / column + tuple access, `func` out-params and zero-copy
 in-out, for-loops, C stdlib file I/O, and a real CSV ETL path.
 
 Known limitations: no parser error recovery; a small standard library.

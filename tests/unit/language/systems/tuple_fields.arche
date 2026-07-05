@@ -2,17 +2,21 @@
 // flattens them to columns pos_x/pos_y/vel_x/vel_y and rewrites the body's
 // pos.x/vel.x accesses, so `run` updates every row.
 //   pos0 (0,0)+(1,2) -> (1,2);  pos1 (10,10)+(-1,-1) -> (9,9)
-// RUN: %arche build -o %t %s && %t | grep "R 1 2 9 9"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "R 1 2 9 9"
 #import { fmt }
 Body :: arche { pos(x, y) :: int, vel(x, y) :: int }
-[2]Body;
-step :: map (query { pos, vel }) {
+[2]Body ?abort;
+step :: map (query { pos, vel })(pos) {
   pos.x = pos.x + vel.x;
   pos.y = pos.y + vel.y;
 }
-main :: proc() {
+seed :: system eff {
   insert(Body { pos: (0, 0), vel: (1, 2) })(_:, _:);
   insert(Body { pos: (10, 10), vel: (-1, -1) })(_:, _:);
-  run step;
+}
+
+verify :: system eff {
   fmt.printf("R %d %d %d %d\n", Body.pos.x[0], Body.pos.y[0], Body.pos.x[1], Body.pos.y[1]);
 }
+
+#run seq({ seed, step, verify })

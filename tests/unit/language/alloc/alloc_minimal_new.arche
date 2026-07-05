@@ -2,6 +2,8 @@
 #import { fmt }
 Point :: arche { x :: int }
 
-main :: proc() {
+entry :: system eff {
   fmt.printf("allocated\n");
 }
+
+#run entry

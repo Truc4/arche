@@ -3,10 +3,12 @@
 #include "cli.h"
 #include <stdio.h>
 
-enum { T_VERBOSE = 1 };
+enum { T_VERBOSE = 1, T_POOL_INDEX };
 
 static const ArgSpec k_test_specs[] = {
     {T_VERBOSE, "-v --verbose", ARG_FLAG, 0, 0, NULL, "verbose: show each doctest as it runs"},
+    {T_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
+     "pool-index-outside-query lint (W0029): error (default) | warn | allow"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -22,6 +24,11 @@ int test_run(int argc, char **argv, const GlobalOpts *g) {
 		return ARCHE_OK;
 	}
 	int verbose = args_has(&p, T_VERBOSE) || (g && g->verbose);
+	if (cli_apply_pool_index(args_value(&p, T_POOL_INDEX)) != 0) {
+		fprintf(stderr, "%s: --pool-index expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "test", "[-v] <file.arche | file.md | dir | ./...> ...", k_test_specs);
+		return ARCHE_USAGE;
+	}
 
 	if (p.pos_count == 0) {
 		args_usage(stderr, g_prog, "test", "[-v] <file.arche | file.md | dir | ./...> ...", k_test_specs);

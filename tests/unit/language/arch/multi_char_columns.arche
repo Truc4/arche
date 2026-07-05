@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t | grep "msg=hello by=ada"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "msg=hello by=ada"
 // Regression: an archetype with char[N] columns once compiled only with a no-op main — the
 // column was under-sized and insert mis-lowered the string arg. Now two char[N] columns
 // round-trip. See arch/char_column.arche and
@@ -6,11 +6,13 @@
 #import { fmt }
 Message :: arche { text :: [256]char, author :: [64]char }
 
-[100]Message;
+[100]Message ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Message { text: "hello", author: "ada" })(_:, _:);
   t := Message.text[0];
   a := Message.author[0];
   fmt.printf("msg=%s by=%s\n", t, a);
 }
+
+#run entry

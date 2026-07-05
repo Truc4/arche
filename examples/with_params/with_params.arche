@@ -1,8 +1,10 @@
 #import { fmt }
-add :: proc(a: int, b: int) {
-  result := a + b;
-  fmt.print("sum: 15\n");
+add :: func(a: int, b: int) -> int {
+  return a + b;
 }
-main :: proc() {
-  add(5, 10);
+entry :: system eff {
+  result := add(5, 10);
+  fmt.printf("sum: %d\n", result);
 }
+
+#run entry

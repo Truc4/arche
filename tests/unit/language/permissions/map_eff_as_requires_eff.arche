@@ -1,0 +1,12 @@
+// The `as` row-binder is decoupled from `eff` (G6): on a PURE map it binds a column self-binder `me`
+// (`me.col` = this element's bound column, no effect — see each/map_self_binder). Its OTHER use, the
+// effectful delete-handle `delete(w)`, is a call/effect, so a pure `map` (transform-only) rejects it —
+// the handle form must be written `map (query {…} as w) eff`. Here `delete(w)` in a pure map is rejected.
+// RUN: not %arche build -o %t %s 2>&1 | grep -qF "not a column transform"
+n :: int;
+P :: arche { n }
+[8]P ?abort;
+bad :: map (query { n } as w) {
+  delete(w)(_:);
+}
+#run seq({ bad })

@@ -1,14 +1,14 @@
-// RUN: %arche build -o %t %s && %t | grep "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "PASS"
 #import { fmt }
 FloatOps :: arche { val :: float }
 
-[8]FloatOps;
+[8]FloatOps ?abort;
 
-float_multiply :: map (query { val }) {
+float_multiply :: map (query { val })(val) {
   val = val * 2.0;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 1.0 })(_:, _:);
@@ -17,7 +17,9 @@ main :: proc() {
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 1.0 })(_:, _:);
-  run float_multiply;
+}
+
+verify :: system eff {
   v0          := FloatOps.val[0];
   v1          := FloatOps.val[1];
   v2          := FloatOps.val[2];
@@ -55,3 +57,5 @@ main :: proc() {
     fmt.printf("PASS\n");
   }
 }
+
+#run seq({ seed, float_multiply, verify })

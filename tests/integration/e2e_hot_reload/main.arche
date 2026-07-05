@@ -2,11 +2,13 @@
 // device's tag via fmt.print (raw os.write, unbuffered) so an edit's effect is observable on stdout.
 // Run by `make test-e2e` (NOT the default gate); excluded from lit. Real fixture file (formatter-checked).
 #import { dev fmt os }
-main :: proc() {
+entry :: system eff {
   i := 0;
   for (i = 0; i < 6000; i = i + 1) {
     t := dev.tag();
-    fmt.print(t);
-    os.sleep_ms(15);
+    fmt.print(t)(_:);
+    os.sleep_ms(15)(_:);
   }
 }
+
+#run entry

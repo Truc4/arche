@@ -5,5 +5,7 @@
 A :: arche { hp :: int }
 B :: arche { hp :: int }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

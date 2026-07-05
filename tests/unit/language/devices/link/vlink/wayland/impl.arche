@@ -5,8 +5,8 @@
   "m"
 }
 
-value :: proc()(r: int) {
-  vlink_wval()(r);
+value :: func() -> Eff(int) {
+  return vlink_wval();
 }
 
 #module

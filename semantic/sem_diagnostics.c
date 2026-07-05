@@ -61,6 +61,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_collective_in_map]             = { "E0047", "collective_in_map",             CLASS_ERROR, 1 },
 	[SEM_DIAG_invalid_monoid_op]             = { "E0048", "invalid_monoid_op",             CLASS_ERROR, 1 },
 
+
 	/* Field / component */
 	[SEM_DIAG_no_field]                      = { "E0030", "no_field",                      CLASS_ERROR, 1 },
 	[SEM_DIAG_cannot_read_through_handle]    = { "E0031", "cannot_read_through_handle",    CLASS_ERROR, 1 },
@@ -136,6 +137,13 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_underscore_not_inout]          = { "E0115", "underscore_not_inout",          CLASS_ERROR, 1 },
 	/* E0113 free_non_opaque, E0114 double_free — retired (zero runtime alloc, no free stmt). */
 	[SEM_DIAG_extern_proc_bad_return]        = { "E0115", "extern_proc_bad_return",        CLASS_ERROR, 1 },
+	[SEM_DIAG_extern_multi_out]              = { "E0223", "extern_multi_out",              CLASS_ERROR, 1 },
+	[SEM_DIAG_slice_repoint]                 = { "E0224", "slice_repoint",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_main_reserved]                 = { "E0225", "main_reserved",                 CLASS_ERROR, 1 },
+	[SEM_DIAG_effect_without_eff]            = { "E0226", "effect_without_eff",            CLASS_ERROR, 1 },
+	[SEM_DIAG_write_set_mismatch]            = { "E0227", "write_set_mismatch",            CLASS_ERROR, 1 },
+	[SEM_DIAG_indexed_write_in_selector]     = { "E0228", "indexed_write_in_selector",     CLASS_ERROR, 1 },
+	[SEM_DIAG_self_binder_unqueried]         = { "E0229", "self_binder_unqueried",         CLASS_ERROR, 1 },
 	/* E0116 revived: local_shadows_callable (was out_not_written, retired). */
 	[SEM_DIAG_local_shadows_callable]        = { "E0116", "local_shadows_callable",        CLASS_ERROR, 1 },
 	[SEM_DIAG_duplicate_decl]                = { "E0117", "duplicate_decl",                CLASS_ERROR, 1 },
@@ -163,6 +171,8 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_entity_unknown_column]         = { "E0218", "entity_unknown_column",         CLASS_ERROR, 1 },
 	[SEM_DIAG_entity_unknown_type]           = { "E0219", "entity_unknown_type",           CLASS_ERROR, 1 },
 	[SEM_DIAG_positional_insert]             = { "E0220", "positional_insert",             CLASS_ERROR, 1 },
+	[SEM_DIAG_proc_under_applied]            = { "E0221", "proc_under_applied",            CLASS_ERROR, 1 },
+	[SEM_DIAG_eff_extern_not_static]         = { "E0222", "eff_extern_not_static",         CLASS_ERROR, 1 },
 
 	/* Lints */
 	[SEM_LINT_proc_could_be_func]            = { "W0001", "proc_could_be_func",            CLASS_LINT, 1 },
@@ -191,6 +201,9 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_map_writes_foreign_pool]       = { "W0024", "map_writes_foreign_pool",       CLASS_LINT, 1 },
 	[SEM_LINT_large_stack_array]             = { "W0026", "large_stack_array",             CLASS_LINT, 1 },
 	[SEM_LINT_pointless_move]                = { "W0027", "pointless_move",                CLASS_LINT, 1 },
+	[SEM_LINT_proc_calls_proc]               = { "W0028", "proc_calls_proc",               CLASS_LINT, 1 },
+	[SEM_LINT_pool_index_outside_query]      = { "W0029", "pool_index_outside_query",      CLASS_LINT, 1 },
+	[SEM_LINT_proc_not_primitive]            = { "W0030", "proc_not_primitive",            CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -216,6 +229,18 @@ static void ensure_init(void) {
 	 * but error-by-default, since a foreign-pool write in a per-entity map silently runs once, not per
 	 * row. `--map-foreign-write=warn|allow` demotes it. */
 	g_werror[SEM_LINT_map_writes_foreign_pool] = 1;
+	/* W0030 proc_not_primitive: the proc-elimination ban — a non-foreign/non-primitive/non-`@drop` proc is
+	 * a hard ERROR by default at every entry point (build/run/check/LSP). Its message names the fix
+	 * (`func`/`system`/`each`/`map`, or decompose across systems). */
+	g_werror[SEM_LINT_proc_not_primitive] = 1;
+	/* W0016 discarded_ok: now fires ONLY for an insert into a FALLIBLE (`reject`) pool — a genuinely
+	 * ignored drop — so it is an ERROR by default. `--discarded-ok=warn|allow` demotes it; declaring an
+	 * infallible pool policy (`?abort`/`?evict_*`) avoids it entirely. */
+	g_werror[SEM_LINT_discarded_ok] = 1;
+	/* W0029 pool_index_outside_query: hand-indexing a pool column (`Pool.col[i]`/`[0]`) outside a query is a
+	 * hard ERROR by default — pool values come from a query/map/system selector, never `[i]`. A lint (tunable
+	 * via `--pool-index=warn|allow` / `@allow(pool_index_outside_query)`) for scaffolding that must reach in. */
+	g_werror[SEM_LINT_pool_index_outside_query] = 1;
 	g_init_done = 1;
 }
 
@@ -292,7 +317,10 @@ static SemDiag *sem_emit_v(SemanticContext *ctx, SemDiagKind kind, SourceLoc loc
 	if (desc->class == CLASS_LINT) {
 		if (!g_enabled[kind])
 			return NULL;
-		if (sem_diag_slug_suppressed(ctx, desc->slug))
+		/* `pool_index_outside_query` is NOT silenced by a per-decl `@allow` — permitting direct pool access is a
+		 * deliberate WHOLE-BUILD choice via `--pool-index=allow`, not a casual decorator. Every other lint honors
+		 * `@allow(<slug>)`. */
+		if (kind != SEM_LINT_pool_index_outside_query && sem_diag_slug_suppressed(ctx, desc->slug))
 			return NULL;
 		severity = g_werror[kind] ? 1 : 0;
 	} else {
@@ -445,6 +473,18 @@ void semantic_set_lint_func_impure(int enabled, int werror) {
 void semantic_set_lint_exported_mutable_global(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_exported_mutable_global, enabled, werror);
 }
+void semantic_set_lint_proc_calls_proc(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_proc_calls_proc, enabled, werror);
+}
+void semantic_set_lint_proc_not_primitive(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_proc_not_primitive, enabled, werror);
+}
+void semantic_set_lint_discarded_ok(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_discarded_ok, enabled, werror);
+}
+void semantic_set_lint_pool_index_outside_query(int enabled, int werror) {
+	semantic_set_diag(SEM_LINT_pool_index_outside_query, enabled, werror);
+}
 void semantic_set_lint_map_writes_foreign_pool(int enabled, int werror) {
 	semantic_set_diag(SEM_LINT_map_writes_foreign_pool, enabled, werror);
 }
@@ -574,6 +614,13 @@ SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, co
 	                 "(read-only) view by default; to write one, take ownership with `own %s: T[]` and "
 	                 "`move` the buffer in, use an in-out out-param, or copy it into a local",
 	                 name, name);
+}
+SemDiag *sem_emit_cannot_mutate_borrowed_local(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_cannot_mutate_borrowed, loc,
+	                 "cannot write through borrowed slice '%s' — it views a live local's storage (a borrow), "
+	                 "which is read-only just like a borrowed param; write the owned array directly, or `move` "
+	                 "the buffer in to take ownership",
+	                 name);
 }
 SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
                                                const char *proc_name) {
@@ -767,6 +814,21 @@ SemDiag *sem_emit_action_in_expression(SemanticContext *ctx, SourceLoc loc, cons
 	                 "it as a statement; it can't appear inside an expression",
 	                 kind, name);
 }
+
+SemDiag *sem_emit_proc_under_applied(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_proc_under_applied, loc,
+	                 "cannot build an Eff from proc `%s` — only an extern is inert when under-applied; a proc "
+	                 "minus its out-slots is a suspended computation, not a value. Wrap the underlying extern "
+	                 "in a func instead",
+	                 name);
+}
+
+SemDiag *sem_emit_eff_extern_not_static(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_eff_extern_not_static, loc,
+	                 "this Eff's extern is not statically known — an Eff's extern is part of its type and must "
+	                 "resolve to exactly one extern (no runtime selection between effects); there is no "
+	                 "function pointer to dispatch it");
+}
 SemDiag *sem_emit_no_group_match(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_DIAG_no_group_match, loc, "no member of group '%s' matches the argument types", name);
 }
@@ -830,6 +892,30 @@ SemDiag *sem_emit_const_rhs_invalid(SemanticContext *ctx, SourceLoc loc) {
 SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason) {
 	return sem_emit_(ctx, SEM_DIAG_func_not_pure, loc, "func '%s' is not pure — %s (effects belong in a proc)", name,
 	                 reason);
+}
+SemDiag *sem_emit_effect_without_eff(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *reason) {
+	return sem_emit_(ctx, SEM_DIAG_effect_without_eff, loc,
+	                 "%s '%s' is pure by default but %s — declare the `eff` permission to run effects: "
+	                 "`%s … eff { … }`",
+	                 kind, name ? name : "<kernel>", reason, kind);
+}
+SemDiag *sem_emit_write_set_mismatch(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *actual_list, int has_declared) {
+	/* `actual_list` is the full bound-column write-set the body actually assigns, formatted `(pos, vel)` —
+	 * the migration codemod reads it from after the word `declare`. */
+	return sem_emit_(ctx, SEM_DIAG_write_set_mismatch, loc,
+	                 has_declared ? "%s '%s' writes a bound column its `(writes)` permission omits — declare `%s` "
+	                                "after the selector"
+	                              : "%s '%s' writes bound columns but declares no `(writes)` permission — declare `%s` "
+	                                "after the selector",
+	                 kind, name ? name : "<kernel>", actual_list);
+}
+SemDiag *sem_emit_indexed_write_in_selector(SemanticContext *ctx, SourceLoc loc, const char *pool) {
+	return sem_emit_(ctx, SEM_DIAG_indexed_write_in_selector, loc,
+	                 "indexed pool-column write `%s.…[i] = …` inside a selector kernel — write the bound bare "
+	                 "column instead (hand-indexing a pool is for loaders / run-once systems, not selector bodies)",
+	                 pool);
 }
 SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form) {
 	return sem_emit_(ctx, SEM_DIAG_insert_delete_outlist, loc,
@@ -941,6 +1027,15 @@ SemDiag *sem_emit_lint_proc_could_be_func(SemanticContext *ctx, SourceLoc loc, c
 	    ctx, SEM_LINT_proc_could_be_func, loc,
 	    "proc '%s' has a pure body and returns a value — it should be a `func` (suppress with @allow_pure_proc)", name);
 }
+
+SemDiag *sem_emit_lint_proc_not_primitive(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_proc_not_primitive, loc,
+	                 "proc '%s' is not a primitive — `proc` is reserved for `#foreign`/`@syscall`/`@intrinsic`. "
+	                 "Pure logic → a `func`; effects or pool access → a `system`/`map (Q) eff`; a "
+	                 "result-dependent sequence → decompose across systems (a producer writes a column, a "
+	                 "consumer reads it)",
+	                 name);
+}
 SemDiag *sem_emit_lint_proc_no_effect(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_proc_no_effect, loc,
 	                 "proc '%s' has an empty or effect-free body; remove it or add the intended logic", name);
@@ -958,6 +1053,13 @@ SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const
 	                 "type mismatch in '%s': cannot mix '%s' and '%s' — arche has no implicit numeric conversion", op,
 	                 lhs, rhs);
 }
+SemDiag *sem_emit_self_binder_unqueried(SemanticContext *ctx, SourceLoc loc, const char *binder, const char *col) {
+	return sem_emit_(ctx, SEM_DIAG_self_binder_unqueried, loc,
+	                 "self-binder '%s' reads component '%s', which is not queried — a `map (query {…} as %s)` "
+	                 "may only read the components in its query (add '%s' to the query)",
+	                 binder, col, binder, col);
+}
+
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type,
                                          const char *field) {
 	return sem_emit_(ctx, SEM_DIAG_field_on_non_archetype, loc, "type '%s' has no field '%s'", base_type, field);
@@ -980,6 +1082,24 @@ SemDiag *sem_emit_local_shadows_callable(SemanticContext *ctx, SourceLoc loc, co
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name) {
 	return sem_emit_(ctx, SEM_DIAG_extern_proc_bad_return, loc,
 	                 "unknown return type '%s' in extern proc '%s' signature", type, proc_name);
+}
+SemDiag *sem_emit_slice_repoint(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_slice_repoint, loc,
+	                 "cannot repoint slice '%s' — a slice's pointer is fixed at creation; you may write THROUGH "
+	                 "it (`%s[i] = x`, when you own it) but never reassign it to a different slice",
+	                 name, name);
+}
+SemDiag *sem_emit_main_reserved(SemanticContext *ctx, SourceLoc loc) {
+	return sem_emit_(ctx, SEM_DIAG_main_reserved, loc,
+	                 "`main` is reserved — a program's entry point is a `#run` schedule, not a decl named "
+	                 "`main`. Rename this decl (e.g. `entry`) and schedule it with `#run`");
+}
+SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only) {
+	return sem_emit_(ctx, SEM_DIAG_extern_multi_out, loc,
+	                 "extern proc '%s' has %d out-only out-params, but a C extern returns exactly ONE value "
+	                 "(the single out-only out-param); additional kernel-written outputs must be in-out buffer "
+	                 "params (a name in BOTH the in- and out-list). Declare at most one out-only out-param",
+	                 proc_name, n_out_only);
 }
 
 SemDiag *sem_emit_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *where, const char *expected,
@@ -1092,8 +1212,9 @@ SemDiag *sem_emit_lint_unused_enum(SemanticContext *ctx, SourceLoc loc, const ch
 }
 SemDiag *sem_emit_lint_discarded_ok(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_discarded_ok, loc,
-	                 "`%s`'s `ok` result is discarded with `_` — a capacity/handle failure is silently "
-	                 "ignored; capture and check `ok`, or @allow(discarded_ok) if it genuinely cannot fail",
+	                 "`%s` into a `reject` pool can fail (a full pool drops the row) — capture and check `ok`, "
+	                 "or give the pool an infallible overflow policy (`[N]P ?abort` to crash, `?evict_*` to "
+	                 "make room). `@allow(discarded_ok)` or `--discarded-ok=warn` overrides.",
 	                 name);
 }
 SemDiag *sem_emit_lint_raw_pool_index(SemanticContext *ctx, SourceLoc loc, const char *arch) {
@@ -1130,9 +1251,22 @@ SemDiag *sem_emit_lint_func_could_be_const(SemanticContext *ctx, SourceLoc loc, 
 }
 SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_exported_mutable_global, loc,
-	                 "exported mutable global `%s` — shared mutable state should live in a pool (or be "
-	                 "`#module`/`#file`-private in a library); opt out with --exported-mutable=warn|allow",
+	                 "mutable global `%s` — shared mutable state must live in a pool (even a `#file`/`#module`-"
+	                 "private mutable global is banned); opt out with --exported-mutable=warn|allow",
 	                 name);
+}
+SemDiag *sem_emit_lint_proc_calls_proc(SemanticContext *ctx, SourceLoc loc, const char *callee) {
+	return sem_emit_(ctx, SEM_LINT_proc_calls_proc, loc,
+	                 "proc calls another proc `%s` — a proc is a flat effect leaf; share an effectful step by "
+	                 "building an Eff in a func, not by calling a proc (extern/func/map are fine); opt out "
+	                 "with --proc-leaf=warn|allow",
+	                 callee);
+}
+SemDiag *sem_emit_lint_pool_index_outside_query(SemanticContext *ctx, SourceLoc loc, const char *pool) {
+	return sem_emit_(ctx, SEM_LINT_pool_index_outside_query, loc,
+	                 "pool `%s` column indexed by hand `[…]` outside a query — pool values must come from a "
+	                 "query/map/system selector (a singleton too), not `[i]`; opt out with --pool-index=allow",
+	                 pool);
 }
 SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_outarg_shadows_outparam, loc,

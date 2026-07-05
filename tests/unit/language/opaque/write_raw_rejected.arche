@@ -8,5 +8,7 @@ res :: opaque;
 clobber :: proc(f: res) {
   f = 5;
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

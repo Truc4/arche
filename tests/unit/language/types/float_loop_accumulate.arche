@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-main :: proc() {
+entry :: system eff {
   total := 0.0;
   i     := 0;
   for (; i < 4;) {
@@ -8,5 +8,7 @@ main :: proc() {
     total = total + v;
     i     = i + 1;
   }
-  fmt.assert(total == 2.0, "float loop accumulate failed\n");
+  fmt.assert(total == 2.0, "float loop accumulate failed\n")();
 }
+
+#run entry

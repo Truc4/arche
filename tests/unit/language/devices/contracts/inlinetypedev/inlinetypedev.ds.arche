@@ -1,0 +1,4 @@
+// inlinetypedev's CONTRACT: shares the component `val`. Support file. Its impl's Thing archetype INLINE-defines
+// a typed component `extra :: int` — sugar for a top-level exported type, which belongs in the datasheet.
+// RUN: true
+val :: float;

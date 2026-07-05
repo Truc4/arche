@@ -1,24 +1,28 @@
-// RUN: %arche build -o %t %s && %t | grep "system_ran"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "system_ran"
 #import { fmt }
 pos  :: float;
 Body :: arche { pos }
 
-[5]Body;
+[5]Body ?abort;
 
-dummy :: map (query { pos }) {
+dummy :: map (query { pos })(pos) {
   pos = pos;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(Body { pos: 1.0 })(_:, _:);
   insert(Body { pos: 2.0 })(_:, _:);
   insert(Body { pos: 3.0 })(_:, _:);
-  run dummy;
+}
+
+verify :: system eff {
   fmt.printf("system_ran\n");
   p0  := Body.pos[0];
   p1  := Body.pos[1];
   p0i := p0 * 10.0;
   p1i := p1 * 10.0;
-  fmt.assert(p0i == 10, "pos[0] != 1.0\n");
-  fmt.assert(p1i == 20, "pos[1] != 2.0\n");
+  fmt.assert(p0i == 10, "pos[0] != 1.0\n")();
+  fmt.assert(p1i == 20, "pos[1] != 2.0\n")();
 }
+
+#run seq({ seed, dummy, verify })

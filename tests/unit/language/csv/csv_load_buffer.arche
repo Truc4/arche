@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { parse fmt os }
 Transaction :: arche { price :: float, quantity :: int }
 
@@ -6,11 +6,12 @@ Transaction :: arche { price :: float, quantity :: int }
   price: 0.0, quantity: 0,
 }
 
-main :: proc() {
+entry :: system eff {
   os.open("../../../../../tests/fixtures/transactions.csv", 0)(fd:);
   buf: [256]char;
-  os.read(fd, buf, 256)(data:);
-  os.close(move fd);
+  os.read(fd, 256)(buf, rd_data:);
+  data := buf[0: rd_data];
+  os.close(move fd)(_:);
   fmt.printf("data.length=%d\n", data.length);
   idx        := 0;
   pos        := 0;
@@ -65,6 +66,8 @@ main :: proc() {
     line_start                = line_end + 1;
   }
   fmt.printf("Loaded %d rows from 256-byte buffer\n", idx);
-  fmt.assert(idx > 0, "should load at least 1 row\n");
-  fmt.assert(Transaction.price[0] == 1.0, "first price should be 1.0\n");
+  fmt.assert(idx > 0, "should load at least 1 row\n")();
+  fmt.assert(Transaction.price[0] == 1.0, "first price should be 1.0\n")();
 }
+
+#run entry

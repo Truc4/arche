@@ -1,0 +1,17 @@
+// A query binder exposes an intrinsic, read-only pool-row identity: `e.id` in `map (query {…} as e)` is THIS
+// element's dense 0..N-1 row index. It is not a stored component, is never written, and needs no `id` in the
+// query. Here each row writes its own id back into `out`.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "id=0 1 2 3"
+#import { fmt }
+B :: arche { out :: int }
+[4]B(4);
+
+label :: map (query { out } as e)(out) {
+  out = e.id;
+}
+
+show :: system eff {
+  fmt.printf("id=%d %d %d %d\n", B.out[0], B.out[1], B.out[2], B.out[3]);
+}
+
+#run seq({ label, show })

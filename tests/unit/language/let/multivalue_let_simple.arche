@@ -1,13 +1,15 @@
 // RUN: %arche build -o %t %s && %t
 #import { fmt }
-pair :: proc()(x: int, y: int) {
+pair :: func()(x: int, y: int) {
   x = 42;
   y = 7;
 }
 
-main :: proc() {
+entry :: system eff {
   pair()(x:, y:);
-  fmt.assert(x == 42, "x not 42\n");
-  fmt.assert(y == 7, "y not 7\n");
+  fmt.assert(x == 42, "x not 42\n")();
+  fmt.assert(y == 7, "y not 7\n")();
   fmt.printf("multivalue test ok\n");
 }
+
+#run entry

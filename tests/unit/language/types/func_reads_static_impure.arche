@@ -5,5 +5,7 @@ buf: [16]char;
 peek :: func() -> int {
   return buf[0];
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

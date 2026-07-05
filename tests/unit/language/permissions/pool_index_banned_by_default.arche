@@ -1,0 +1,11 @@
+// Hand-indexing a pool column outside a query (`B.n[i]`) is BANNED by default — W0029 is error-by-default.
+// Pool values must come from a query/map/system selector, never `[i]`. Build MUST fail.
+// RUN: not %arche build -o %t %s
+B :: arche { n :: int }
+[4]B(4);
+
+bad :: system {
+  B.n[0] = 5;
+}
+
+#run seq({ bad })

@@ -624,6 +624,12 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 	 * AstProgram is not consulted. The side model (keyed by syntax tree node id) feeds lowering. */
 	SemanticContext *sem_ctx = semantic_analyze_cst(syntax_root, source);
 
+	/* Whole-program check: every device datasheet's storage requirement is met by the assembled driver's
+	 * pools. Runs here (the frontend sees the COMPLETE program), not in the shared per-file semantic pass —
+	 * so the editor's per-file analyzer never flags a device whose storage the unseen driver provides. */
+	if (sem_ctx)
+		semantic_check_storage_requirements(sem_ctx);
+
 	if (!sem_ctx || semantic_has_errors(sem_ctx)) {
 		fprintf(stderr, "Semantic analysis failed\n");
 		fflush(stderr);
@@ -638,6 +644,22 @@ static int compile_frontend(const char *user_source, const char *source_path, Fr
 	out->sem_ctx = sem_ctx;
 	out->core_lines = core_lines;
 	return 0;
+}
+
+/* Decide whether a build/run enables the GPU — DERIVED from the machine profile like placement, not a manual
+ * flag. On iff the profile reports a usable device (`gpu_present`) AND `glslc` is available. `force_off`
+ * (--no-gpu / ARCHE_NO_GPU) always wins; `force_on` (--gpu) forces it on regardless (for CI, or before a
+ * profile is cached). Absent profile ⇒ off, so `arche calibrate` is what turns derived GPU placement on. */
+int compile_gpu_auto(int force_on, int force_off) {
+	if (force_off)
+		return 0;
+	if (force_on)
+		return 1;
+	char pdir[1024];
+	MachineProfile mp;
+	if (!arche_machine_profile_dir(pdir, sizeof(pdir)) || !codegen_load_machine_profile(pdir, &mp))
+		return 0;
+	return mp.gpu_present && arche_glslc_available();
 }
 
 int compile_check(const char *user_source, const char *source_path, const CompileOpts *opts) {
@@ -675,6 +697,16 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	if (opts && opts->gpu && emit == EMIT_LINK) {
 		codegen_set_gpu(1);
 		codegen_force_whole_program();
+		/* Derived placement: load this MACHINE's cost profile so the build can decide CPU/GPU per eligible
+		 * map. The profile is machine-global — discovered via $ARCHE_CACHE_DIR (override) → the per-user cache
+		 * → the install-global lib/arche (arche_machine_profile_dir). Absent ⇒ the CPU-only default (un-
+		 * annotated maps stay CPU, no behavior change) until `arche calibrate` (or `make install`) writes it. */
+		char pdir[1024];
+		MachineProfile mp;
+		if (arche_machine_profile_dir(pdir, sizeof(pdir)) && codegen_load_machine_profile(pdir, &mp))
+			codegen_set_machine_profile(&mp);
+		else
+			codegen_set_machine_profile(NULL);
 	} else {
 		codegen_set_gpu(0);
 	}
@@ -1137,8 +1169,21 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		/* `--gpu`: compile each `@gpu` map's GLSL to SPIR-V (via glslc) and emit a registry object that
 		 * holds the bytes; it links beside runtime/gpu_runtime.o so the in-binary dispatcher can find a
 		 * shader by map name. No glslc → an empty registry (every dispatch falls back to CPU). */
+		/* GPU is auto-enabled from the profile, so `opts->gpu` is set on every build on a GPU machine — but a
+		 * program with NO map actually placed on the GPU must stay a plain CPU binary (no Vulkan dep, no bloat).
+		 * Gate the whole embed + Vulkan link on a map having been placed GPU (is_gpu set during codegen). */
+		int any_gpu_map = 0;
+		if (opts && opts->gpu && ast) {
+			for (int di = 0; di < ast->decl_count; di++) {
+				HirDecl *d = ast->decls[di];
+				if (d && d->kind == HIR_DECL_KERNEL && d->data.kernel && d->data.kernel->is_gpu) {
+					any_gpu_map = 1;
+					break;
+				}
+			}
+		}
 		char gpu_reg_obj[600] = "";
-		if (opts && opts->gpu && have_workdir) {
+		if (opts && opts->gpu && any_gpu_map && have_workdir) {
 			char reg_c[600];
 			snprintf(reg_c, sizeof(reg_c), "%s/arche_gpu_reg.c", workdir);
 			if (arche_gpu_embed(ast, reg_c, quiet) < 0) {

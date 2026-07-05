@@ -9,6 +9,4 @@ P   :: arche { pos, vel }
 
 Movers :: query { pos, vel }
 
-main :: proc() {
-  run Movers;
-}
+#run seq({ Movers })

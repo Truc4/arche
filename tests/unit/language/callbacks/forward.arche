@@ -1,22 +1,19 @@
-// A callback param can be forwarded to another callback-taking proc: at each
-// specialization the forwarded param resolves to the concrete bound proc, so the
-// inner call lands directly on it.
-// RUN: %arche build -o %t %s && %t | grep "hello"
+// A callback with an argument forwarded through a higher-order proc.
+// Callbacks use the (deprecated) proc-callback feature, so relax W0030 for the leaf proc callbacks.
+// RUN: %arche build --proc-not-primitive=allow -o %t %s && %t | grep "n=7"
 #import { fmt }
-h :: proc()();
+logger :: proc(n: int)();
 
-hello :: proc()() {
-  fmt.printf("hello\n");
+log_it :: proc(n: int)() {
+  fmt.printf("n=%d\n", n);
 }
 
-inner :: proc(cb: h)() {
-  cb()();
+apply :: proc(cb: logger)() {
+  cb(7)();
 }
 
-outer :: proc(cb: h)() {
-  inner(cb)();
+entry :: system eff {
+  apply(log_it)();
 }
 
-main :: proc() {
-  outer(hello)();
-}
+#run entry

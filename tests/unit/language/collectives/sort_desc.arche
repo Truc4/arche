@@ -1,12 +1,12 @@
 // `sort(Pool.key, desc)` sorts the pool DESCENDING by the key (ascending is the default; `desc` flips the
 // order). All columns are permuted together so rows stay aligned.
-// RUN: %arche build -o %t %s && %t | grep -qF "k=4 3 2 1 tag=30 10 40 20"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "k=4 3 2 1 tag=30 10 40 20"
 #import { fmt }
 k   :: int;
 tag :: int;
 N   :: arche { k, tag }
 [4]N(4);
-main :: proc() {
+entry :: system eff {
   N.k   = { 3, 1, 4, 2 };
   N.tag = { 10, 20, 30, 40 };
   sort(N.k, desc);
@@ -23,3 +23,5 @@ main :: proc() {
     N.tag[3],
   );
 }
+
+#run entry

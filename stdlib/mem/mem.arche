@@ -1,0 +1,4 @@
+@intrinsic
+bound :: func(p: rawptr, n: i64) -> []char {
+  return "";
+}

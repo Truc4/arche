@@ -1,0 +1,20 @@
+// The `sqrt` builtin — float square root, lowered to LLVM's `@llvm.sqrt.f32` intrinsic (no libm).
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "r=2 3 4 5"
+#import { fmt }
+x :: float;
+P :: arche { x }
+[4]P(4);
+
+root :: map (query { x })(x) {
+  x = sqrt(x);
+}
+
+seed :: system {
+  P.x = { 4.0, 9.0, 16.0, 25.0 };
+}
+
+verify :: system eff {
+  fmt.printf("r=%.0f %.0f %.0f %.0f\n", P.x[0], P.x[1], P.x[2], P.x[3]);
+}
+
+#run seq({ seed, root, verify })

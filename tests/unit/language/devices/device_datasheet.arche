@@ -2,16 +2,21 @@
 // and the device's system runs over it. `libdev`'s datasheet (`.ds.arche`) declares `pos`/`vel` as
 // GLOBAL components; this driver's `Thing` references them by bare name (plus its own `mass`), sizes
 // the pool, and `run libdev.integrate` binds to `Thing` by column name — the device owns no storage.
-// RUN: %arche build -o %t %s && %t | grep "datasheet_ok"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "datasheet_ok"
 #import { libdev fmt }
 
 Thing :: arche { pos, vel, mass :: float }
 
-[4]Thing;
+[4]Thing ?abort;
 
-main :: proc() {
+seed :: system eff {
   insert(Thing { pos: 10.0, vel: 1.0, mass: 5.0 })(_:, _:);
-  run libdev.integrate; // pos = pos + vel = 11 over the driver's Thing pool
-  fmt.assert(Thing.pos[0] * 10 == 110, "device system did not run over the driver's shape\n");
+}
+
+verify :: system eff {
+  // pos = pos + vel = 11 over the driver's Thing pool
+  fmt.assert(Thing.pos[0] * 10 == 110, "device system did not run over the driver's shape\n")();
   fmt.printf("datasheet_ok\n");
 }
+
+#run seq({ seed, libdev.integrate, verify })

@@ -1,0 +1,4 @@
+// tcvec's datasheet: the `pos` component it queries + a `Pt[1]` storage requirement. Support file.
+// RUN: true
+pos(x, y) :: float;
+[1]Pt;

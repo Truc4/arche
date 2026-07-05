@@ -1,18 +1,20 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 // New model: a tuple alias mints flat name-prefixed components (pos_x, pos_y); access is
 // flat (Particle.pos_x), never nested (no Particle.pos.x).
 #import { fmt }
 pos(x, y) :: float;
 Particle  :: arche { pos_x, pos_y }
 
-[5]Particle;
+[5]Particle ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Particle { pos_x: 1.0, pos_y: 2.0 })(_:, _:);
   x  := Particle.pos_x[0];
   y  := Particle.pos_y[0];
   xi := x * 10.0;
   yi := y * 10.0;
-  fmt.assert(xi == 10, "x != 1.0\n");
-  fmt.assert(yi == 20, "y != 2.0\n");
+  fmt.assert(xi == 10, "x != 1.0\n")();
+  fmt.assert(yi == 20, "y != 2.0\n")();
 }
+
+#run entry

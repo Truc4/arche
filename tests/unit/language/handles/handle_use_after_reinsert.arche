@@ -1,11 +1,13 @@
 // RUN: %arche build -o %t %s && ! %t
 Player :: arche { pos :: float }
 
-[10]Player;
+[10]Player ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Player { pos: 1.0 })(h1:, _:);
   delete(h1)(_:);
   insert(Player { pos: 2.0 })(h2:, _:);
   delete(h1)(_:);
 }
+
+#run entry

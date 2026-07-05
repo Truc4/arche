@@ -6,5 +6,7 @@ bad :: proc(x: int) {
     z := f;
   }
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

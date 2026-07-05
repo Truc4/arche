@@ -141,6 +141,126 @@ static void tuple_rewrite_expr(HirExpr *e, const char *base) {
 	}
 }
 
+struct CstTupleGroupTag;
+static struct CstTupleGroupTag *tgroup_lookup(const char *name);
+static HirType *hir_tuple_from_tgroup(struct CstTupleGroupTag *g);
+/* The HIR_TYPE_TUPLE value type of tuple-group `name` (`pos(x,y)::float` → `{x:float,y:float}`), or NULL. */
+static HirType *hir_tuple_type_for_name(const char *name);
+
+/* A pure `map (Q as me)` binds a column self-binder: `me.<col>` is THIS element's bound column at the current
+ * row. Since a pure map already auto-loops rows and a bare column name IS its per-row scalar, `me.col` is just
+ * distinguishes self from an enclosing system's SAME-named column. Collapse `me.field` (HIR_EXPR_FIELD over
+ * NAME `self`) → NAME `field`, keyed by CONTEXT:
+ *   - a READ (`to_self=1`) → NAME `\x1f`+field, a SELF-READ marker codegen resolves at the fan's own row
+ *     index — so it stays pinned to THIS element even inside a `reduce` that folds the same-named column.
+ *   - the ASSIGN TARGET (`to_self=0`) → bare NAME `field`, the fan's ordinary per-row write of that column.
+ * Without the read marker, `me.pos` and a folded neighbour `pos` would collapse to the same access and the
+ * self-join would degenerate (every element would only ever see itself). Mirrors tuple_rewrite_expr. */
+#define SELF_READ_MARK '\x1f'
+/* `me.id` — the intrinsic read-only pool-row identity — is NOT a stored column, so it can't rewrite to a
+ * `\x1f`col (codegen would strip the mark and read a nonexistent `id` column). It becomes a NAME `\x1e` sentinel
+ * that codegen turns into the current fan row index (trunc to i32). Read-only; an assign target never reaches. */
+#define ROW_ID_MARK '\x1e'
+static void self_bind_rewrite_expr(HirExpr *e, const char *self, int to_self) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case HIR_EXPR_FIELD:
+		self_bind_rewrite_expr(e->data.field.base, self, to_self);
+		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+		    strcmp(e->data.field.base->data.name.name, self) == 0) {
+			const char *sub = e->data.field.field_name;
+			if (strcmp(sub, "id") == 0) {
+				char *idn = malloc(3);
+				idn[0] = ROW_ID_MARK;
+				idn[1] = 'i'; /* a short, stable body — codegen keys off the mark only */
+				idn[2] = '\0';
+				e->kind = HIR_EXPR_NAME;
+				e->data.name.name = idn;
+				e->resolved.tag = HIR_TYPE_INT;
+				break;
+			}
+			char *col = malloc(strlen(sub) + 2);
+			if (to_self) {
+				col[0] = SELF_READ_MARK;
+				strcpy(col + 1, sub);
+			} else
+				strcpy(col, sub);
+			e->kind = HIR_EXPR_NAME;
+			e->data.name.name = col; /* old base node intentionally leaked, as in tuple_rewrite_expr */
+			/* If the self column is a tuple GROUP (`me.pos`), tag the read a HIR_TYPE_TUPLE so codegen packs
+			 * its `pos_x`/`pos_y` at the self row (the field access already erased the group's own resolved). */
+			HirType *tt = hir_tuple_type_for_name(sub);
+			if (tt) {
+				e->resolved = *tt;
+				free(tt);
+			}
+		}
+		break;
+	case HIR_EXPR_INDEX:
+		self_bind_rewrite_expr(e->data.index.base, self, to_self);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			self_bind_rewrite_expr(e->data.index.indices[i], self, to_self);
+		break;
+	case HIR_EXPR_BINARY:
+		self_bind_rewrite_expr(e->data.binary.left, self, to_self);
+		self_bind_rewrite_expr(e->data.binary.right, self, to_self);
+		break;
+	case HIR_EXPR_UNARY:
+		self_bind_rewrite_expr(e->data.unary.operand, self, to_self);
+		break;
+	case HIR_EXPR_CALL:
+		self_bind_rewrite_expr(e->data.call.callee, self, to_self);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			self_bind_rewrite_expr(e->data.call.args[i], self, to_self);
+		break;
+	default:
+		break;
+	}
+}
+
+static void self_bind_rewrite_stmt(HirStmt *s, const char *self) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case HIR_STMT_BIND:
+		self_bind_rewrite_expr(s->data.bind_stmt.value, self, 1);
+		break;
+	case HIR_STMT_ASSIGN:
+		/* `me.col = <expr>`: the TARGET is the fan's per-row write (bare col); the VALUE reads self (marked). */
+		self_bind_rewrite_expr(s->data.assign_stmt.target, self, 0);
+		self_bind_rewrite_expr(s->data.assign_stmt.value, self, 1);
+		break;
+	case HIR_STMT_FOR:
+		self_bind_rewrite_stmt(s->data.for_stmt.init, self);
+		self_bind_rewrite_expr(s->data.for_stmt.cond, self, 1);
+		self_bind_rewrite_stmt(s->data.for_stmt.incr, self);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			self_bind_rewrite_stmt(s->data.for_stmt.body[i], self);
+		break;
+	case HIR_STMT_IF:
+		self_bind_rewrite_expr(s->data.if_stmt.cond, self, 1);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			self_bind_rewrite_stmt(s->data.if_stmt.then_body[i], self);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			self_bind_rewrite_stmt(s->data.if_stmt.else_body[i], self);
+		break;
+	case HIR_STMT_EXPR:
+		self_bind_rewrite_expr(s->data.expr_stmt.expr, self, 1);
+		break;
+	case HIR_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			self_bind_rewrite_expr(s->data.return_stmt.values[i], self, 1);
+		break;
+	case HIR_STMT_BLOCK:
+		for (int i = 0; i < s->data.block.count; i++)
+			self_bind_rewrite_stmt(s->data.block.stmts[i], self);
+		break;
+	default:
+		break;
+	}
+}
+
 static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 	if (!s)
 		return;
@@ -169,6 +289,10 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 	case HIR_STMT_EXPR:
 		tuple_rewrite_expr(s->data.expr_stmt.expr, base);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			tuple_rewrite_stmt(s->data.each_stmt->stmts[i], base);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			tuple_rewrite_expr(s->data.return_stmt.values[i], base);
@@ -190,6 +314,8 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 
 static HirExpr *lower_expr_cst(SyntaxView e);
 static HirStmt *lower_stmt_cst(SyntaxView s);
+static HirKernelDecl *lower_each_payload(SyntaxView f, char *name);
+static HirKernelDecl *lower_map_payload(SyntaxView f, char *name);
 static char *dupz(const char *s);
 
 /* Lower an expression in a constant-required position (pool capacity / init length / field default /
@@ -288,6 +414,20 @@ static HirType *lower_type_cst(SyntaxView t) {
 		const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
 		char *name = malloc(strlen(r) + 1);
 		strcpy(name, r);
+		/* A tuple-group name in VALUE-type position (`a: pos`, `-> pos`) lowers to a real HIR_TYPE_TUPLE
+		 * aggregate — not a bare nominal (which codegen would treat as an undefined `%struct.pos`). The
+		 * archetype-column path handles a group field separately (it flattens to `pos_x`/`pos_y`). */
+		struct CstTupleGroupTag *tg = tgroup_lookup(raw);
+		if (!tg && strcmp(name, raw) != 0)
+			tg = tgroup_lookup(name);
+		if (tg) {
+			HirType *tt = hir_tuple_from_tgroup(tg);
+			*at = *tt;
+			free(tt);
+			free(name);
+			free(raw);
+			break;
+		}
 		if (strcmp(name, "archetype") == 0)
 			at->tag = HIR_TYPE_ARCHETYPE;
 		else if (strcmp(name, "opaque") == 0)
@@ -334,17 +474,14 @@ static HirType *lower_type_cst(SyntaxView t) {
 			elem->name = en;
 		else
 			free(en);
-		/* collect ranks (NUMBER tokens) left-to-right */
+		/* collect ranks left-to-right — each dimension is a const-expression sub-node, CTFE-folded to its size. */
 		int ranks[16], nr = 0;
 		for (int i = 0; i < t.node->child_count && nr < 16; i++)
-			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
-				char buf[32];
-				int l = (int)t.node->children[i].as.token.length;
-				if (l > 31)
-					l = 31;
-				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
-				buf[l] = '\0';
-				ranks[nr++] = atoi(buf);
+			if (t.node->children[i].tag == SE_NODE) {
+				SyntaxView sz = {t.node->children[i].as.node, t.src};
+				int r = 0;
+				semantic_try_const_int(g_lower_sem, sz, &r); /* a non-const size is reported in semantic */
+				ranks[nr++] = r;
 			}
 		HirType *cur = elem;
 		for (int i = nr - 1; i >= 0; i--) {
@@ -372,6 +509,11 @@ static HirType *lower_type_cst(SyntaxView t) {
 			}
 		break;
 	}
+	case SN_TYPE_EFF:
+		/* `Eff(T…)` — compile-time only. The tag is enough: an Eff-returning func is an erased builder
+		 * inlined at the run site, so the out-slot types never need a runtime representation here. */
+		at->tag = HIR_TYPE_EFF;
+		return at;
 	case SN_TYPE_PROC:
 	case SN_TYPE_FUNC: {
 		int is_proc = (sv_kind(t) == SN_TYPE_PROC);
@@ -538,6 +680,8 @@ static Operator syntax_tok_to_op(TokenKind k) {
 		return OP_AND;
 	case TOK_PIPE_PIPE:
 		return OP_OR;
+	case TOK_PIPE_GT:
+		return OP_FMAP;
 	default:
 		return OP_NONE;
 	}
@@ -656,6 +800,15 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 				ax->data.string.value = decoded;
 				ax->data.string.length = n;
 				free(nm);
+			}
+		}
+		/* A bare tuple-group column used as a VALUE (`pos` in `pos * K` / `near(me.pos, pos)`): tag it a
+		 * HIR_TYPE_TUPLE so codegen packs its flattened `pos_x`/`pos_y` columns into a `{T,…}` aggregate. */
+		if (ax->kind == HIR_EXPR_NAME && ax->resolved.tag == HIR_TYPE_UNKNOWN && ax->data.name.name) {
+			HirType *tt = hir_tuple_type_for_name(ax->data.name.name);
+			if (tt) {
+				ax->resolved = *tt;
+				free(tt);
 			}
 		}
 		break;
@@ -1133,10 +1286,53 @@ static HirStmt *lower_stmt_cst(SyntaxView s) {
 		as->data.assign_stmt.value = lower_expr_cst(sv_node_at_expr(s, 1));
 		break;
 	}
-	case SN_EXPR_STMT:
+	case SN_EXPR_STMT: {
+		/* An anonymous `each(Q) { … };` in statement position is the inline per-element fan (a nested loop),
+		 * not a discarded value — lower it to HIR_STMT_EACH so codegen emits the fan in place. `each` is a
+		 * value-FORM, so sv_node_at_expr (which filters to expression-category nodes) skips it — reach the
+		 * raw first node child instead. */
+		SyntaxView raw = {NULL, s.src};
+		for (int ci = 0; ci < s.node->child_count; ci++)
+			if (s.node->children[ci].tag == SE_NODE) {
+				raw = (SyntaxView){s.node->children[ci].as.node, s.src};
+				break;
+			}
+		if (sv_present(raw) && sv_kind(raw) == SN_EACH_EXPR) {
+			as->kind = HIR_STMT_EACH;
+			as->data.each_stmt = lower_each_payload(raw, NULL);
+			break;
+		}
+		/* A nested PURE `map (Q) { … }` in statement position is an inline per-element fan too (the honest
+		 * self-join's inner scalar kernel — see G7). Route it through the same HIR_STMT_EACH machinery, but
+		 * with the pure-map body processing (self-binder `me.col`→`col`, group expansion) rather than the
+		 * eff fan's delete-handle. A pure map is NOT a value, so without this it would lower to a discarded
+		 * expression statement with a NULL expr. */
+		if (sv_present(raw) && sv_kind(raw) == SN_MAP_EXPR) {
+			as->kind = HIR_STMT_EACH;
+			as->data.each_stmt = lower_map_payload(raw, NULL);
+			break;
+		}
+		/* A bare `insert(E{…})` / `delete(h)` (no out-list) — legal only into an infallible pool (semantic
+		 * gate). Lower it like a 0-target proc-call statement so codegen emits the insert/delete; a plain
+		 * HIR_STMT_EXPR would DISCARD the call (a silent no-op — the row would never be inserted). */
+		if (sv_present(raw) && sv_kind(raw) == SN_CALL_EXPR) {
+			SyntaxView cnm = sv_child(raw, SN_CALLEE_NAME);
+			char *cn = sv_present(cnm) ? sv_dup(cnm) : NULL;
+			if (cn && (strcmp(cn, "insert") == 0 || strcmp(cn, "delete") == 0)) {
+				as->kind = HIR_STMT_MULTI_BIND;
+				as->data.multi_bind.from_shorthand = 0;
+				as->data.multi_bind.targets = calloc(1, sizeof(HirBindingTarget));
+				as->data.multi_bind.target_count = 0;
+				as->data.multi_bind.value = lower_expr_cst(raw);
+				free(cn);
+				break;
+			}
+			free(cn);
+		}
 		as->kind = HIR_STMT_EXPR;
 		as->data.expr_stmt.expr = lower_expr_cst(sv_node_at_expr(s, 0));
 		break;
+	}
 	case SN_BREAK_STMT:
 		as->kind = HIR_STMT_BREAK;
 		break;
@@ -1574,7 +1770,7 @@ static HirParam *lower_param_cst(SyntaxView p) {
 /* ---- tuple-group registry (syntax tree equivalent of main.c expand_archetype_tuple_groups) ----
  * A top-level `pos (x, y) :: T` declares a tuple group: a bare archetype field `pos`
  * expands to flat columns `pos_x`, `pos_y` (each of type T). */
-typedef struct {
+typedef struct CstTupleGroupTag {
 	char *name;
 	char **suffix;
 	int nsuf;
@@ -1582,6 +1778,24 @@ typedef struct {
 } CstTupleGroup;
 static CstTupleGroup g_tgroups[64];
 static int g_tgroup_count = 0;
+
+/* Probe a subtree for the FIRST numeric literal token; sets *is_float by whether it has a '.'. Returns 1 if a
+ * number was found. Used to infer a value-form tuple group's member type (`CENTER(X,Y)::(320.0,240.0)`→float). */
+static int subtree_first_number(const SyntaxNode *n, const char *src, int *is_float) {
+	for (int i = 0; i < n->child_count; i++) {
+		SyntaxElem *ch = &n->children[i];
+		if (ch->tag == SE_TOKEN && ch->as.token.kind == TOK_NUMBER) {
+			*is_float = 0;
+			for (uint32_t z = 0; z < ch->as.token.length; z++)
+				if (src[ch->as.token.offset + z] == '.')
+					*is_float = 1;
+			return 1;
+		}
+		if (ch->tag == SE_NODE && subtree_first_number(ch->as.node, src, is_float))
+			return 1;
+	}
+	return 0;
+}
 
 /* Register a tuple group `name (s0, s1, …) :: T` from a contiguous child range
  * [start,end) of `parent`: `name` is the IDENT before `(`, the suffixes are the
@@ -1617,6 +1831,16 @@ static void register_tgroup(const SyntaxNode *parent, const char *src, int start
 					g->member = *mt;
 			}
 		}
+	}
+	/* A value-form named-vector group (`CENTER(X,Y)::(320.0,…)`) has no member TYPE node — infer it from the
+	 * first value literal, so `CENTER` packs as `{float,…}` matching its member value consts (not the i32 default). */
+	if (g->member.tag == HIR_TYPE_UNKNOWN) {
+		int isf = 0;
+		for (int k = start; k < end; k++)
+			if (parent->children[k].tag == SE_NODE && subtree_first_number(parent->children[k].as.node, src, &isf)) {
+				g->member.tag = isf ? HIR_TYPE_FLOAT : HIR_TYPE_INT;
+				break;
+			}
 	}
 	if (g->name && g->nsuf > 0)
 		g_tgroup_count++;
@@ -1694,6 +1918,27 @@ static CstTupleGroup *tgroup_lookup(const char *name) {
 	return NULL;
 }
 
+/* Build a HIR_TYPE_TUPLE value type from a registered tuple group `pos(x,y) :: T` — `{x:T, y:T}`. Used to
+ * lower a group name in VALUE-type position (a func param/return, a local), so the tuple flows as a real
+ * aggregate value rather than a bare nominal. All members share the group's single declared type. */
+static HirType *hir_tuple_from_tgroup(CstTupleGroup *g) {
+	HirType *t = hir_type_create(HIR_TYPE_TUPLE);
+	t->field_count = g->nsuf;
+	t->fields = calloc(g->nsuf > 0 ? g->nsuf : 1, sizeof(HirTupleField));
+	for (int i = 0; i < g->nsuf; i++) {
+		HirType *ft = hir_type_create(HIR_TYPE_UNKNOWN);
+		*ft = g->member; /* member is a scalar (e.g. float) — a shallow copy owns no pointers */
+		t->fields[i].name = dupz(g->suffix[i]);
+		t->fields[i].type = ft;
+	}
+	return t;
+}
+
+static HirType *hir_tuple_type_for_name(const char *name) {
+	CstTupleGroup *g = tgroup_lookup(name);
+	return (g && g->nsuf > 0) ? hir_tuple_from_tgroup(g) : NULL;
+}
+
 /* ---- query registry (mirrors the tgroup table): a named `Name :: query {…}` decl → its column node,
  * so a `map(Name)` can resolve `Name` to its SN_PARAM columns at lowering time. Built once per root
  * (build_queries), scanned per imported module so a query declared in a device datasheet is visible. */
@@ -1714,6 +1959,8 @@ static const SyntaxNode *query_expr_child(const SyntaxNode *d) {
 	return NULL;
 }
 
+static const SyntaxNode *arch_expr_child(const SyntaxNode *d); /* fwd */
+
 static void scan_queries(const SyntaxNode *root, const char *src) {
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
@@ -1721,14 +1968,19 @@ static void scan_queries(const SyntaxNode *root, const char *src) {
 		const SyntaxNode *d = root->children[i].as.node;
 		if (d->kind != SN_CONST_DECL || g_query_count >= 128)
 			continue;
-		const SyntaxNode *qe = query_expr_child(d);
-		if (!qe)
+		/* Archetypes and queries are INTERCHANGEABLE in the `map(X)`/`system(X)` selector: a named query
+		 * (its SN_QUERY_EXPR) OR an archetype (its SN_ARCH_EXPR — `map(X)` then selects ALL its columns).
+		 * Register either's column-source node under the name; lower_query_columns reads both shapes. */
+		const SyntaxNode *cols = query_expr_child(d);
+		if (!cols)
+			cols = arch_expr_child(d);
+		if (!cols)
 			continue;
 		SynText nm = lower_binding_name((SyntaxView){d, src});
 		if (!nm.ptr)
 			continue;
 		g_queries[g_query_count].name = txt_dup(nm);
-		g_queries[g_query_count].cols = (SyntaxView){qe, src};
+		g_queries[g_query_count].cols = (SyntaxView){cols, src};
 		g_query_count++;
 	}
 }
@@ -1833,6 +2085,10 @@ static void tuple_collapse_stmt(HirStmt *s) {
 	case HIR_STMT_EXPR:
 		tuple_collapse_expr(s->data.expr_stmt.expr);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			tuple_collapse_stmt(s->data.each_stmt->stmts[i]);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			tuple_collapse_expr(s->data.return_stmt.values[i]);
@@ -1858,9 +2114,12 @@ static void tuple_collapse_decl(HirDecl *d) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			tuple_collapse_stmt(d->data.proc->stmts[i]);
 		break;
-	case HIR_DECL_MAP:
-		for (int i = 0; i < d->data.map->stmt_count; i++)
-			tuple_collapse_stmt(d->data.map->stmts[i]);
+	case HIR_DECL_KERNEL:
+		/* A kernel body (map / map+eff fan / system) accesses pool columns just like a proc — collapse its
+		 * `arch.pos.x` tuple-subcolumn accesses to the flattened `arch.pos_x` too, or codegen leaks the bare
+		 * subcomponent name as the column base and drops column-init scatter stores. */
+		for (int i = 0; i < d->data.kernel->stmt_count; i++)
+			tuple_collapse_stmt(d->data.kernel->stmts[i]);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)
@@ -1888,6 +2147,34 @@ static int syntax_decl_has_drop_decorator(SyntaxView d) {
 	}
 	return 0;
 }
+/* `@drop(<Type>)`: returns the named type as a fresh string (caller owns), or NULL if absent.
+ * Scans for the `@ drop ( <ident> )` token run (the parser already validated the shape). */
+static char *syntax_decl_drop_type(SyntaxView d) {
+	if (!sv_present(d))
+		return NULL;
+	int n = d.node->child_count;
+	for (int i = 0; i + 3 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *nm = &d.node->children[i + 1];
+		if (nm->tag != SE_TOKEN || nm->as.token.kind != TOK_IDENT)
+			continue;
+		if (!(nm->as.token.length == 4 && memcmp(d.src + nm->as.token.offset, "drop", 4) == 0))
+			continue;
+		const SyntaxElem *lp = &d.node->children[i + 2];
+		const SyntaxElem *ty = &d.node->children[i + 3];
+		if (lp->tag != SE_TOKEN || lp->as.token.kind != TOK_LPAREN)
+			continue;
+		if (ty->tag != SE_TOKEN || ty->as.token.kind != TOK_IDENT)
+			continue;
+		char *out = malloc(ty->as.token.length + 1);
+		memcpy(out, d.src + ty->as.token.offset, ty->as.token.length);
+		out[ty->as.token.length] = '\0';
+		return out;
+	}
+	return NULL;
+}
 static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 	if (!sv_present(d))
 		return 0;
@@ -1900,6 +2187,67 @@ static int syntax_decl_has_intrinsic_decorator(SyntaxView d) {
 		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
 			continue;
 		if (e2->as.token.length == 9 && memcmp(d.src + e2->as.token.offset, "intrinsic", 9) == 0)
+			return 1;
+	}
+	return 0;
+}
+/* `@syscall(N)`: returns the syscall number N, or -1 if the decorator is absent. Scans for the
+ * `@ syscall ( <number> )` token run (the parser already validated the shape). */
+static int syntax_decl_syscall_num(SyntaxView d) {
+	if (!sv_present(d))
+		return -1;
+	int n = d.node->child_count;
+	for (int i = 0; i + 3 < n; i++) {
+		const SyntaxElem *at = &d.node->children[i];
+		if (at->tag != SE_TOKEN || at->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *nm = &d.node->children[i + 1];
+		if (nm->tag != SE_TOKEN || nm->as.token.kind != TOK_IDENT)
+			continue;
+		if (nm->as.token.length != 7 || memcmp(d.src + nm->as.token.offset, "syscall", 7) != 0)
+			continue;
+		/* i+2 = '(', i+3 = the number token. */
+		const SyntaxElem *num = &d.node->children[i + 3];
+		if (num->tag != SE_TOKEN || num->as.token.kind != TOK_NUMBER)
+			continue;
+		char buf[32];
+		size_t len = num->as.token.length < sizeof(buf) - 1 ? num->as.token.length : sizeof(buf) - 1;
+		memcpy(buf, d.src + num->as.token.offset, len);
+		buf[len] = '\0';
+		return atoi(buf);
+	}
+	return -1;
+}
+static int syntax_decl_has_gpu_decorator(SyntaxView d) {
+	if (!sv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 3 && memcmp(d.src + e2->as.token.offset, "gpu", 3) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* `@resident` on a pool decl: its columns stay GPU-resident across dispatches (see HirStaticDecl). */
+static int syntax_decl_has_resident_decorator(SyntaxView d) {
+	if (!sv_present(d))
+		return 0;
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 8 && memcmp(d.src + e2->as.token.offset, "resident", 8) == 0)
 			return 1;
 	}
 	return 0;
@@ -1992,6 +2340,7 @@ static HirDecl *lower_proc_from(SyntaxView f, char *name) {
 	HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 	HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 	ap->name = name;
+	ap->syscall_num = -1; /* not a `@syscall(N)` extern unless the decorator sets it (0 is a valid syscall #) */
 	/* Foreign (FFI-bodied): a proc value-form with no `{` body block (parser emits a bodiless
 	 * proc value-form only inside a `#foreign` region). Mirrors semantic.c build_proc_from. */
 	ap->is_extern = !sv_has_token(f, TOK_LBRACE);
@@ -2158,7 +2507,39 @@ static void group_suffix_names(HirExpr *e, const char *suffix) {
  * the user writes the vector once instead of hand-expanding each axis. Each component clones the RHS and
  * suffixes its bare group references. Statements are replaced in place by a BLOCK (codegen + the later
  * tuple_rewrite pass both recurse into blocks). */
-static void expand_group_assigns(HirMapDecl *as) {
+/* True if `e` produces its tuple from something other than bare group COLUMNS — a self-read marker (`me.vel`)
+ * or a tuple LOCAL (`steer`). Such an RHS can't be split by suffixing names per component; codegen writes it
+ * lane-wise instead (`nvel_x = value.x; nvel_y = value.y`). */
+static int expr_needs_tuple_value_write(HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		if (!e->data.name.name)
+			return 0;
+		if (e->data.name.name[0] == SELF_READ_MARK)
+			return 1; /* a self-read (`me.vel`) — not a suffixable bare column */
+		if (tgroup_lookup(e->data.name.name))
+			return 0; /* a bare group column (`pos`/`vel`) — suffixable per component */
+		if (g_lower_sem && semantic_get_const_value(g_lower_sem, e->data.name.name))
+			return 0; /* a const — scalar clones into each component; a tuple const suffixes to its member */
+		/* Anything else is a LOCAL (`w`, `spd`, `steer`): a tuple local can't be name-suffixed → value write. */
+		return 1;
+	case HIR_EXPR_BINARY:
+		return expr_needs_tuple_value_write(e->data.binary.left) || expr_needs_tuple_value_write(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return expr_needs_tuple_value_write(e->data.unary.operand);
+	case HIR_EXPR_CALL:
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (expr_needs_tuple_value_write(e->data.call.args[i]))
+				return 1;
+		return 0;
+	default:
+		return 0;
+	}
+}
+
+static void expand_group_assigns(HirKernelDecl *as) {
 	for (int sx = 0; sx < as->stmt_count; sx++) {
 		HirStmt *s = as->stmts[sx];
 		if (!s || s->kind != HIR_STMT_ASSIGN)
@@ -2169,6 +2550,10 @@ static void expand_group_assigns(HirMapDecl *as) {
 		CstTupleGroup *g = tgroup_lookup(tgt->data.name.name);
 		if (!g)
 			continue;
+		/* A tuple-VALUE RHS (`me.nvel = me.vel + steer`, mixing self-reads + tuple locals) can't be split by
+		 * name-suffixing — write it lane-wise via field access: `nvel_x = (…).x`. A pure group-column op
+		 * (`pos = pos + vel`) suffixes bare names per component as before (which vectorizes). */
+		int value_write = expr_needs_tuple_value_write(s->data.assign_stmt.value);
 		HirStmt *blk = hir_stmt_create(HIR_STMT_BLOCK);
 		blk->data.block.stmts = calloc(g->nsuf ? g->nsuf : 1, sizeof(HirStmt *));
 		blk->data.block.count = 0;
@@ -2179,8 +2564,15 @@ static void expand_group_assigns(HirMapDecl *as) {
 			ct->data.name.name = malloc(strlen(tgt->data.name.name) + 1 + strlen(g->suffix[j]) + 1);
 			sprintf(ct->data.name.name, "%s_%s", tgt->data.name.name, g->suffix[j]);
 			cs->data.assign_stmt.target = ct;
-			HirExpr *cv = hir_expr_deep_clone(s->data.assign_stmt.value);
-			group_suffix_names(cv, g->suffix[j]);
+			HirExpr *cv;
+			if (value_write) {
+				cv = hir_expr_create(HIR_EXPR_FIELD);
+				cv->data.field.base = hir_expr_deep_clone(s->data.assign_stmt.value);
+				cv->data.field.field_name = dupz(g->suffix[j]);
+			} else {
+				cv = hir_expr_deep_clone(s->data.assign_stmt.value);
+				group_suffix_names(cv, g->suffix[j]);
+			}
 			cs->data.assign_stmt.value = cv;
 			blk->data.block.stmts[blk->data.block.count++] = cs;
 		}
@@ -2222,51 +2614,72 @@ static HirDecl *lower_query_from(SyntaxView f, char *name) {
 	return qd;
 }
 
-static HirDecl *lower_map_from(SyntaxView f, char *name) {
-	HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
-	HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
-	as->name = name;
-	as->stmts = syntax_lower_body(f, &as->stmt_count);
-	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
-	 * `pos.x`→`pos_x` rewrite below, so the produced scalar columns match the flattened params. */
-	expand_group_assigns(as);
-	/* The map's columns come from the query it runs over: an inline `query {…}` child (a wrapped
-	 * SN_QUERY_EXPR), or a named query `map(Name)` (an SN_QUERY_REF) resolved through the registry. The
-	 * body stays from `f`; only the column source moves. Resolving named columns here — before the
-	 * `pos.x`→`pos_x` body rewrite below — keeps tuple-group flattening correct for named queries. */
-	SyntaxView cols = sv_child_at(f, SN_QUERY_EXPR, 0);
-	if (!sv_present(cols)) {
-		SyntaxView ref = sv_child_at(f, SN_QUERY_REF, 0);
-		if (sv_present(ref)) {
-			char *qn = sv_dup(ref);
-			cols = query_cols_lookup(qn);
-			free(qn);
+/* `Name :: system { body }` — the composer. No query, no params; the body is plain statements
+ * (control flow, `run <map>`, proc/func/extern calls). Lowers to a no-arg HIR_DECL_KERNEL (kind SYSTEM). */
+/* Resolve a query's columns (inline `query{…}` child, or a named `(Name)` via the registry) into FLATTENED
+ * HirParams, rewriting tuple-group accesses (`pos.x`→`pos_x`) in `stmts`. Shared by map and query-system
+ * lowering ("same logic as map"). No query present ⇒ 0 params. */
+/* Gather a query selector's top-level columns (name, is_own) from EITHER a query (SN_PARAM children) or an
+ * archetype (SN_FIELD_NAME children of SN_ARCH_EXPR — tuple MEMBERS x/y are not SN_FIELD_NAME, so this picks
+ * exactly the top-level columns). Appends to names[]/owns[] at *nc. */
+static void lower_gather_cols(SyntaxView cols, char **names, int *owns, int *nc) {
+	if (!sv_present(cols))
+		return;
+	if (cols.node->kind == SN_ARCH_EXPR) {
+		for (int k = 0; k < cols.node->child_count && *nc < 256; k++)
+			if (cols.node->children[k].tag == SE_NODE && cols.node->children[k].as.node->kind == SN_FIELD_NAME) {
+				names[*nc] = sv_dup((SyntaxView){cols.node->children[k].as.node, cols.src});
+				owns[*nc] = 0;
+				(*nc)++;
+			}
+	} else {
+		int np = sv_count(cols, SN_PARAM);
+		for (int i = 0; i < np && *nc < 256; i++) {
+			SyntaxView p = sv_child_at(cols, SN_PARAM, i);
+			names[*nc] = sv_dup(sv_child(p, SN_PARAM_NAME));
+			owns[*nc] = sv_has_token(p, TOK_OWN);
+			(*nc)++;
 		}
 	}
-	if (!sv_present(cols))
-		cols = f; /* defensive: no query resolved → no SN_PARAM columns (an empty map) */
-	int np = sv_count(cols, SN_PARAM);
-	int pcount = 0;
-	for (int i = 0; i < np; i++) {
-		char *pn = sv_dup(sv_child(sv_child_at(cols, SN_PARAM, i), SN_PARAM_NAME));
-		CstTupleGroup *g = tgroup_lookup(pn);
-		pcount += g ? g->nsuf : 1;
-		free(pn);
+}
+
+static void lower_query_columns(SyntaxView f, HirStmt **stmts, int stmt_count, HirParam ***out_params, int *out_count) {
+	/* A `system(Q1, Q2)` JOIN carries several query children — gather columns from every one (inline
+	 * SN_QUERY_EXPR and named SN_QUERY_REF), flattened. Single-query map/system gathers from one. */
+	char *names[256];
+	int owns[256];
+	int nc = 0;
+	int nqe = sv_count(f, SN_QUERY_EXPR);
+	for (int qi = 0; qi < nqe; qi++)
+		lower_gather_cols(sv_child_at(f, SN_QUERY_EXPR, qi), names, owns, &nc);
+	int nqr = sv_count(f, SN_QUERY_REF);
+	for (int qi = 0; qi < nqr; qi++) {
+		char *qn = sv_dup(sv_child_at(f, SN_QUERY_REF, qi));
+		SyntaxView cols = query_cols_lookup(qn);
+		free(qn);
+		lower_gather_cols(cols, names, owns, &nc);
 	}
-	as->params = calloc(pcount ? pcount : 1, sizeof(HirParam *));
-	as->param_count = 0;
-	for (int i = 0; i < np; i++) {
-		SyntaxView p = sv_child_at(cols, SN_PARAM, i);
-		char *pn = sv_dup(sv_child(p, SN_PARAM_NAME));
+	int pcount = 0;
+	for (int i = 0; i < nc; i++) {
+		CstTupleGroup *g = tgroup_lookup(names[i]);
+		pcount += g ? g->nsuf : 1;
+	}
+	HirParam **params = calloc(pcount ? pcount : 1, sizeof(HirParam *));
+	int pc = 0;
+	for (int i = 0; i < nc; i++) {
+		char *pn = names[i];
 		CstTupleGroup *g = tgroup_lookup(pn);
 		if (!g) {
-			as->params[as->param_count++] = lower_param_cst(p);
+			HirParam *ap = hir_param_create(NULL, NULL);
+			ap->name = malloc(strlen(pn) + 1);
+			strcpy(ap->name, pn);
+			ap->is_own = owns[i];
+			params[pc++] = ap;
 			free(pn);
 			continue;
 		}
-		for (int sx = 0; sx < as->stmt_count; sx++)
-			tuple_rewrite_stmt(as->stmts[sx], pn);
-		int is_own = sv_has_token(p, TOK_OWN);
+		for (int sx = 0; sx < stmt_count; sx++)
+			tuple_rewrite_stmt(stmts[sx], pn);
 		for (int j = 0; j < g->nsuf; j++) {
 			HirParam *ap = hir_param_create(NULL, NULL);
 			ap->name = malloc(strlen(pn) + 1 + strlen(g->suffix[j]) + 1);
@@ -2274,12 +2687,190 @@ static HirDecl *lower_map_from(SyntaxView f, char *name) {
 			HirType *mt = hir_type_create(HIR_TYPE_UNKNOWN);
 			*mt = g->member;
 			ap->type = mt;
-			ap->is_own = is_own;
-			as->params[as->param_count++] = ap;
+			ap->is_own = owns[i];
+			params[pc++] = ap;
 		}
 		free(pn);
 	}
-	ad->data.map = as;
+	*out_params = params;
+	*out_count = pc;
+}
+
+/* The optional `eff` permission marker (`system (Q) eff { … }`) parses to an SN_EFF child. */
+static int sv_has_eff(SyntaxView f) {
+	return sv_present(sv_child_at(f, SN_EFF, 0));
+}
+
+/* Extract the declared `(writes)` column names (SN_WRITE_PARAM children) into a fresh char* array. */
+static void lower_writes(SyntaxView f, char ***out_writes, int *out_count) {
+	int n = sv_count(f, SN_WRITE_PARAM);
+	*out_count = n;
+	*out_writes = n ? calloc(n, sizeof(char *)) : NULL;
+	for (int i = 0; i < n; i++)
+		(*out_writes)[i] = txt_dup(sv_token(sv_child_at(f, SN_WRITE_PARAM, i), TOK_IDENT));
+}
+
+/* `Flock.<group>` where `<group>` is a tuple group (`pos(x,y)`) must carry the tuple TYPE so codegen's tuple
+ * arithmetic (`Flock.pos - me.pos`) extracts its lanes — unlike `me.pos`, the binder field is NOT collapsed to
+ * a bare name (codegen resolves `Flock.pos` from the pool at the fold counter), so only its resolved type is
+ * tagged. Recurses into the nested `map` (a HIR_STMT_EACH) that holds the self-join body. */
+static void sysbind_tag_expr(HirExpr *e, const char *binder) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case HIR_EXPR_FIELD:
+		sysbind_tag_expr(e->data.field.base, binder);
+		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME &&
+		    strcmp(e->data.field.base->data.name.name, binder) == 0) {
+			HirType *tt = hir_tuple_type_for_name(e->data.field.field_name);
+			if (tt) {
+				e->resolved = *tt;
+				free(tt);
+			}
+		}
+		break;
+	case HIR_EXPR_BINARY:
+		sysbind_tag_expr(e->data.binary.left, binder);
+		sysbind_tag_expr(e->data.binary.right, binder);
+		break;
+	case HIR_EXPR_UNARY:
+		sysbind_tag_expr(e->data.unary.operand, binder);
+		break;
+	case HIR_EXPR_CALL:
+		sysbind_tag_expr(e->data.call.callee, binder);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			sysbind_tag_expr(e->data.call.args[i], binder);
+		break;
+	case HIR_EXPR_INDEX:
+		sysbind_tag_expr(e->data.index.base, binder);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			sysbind_tag_expr(e->data.index.indices[i], binder);
+		break;
+	default:
+		break;
+	}
+}
+
+static void sysbind_tag_stmt(HirStmt *s, const char *binder) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case HIR_STMT_BIND:
+		sysbind_tag_expr(s->data.bind_stmt.value, binder);
+		break;
+	case HIR_STMT_ASSIGN:
+		sysbind_tag_expr(s->data.assign_stmt.target, binder);
+		sysbind_tag_expr(s->data.assign_stmt.value, binder);
+		break;
+	case HIR_STMT_FOR:
+		sysbind_tag_stmt(s->data.for_stmt.init, binder);
+		sysbind_tag_expr(s->data.for_stmt.cond, binder);
+		sysbind_tag_stmt(s->data.for_stmt.incr, binder);
+		for (int i = 0; i < s->data.for_stmt.body_count; i++)
+			sysbind_tag_stmt(s->data.for_stmt.body[i], binder);
+		break;
+	case HIR_STMT_IF:
+		sysbind_tag_expr(s->data.if_stmt.cond, binder);
+		for (int i = 0; i < s->data.if_stmt.then_count; i++)
+			sysbind_tag_stmt(s->data.if_stmt.then_body[i], binder);
+		for (int i = 0; i < s->data.if_stmt.else_count; i++)
+			sysbind_tag_stmt(s->data.if_stmt.else_body[i], binder);
+		break;
+	case HIR_STMT_EXPR:
+		sysbind_tag_expr(s->data.expr_stmt.expr, binder);
+		break;
+	case HIR_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			sysbind_tag_expr(s->data.return_stmt.values[i], binder);
+		break;
+	case HIR_STMT_BLOCK:
+		for (int i = 0; i < s->data.block.count; i++)
+			sysbind_tag_stmt(s->data.block.stmts[i], binder);
+		break;
+	case HIR_STMT_EACH:
+		if (s->data.each_stmt)
+			for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+				sysbind_tag_stmt(s->data.each_stmt->stmts[i], binder);
+		break;
+	default:
+		break;
+	}
+}
+
+static HirDecl *lower_system_from(SyntaxView f, char *name) {
+	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
+	as->name = name;
+	as->kind = HIR_KERNEL_SYSTEM;
+	as->eff = sv_has_eff(f);
+	lower_writes(f, &as->writes, &as->write_count);
+	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* `system(Q)` carries query columns (the effectful fan); a run-once `system { }` resolves to 0. */
+	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
+	/* `system (query {…} as Flock)`: `Flock.<col>` names the whole queried column (the neighbour fold domain). */
+	SyntaxView qbind = sv_child_at(f, SN_QUERY_BIND, 0);
+	if (sv_present(qbind)) {
+		as->query_binder = txt_dup(sv_token(qbind, TOK_IDENT));
+		for (int i = 0; i < as->stmt_count; i++)
+			sysbind_tag_stmt(as->stmts[i], as->query_binder);
+	}
+	ad->data.kernel = as;
+	return ad;
+}
+
+/* Build the per-entity effectful-fan payload (`map (Q) eff`, the old `each`) from an SN_EACH_EXPR view:
+ * a MAP kernel with eff=1. `name` is the decl name, or NULL for an anonymous inline fan (HIR_STMT_EACH). */
+static HirKernelDecl *lower_each_payload(SyntaxView f, char *name) {
+	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
+	as->name = name;
+	as->kind = HIR_KERNEL_MAP;
+	as->eff = 1; /* the per-entity fan (`map (Q) eff`) is effectful by construction */
+	lower_writes(f, &as->writes, &as->write_count);
+	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* the fan carries its query columns (flattened), bound per-element in codegen's row loop. */
+	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
+	/* `map (query {…} as w) eff`: the matched row's handle binds to `w` in the body. */
+	SyntaxView bind = sv_child_at(f, SN_QUERY_BIND, 0);
+	if (sv_present(bind))
+		as->row_var = txt_dup(sv_token(bind, TOK_IDENT));
+	return as;
+}
+
+static HirDecl *lower_each_from(SyntaxView f, char *name) {
+	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+	ad->data.kernel = lower_each_payload(f, name);
+	return ad;
+}
+
+/* Lower a pure `map` kernel BODY (the branch-free column transform) to a HirKernelDecl. `map (Q) eff` is the
+ * effectful per-entity fan and parses directly to SN_EACH_EXPR (the each machinery), so it never reaches here.
+ * Shared by the named-decl form (lower_map_from) and a nested pure-map STATEMENT lowered as an inline fan. */
+static HirKernelDecl *lower_map_payload(SyntaxView f, char *name) {
+	HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
+	as->name = name;
+	as->kind = HIR_KERNEL_MAP;
+	lower_writes(f, &as->writes, &as->write_count);
+	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* `map (Q as me)`: collapse the pure-map column self-binder `me.<col>` → bare `col` BEFORE any tuple/
+	 * group rewrite, so `me.pos.x` becomes `pos.x` and then flattens to `pos_x` like a bare access. */
+	SyntaxView selfbind = sv_child_at(f, SN_QUERY_BIND, 0);
+	if (sv_present(selfbind)) {
+		as->has_self_binder = 1;
+		char *self = txt_dup(sv_token(selfbind, TOK_IDENT));
+		for (int i = 0; i < as->stmt_count; i++)
+			self_bind_rewrite_stmt(as->stmts[i], self);
+		free(self);
+	}
+	/* Expand whole-group vector ops (`pos = pos + vel`) into per-component blocks BEFORE the per-param
+	 * `pos.x`→`pos_x` rewrite, so the produced scalar columns match the flattened params. */
+	expand_group_assigns(as);
+	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
+	return as;
+}
+
+static HirDecl *lower_map_from(SyntaxView f, char *name) {
+	HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+	ad->data.kernel = lower_map_payload(f, name);
 	return ad;
 }
 
@@ -2331,6 +2922,9 @@ static HirDecl *lower_archetype_from(SyntaxView f, char *name) {
 		}
 		HirField *af = hir_field_create(FIELD_COLUMN, NULL, NULL);
 		af->name = sv_dup(fn);
+		/* Preserve the source-declared type name for close-on-delete matching — an enum column lowers to
+		 * its backing int below, losing the nominal, so record it here (the base identifier of the type). */
+		af->decl_type_name = sv_present(ty) ? sv_dup_first_token(ty) : sv_dup(fn);
 		if (sv_present(ty)) {
 			af->type = lower_type_cst(ty);
 		} else {
@@ -2428,8 +3022,9 @@ static SyntaxView lower_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
-		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_MAP_EXPR || k == SN_SYSTEM_EXPR ||
+		    k == SN_EACH_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR ||
+		    k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -2444,6 +3039,13 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		return NULL;
 	case SN_DEFAULT_DECL:
 		return lower_default_directive(d);
+	case SN_RUN_DECL: {
+		HirDecl *ad = hir_decl_create(HIR_DECL_RUN);
+		HirRunDecl *rn = calloc(1, sizeof(HirRunDecl));
+		rn->tree = g_lower_sem ? semantic_try_const_schedule(g_lower_sem, d) : NULL;
+		ad->data.run = rn;
+		return ad;
+	}
 	case SN_WORLD_DECL: {
 		HirDecl *ad = hir_decl_create(HIR_DECL_WORLD);
 		ad->data.world = calloc(1, sizeof(HirWorldDecl));
@@ -2527,6 +3129,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		HirDecl *ad = hir_decl_create(HIR_DECL_PROC);
 		HirProcDecl *ap = calloc(1, sizeof(HirProcDecl));
 		ap->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
+		ap->syscall_num = -1; /* default; `@syscall(N)` sets it (0 is a valid syscall #, so calloc-0 is wrong) */
 		ap->is_extern = !sv_has_token(d, TOK_LBRACE);
 		int np = sv_count(d, SN_PARAM);
 		ap->params = calloc(np ? np : 1, sizeof(HirParam *));
@@ -2543,9 +3146,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		ad->data.proc = ap;
 		return ad;
 	}
-	case SN_SYS_DECL: {
-		HirDecl *ad = hir_decl_create(HIR_DECL_MAP);
-		HirMapDecl *as = calloc(1, sizeof(HirMapDecl));
+	case SN_MAP_DECL: {
+		HirDecl *ad = hir_decl_create(HIR_DECL_KERNEL);
+		HirKernelDecl *as = calloc(1, sizeof(HirKernelDecl));
+		as->kind = HIR_KERNEL_MAP;
 		as->name = sv_dup(sv_child(d, SN_FUNC_DEF_NAME));
 		/* Lower the body first; a tuple-group param then expands into one scalar param
 		 * per component (`pos` → `pos_x`, `pos_y`) and its `pos.x` body accesses are
@@ -2585,7 +3189,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			free(pn);
 		}
-		ad->data.map = as;
+		ad->data.kernel = as;
 		return ad;
 	}
 	case SN_FUNC_DECL: {
@@ -2613,8 +3217,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		SyntaxView rhs = lower_rhs_form(d);
 		if (sv_present(rhs)) {
 			SyntaxNodeKind rk = sv_kind(rhs);
-			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_SYS_EXPR ||
-			    rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR || rk == SN_QUERY_EXPR) {
+			if (rk == SN_PROC_EXPR || rk == SN_FUNC_EXPR || rk == SN_POLICY_EXPR || rk == SN_MAP_EXPR ||
+			    rk == SN_SYSTEM_EXPR || rk == SN_EACH_EXPR || rk == SN_ARCH_EXPR || rk == SN_GROUP_EXPR ||
+			    rk == SN_QUERY_EXPR) {
 				char *nm = txt_dup(lower_binding_name(d));
 				switch (rk) {
 				case SN_QUERY_EXPR:
@@ -2623,16 +3228,42 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					HirDecl *pd = lower_proc_from(rhs, nm);
 					/* Propagate the `@drop` decorator (a direct `@ drop` token pair on the
 					 * decl node) so the RAII pass can register this proc as a destructor. */
-					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_drop_decorator(d))
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_drop_decorator(d)) {
 						pd->data.proc->is_drop = 1;
+						pd->data.proc->drop_type = syntax_decl_drop_type(d);
+					}
 					/* `@intrinsic`: calls to this decl lower to a built-in instruction (codegen
 					 * checks the resolved decl's flag, not the symbol name — see codegen syscall). */
 					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))
 						pd->data.proc->is_intrinsic = 1;
+					/* `@syscall(N)`: a typed direct syscall — calls emit the syscall asm (codegen reads
+					 * `syscall_num`), and a written buffer is declared in-out (honest, no read-only-borrow write). */
+					if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc) {
+						int sn = syntax_decl_syscall_num(d);
+						if (sn >= 0)
+							pd->data.proc->syscall_num = sn;
+					}
 					return pd;
 				}
 				case SN_FUNC_EXPR: {
+					/* A sum-typed func (a Schedule combinator) is CTFE-only — folded at `#run`, never
+					 * called at runtime; emit no decl (sums have no runtime representation yet). */
+					if (g_lower_sem && nm && semantic_func_is_ctfe_only(g_lower_sem, nm))
+						return NULL;
+					/* A func with an out-param list produces results via the same ABI `proc` used; lower it
+					 * to a proc decl (HIR/codegen are structurally identical — the func/proc distinction is
+					 * purity, enforced in semantic, not a codegen shape). */
+					if (sv_count(rhs, SN_OUT_PARAM) > 0) {
+						HirDecl *pd = lower_proc_from(rhs, nm);
+						if (pd && pd->kind == HIR_DECL_PROC && pd->data.proc && syntax_decl_has_intrinsic_decorator(d))
+							pd->data.proc->is_intrinsic = 1;
+						return pd;
+					}
 					HirDecl *fd = lower_func_from(rhs, nm);
+					/* `@intrinsic`: a bodyless PURE primitive (e.g. `bound(p: rawptr, n) -> []char`);
+					 * codegen emits a built-in instruction at call sites, not a real function. */
+					if (fd && fd->kind == HIR_DECL_FUNC && fd->data.func && syntax_decl_has_intrinsic_decorator(d))
+						fd->data.func->is_intrinsic = 1;
 					return fd;
 				}
 				case SN_POLICY_EXPR: {
@@ -2646,10 +3277,19 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 					}
 					return pf;
 				}
-				case SN_SYS_EXPR:
-					/* GPU dispatch is decided at the call site (`run map @gpu`), not here — see the
-					 * SN_RUN_STMT lowering, which sets the map's is_gpu flag for the emitter. */
-					return lower_map_from(rhs, nm);
+				case SN_MAP_EXPR: {
+					/* GPU dispatch is a `@gpu` decorator on the map decl: the schedule emits a compute shader
+					 * and dispatches on the GPU (CPU fallback). */
+					HirDecl *md = lower_map_from(rhs, nm);
+					if (md && md->kind == HIR_DECL_KERNEL && md->data.kernel &&
+					    md->data.kernel->kind == HIR_KERNEL_MAP && syntax_decl_has_gpu_decorator(d))
+						md->data.kernel->is_gpu = 1;
+					return md;
+				}
+				case SN_SYSTEM_EXPR:
+					return lower_system_from(rhs, nm);
+				case SN_EACH_EXPR:
+					return lower_each_from(rhs, nm);
 				case SN_ARCH_EXPR:
 					return lower_archetype_from(rhs, nm);
 				case SN_GROUP_EXPR:
@@ -2660,6 +3300,10 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			}
 			/* enum: compile-time only (variants resolve to int literals); emit no decl. */
 			if (rk == SN_ENUM_EXPR)
+				return NULL;
+			/* sum: compile-time only for now (Schedule folds at #run; runtime sum codegen deferred);
+			 * emit no decl. */
+			if (rk == SN_SUM_EXPR)
 				return NULL;
 		}
 		/* Callable alias `handler :: some_proc`: compile-time only (calls are rewritten to the
@@ -2744,18 +3388,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 				HirType *ft = (stride <= 1 && sv_present(declty)) ? lower_type_cst(declty) : NULL;
 				if (ft && ft->elem) {
 					sd->array.element_type = ft->elem;
-					for (int i = 0; i < declty.node->child_count; i++)
-						if (declty.node->children[i].tag == SE_TOKEN &&
-						    declty.node->children[i].as.token.kind == TOK_NUMBER) {
-							char b[32];
-							int l = (int)declty.node->children[i].as.token.length;
-							if (l > 31)
-								l = 31;
-							memcpy(b, declty.src + declty.node->children[i].as.token.offset, l);
-							b[l] = '\0';
-							sd->array.size = atoi(b);
-							break;
-						}
+					/* size from the (const-folded) declared type — `[W * H]T` folds to a rank, not a raw token. */
+					if (ft->rank > 0)
+						sd->array.size = ft->rank;
 				} else {
 					HirType *et = hir_type_create(HIR_TYPE_UNKNOWN);
 					*et = map_type_str(etn);
@@ -2780,6 +3415,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			 * the `.`-joined IDENT tokens before `[`. A bare `Particle[N]` yields "Particle"; a
 			 * qualified `lib.Particle[N]` yields "lib.Particle" (the imported shape's canonical name). */
 			sd->kind = HIR_STATIC_ARCHETYPE;
+			sd->is_resident = syntax_decl_has_resident_decorator(d); /* `@resident` → GPU-resident columns */
 			/* Prefix pool `[C]Name(N){V}`: the archetype name is the (possibly `.`-qualified) IDENT
 			 * run that sits at top level AFTER the capacity `[…]` and before any `(`/`{`. It is
 			 * collected in the phase walk below (the PH_NONE IDENT case), so a bare `[N]Particle`
@@ -2804,6 +3440,8 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 			enum { PH_NONE, PH_CAP, PH_LEN, PH_FIELDS } phase = PH_NONE;
 			const char *pend = NULL;
 			int pend_len = 0;
+			int after_cap = 0; /* the archetype name follows the capacity `[]`; ignore leading decorator
+			                    * idents (`@resident`/`@gpu`) which sit at PH_NONE before the `[`. */
 			for (int i = 0; i < d.node->child_count; i++) {
 				SyntaxElem *ch = &d.node->children[i];
 				if (ch->tag == SE_TOKEN) {
@@ -2818,6 +3456,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 						phase = PH_FIELDS;
 						break;
 					case TOK_RBRACKET:
+						after_cap = 1;
+						phase = PH_NONE;
+						break;
 					case TOK_RPAREN:
 					case TOK_RBRACE:
 						phase = PH_NONE;
@@ -2826,7 +3467,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 						if (phase == PH_FIELDS) {
 							pend = d.src + ch->as.token.offset;
 							pend_len = (int)ch->as.token.length;
-						} else if (phase == PH_NONE) {
+						} else if (phase == PH_NONE && after_cap) {
 							/* archetype name segment — top level, after the capacity `[]` */
 							if (nl > 0 && nl < (int)sizeof(namebuf) - 1)
 								namebuf[nl++] = '.';
@@ -2884,18 +3525,9 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 				sd->kind = HIR_STATIC_ARRAY;
 				sd->array.name = nm;
 				sd->array.element_type = full->elem;
-				for (int i = 0; i < arr_ty.node->child_count; i++)
-					if (arr_ty.node->children[i].tag == SE_TOKEN &&
-					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
-						char buf[32];
-						int l = (int)arr_ty.node->children[i].as.token.length;
-						if (l > 31)
-							l = 31;
-						memcpy(buf, arr_ty.src + arr_ty.node->children[i].as.token.offset, l);
-						buf[l] = '\0';
-						sd->array.size = atoi(buf);
-						break;
-					}
+				/* size from the (const-folded) declared type — `[W * H]T` folds to a rank, not a raw token. */
+				if (full->rank > 0)
+					sd->array.size = full->rank;
 				sd->array.init = sv_present(initv) ? lower_expr_cst(initv) : NULL;
 			} else {
 				/* scalar; inferred form `name := v` carries no type node — infer int/float from the
@@ -3136,6 +3768,10 @@ static void hir_rn_stmt(HirStmt *s, const char *prefix, char **set, int count) {
 	case HIR_STMT_EXPR:
 		hir_rn_expr(s->data.expr_stmt.expr, prefix, set, count);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			hir_rn_stmt(s->data.each_stmt->stmts[i], prefix, set, count);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			hir_rn_expr(s->data.return_stmt.values[i], prefix, set, count);
@@ -3174,12 +3810,18 @@ static void hir_rn_decl(HirDecl *d, const char *prefix, char **set, int count) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			hir_rn_stmt(d->data.proc->stmts[i], prefix, set, count);
 		break;
-	case HIR_DECL_MAP:
-		rn_owned(&d->data.map->name, prefix, set, count);
-		for (int i = 0; i < d->data.map->param_count; i++)
-			hir_rn_type(d->data.map->params[i]->type, prefix, set, count);
-		for (int i = 0; i < d->data.map->stmt_count; i++)
-			hir_rn_stmt(d->data.map->stmts[i], prefix, set, count);
+	case HIR_DECL_KERNEL:
+		rn_owned(&d->data.kernel->name, prefix, set, count);
+		/* The pure-map path renames its flattened-column param types (the system/fan paths historically do
+		 * not — preserved). */
+		if (d->data.kernel->kind == HIR_KERNEL_MAP && !d->data.kernel->eff)
+			for (int i = 0; i < d->data.kernel->param_count; i++)
+				hir_rn_type(d->data.kernel->params[i]->type, prefix, set, count);
+		for (int i = 0; i < d->data.kernel->stmt_count; i++)
+			hir_rn_stmt(d->data.kernel->stmts[i], prefix, set, count);
+		break;
+	case HIR_DECL_RUN:
+		/* Entry-file only; never inlined as a module, so no module-local rename. */
 		break;
 	case HIR_DECL_QUERY:
 		rn_owned(&d->data.query->name, prefix, set, count);
@@ -3233,8 +3875,10 @@ static const char *hir_decl_name(HirDecl *d) {
 		return d->data.archetype->name;
 	case HIR_DECL_PROC:
 		return d->data.proc->name;
-	case HIR_DECL_MAP:
-		return d->data.map->name;
+	case HIR_DECL_KERNEL:
+		return d->data.kernel->name;
+	case HIR_DECL_RUN:
+		return NULL; /* a region, not a named decl */
 	case HIR_DECL_QUERY:
 		return d->data.query->name;
 	case HIR_DECL_FUNC:
@@ -3336,6 +3980,13 @@ static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 		for (int i = 0; i < e->data.index.index_count; i++)
 			hir_q_expr(e->data.index.indices[i], q);
 		break;
+	case HIR_EXPR_SLICE:
+		/* A qualified call in a slice BOUND (`buf[0 : mod.f(x)]`) must be visited too — without this its
+		 * FIELD callee stays unresolved and codegen emits a NULL func_name (`@unknown`). */
+		hir_q_expr(e->data.slice.base, q);
+		hir_q_expr(e->data.slice.lo, q);
+		hir_q_expr(e->data.slice.hi, q);
+		break;
 	case HIR_EXPR_BINARY:
 		hir_q_expr(e->data.binary.left, q);
 		hir_q_expr(e->data.binary.right, q);
@@ -3391,6 +4042,10 @@ static void hir_q_stmt(HirStmt *s, const QualCtx *q) {
 	case HIR_STMT_EXPR:
 		hir_q_expr(s->data.expr_stmt.expr, q);
 		break;
+	case HIR_STMT_EACH:
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			hir_q_stmt(s->data.each_stmt->stmts[i], q);
+		break;
 	case HIR_STMT_RETURN:
 		for (int i = 0; i < s->data.return_stmt.count; i++)
 			hir_q_expr(s->data.return_stmt.values[i], q);
@@ -3422,9 +4077,9 @@ static void hir_q_decl(HirDecl *d, const QualCtx *q) {
 		for (int i = 0; i < d->data.proc->stmt_count; i++)
 			hir_q_stmt(d->data.proc->stmts[i], q);
 		break;
-	case HIR_DECL_MAP:
-		for (int i = 0; i < d->data.map->stmt_count; i++)
-			hir_q_stmt(d->data.map->stmts[i], q);
+	case HIR_DECL_KERNEL:
+		for (int i = 0; i < d->data.kernel->stmt_count; i++)
+			hir_q_stmt(d->data.kernel->stmts[i], q);
 		break;
 	case HIR_DECL_FUNC:
 		for (int i = 0; i < d->data.func->stmt_count; i++)
@@ -3775,6 +4430,15 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 			}
 			continue;
 		}
+		/* `#schedule` is driver-owned: collected only from the root/entry file (this loop), never
+		 * from an inlined module (those go through hir_inline_module). Sits outside the decl range
+		 * guard below, so handle it explicitly here. */
+		if (k == SN_RUN_DECL) {
+			HirDecl *ad = lower_decl_cst((SyntaxView){root->children[i].as.node, src});
+			if (ad)
+				ast->decls[ast->decl_count++] = ad;
+			continue;
+		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
 		SyntaxView dv = {root->children[i].as.node, src};
@@ -3834,10 +4498,11 @@ HirProgram *lower_to_hir(const SyntaxNode *root, const char *src) {
 		for (int d = 0; d < ast->decl_count; d++) {
 			HirDecl *dd = ast->decls[d];
 			hir_rn_decl(dd, "", NULL, 0); /* count=0 → only g_impl substitutions fire (names + body refs) */
-			/* Column-binding names that the traversal skips: map params, archetype fields. */
-			if (dd->kind == HIR_DECL_MAP)
-				for (int p = 0; p < dd->data.map->param_count; p++)
-					subst_name(&dd->data.map->params[p]->name);
+			/* Column-binding names that the traversal skips: pure-map params, archetype fields. (The fan/system
+			 * paths historically aren't substituted here — preserved.) */
+			if (dd->kind == HIR_DECL_KERNEL && dd->data.kernel->kind == HIR_KERNEL_MAP && !dd->data.kernel->eff)
+				for (int p = 0; p < dd->data.kernel->param_count; p++)
+					subst_name(&dd->data.kernel->params[p]->name);
 			else if (dd->kind == HIR_DECL_ARCHETYPE)
 				for (int f = 0; f < dd->data.archetype->field_count; f++)
 					subst_name(&dd->data.archetype->fields[f]->name);

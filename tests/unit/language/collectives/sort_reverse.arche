@@ -1,13 +1,13 @@
 // Worst case for the insertion sort: a fully reverse-sorted key column, so every element bubbles all the
 // way to index 0 — exercising the `j == 0` loop boundary (regression test: key[j-1] must NOT be read at
 // j==0, which would be an out-of-bounds load at index -1).
-// RUN: %arche build -o %t %s && %t | grep -qF "k=1 2 3 4 5 tag=50 40 30 20 10"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "k=1 2 3 4 5 tag=50 40 30 20 10"
 #import { fmt }
 k   :: int;
 tag :: int;
 N   :: arche { k, tag }
 [5]N(5);
-main :: proc() {
+entry :: system eff {
   N.k   = { 5, 4, 3, 2, 1 };
   N.tag = { 10, 20, 30, 40, 50 };
   sort(N.k);
@@ -25,3 +25,5 @@ main :: proc() {
     N.tag[4],
   );
 }
+
+#run entry

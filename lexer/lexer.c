@@ -152,6 +152,12 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	if (length == 3 && strncmp(start, "map", 3) == 0) {
 		return TOK_MAP;
 	}
+	/* `system` is the composer: full control flow, runs maps/procs, invoked only by the schedule. */
+	if (length == 6 && strncmp(start, "system", 6) == 0) {
+		return TOK_SYSTEM;
+	}
+	/* `each` is NOT a keyword: the per-element effectful fan is `map (Q) eff` (the old `each` keyword was
+	 * removed; it is now an ordinary identifier). */
 	/* `query` is a first-class archetype selector (a column set) — a `map`/collective runs over one. */
 	if (length == 5 && strncmp(start, "query", 5) == 0) {
 		return TOK_QUERY;
@@ -207,9 +213,7 @@ static TokenKind keyword_kind(const char *start, size_t length) {
 	/* `use`/`each_field` are retired as bare keywords — they're the `#import`/`#each_field`
 	 * directives (see lex_hash_directive). `static`/`pool` are retired too: top-level position
 	 * implies static storage, and pools are spelled `Name[C](N){V}`. All are plain idents now. */
-	if (length == 3 && strncmp(start, "run", 3) == 0) {
-		return TOK_RUN;
-	}
+	/* `run` is RETIRED as a keyword — dispatch is by naming a map/each/system in `#run`, never `run X`. */
 	return TOK_IDENT;
 }
 
@@ -543,6 +547,8 @@ Token lexer_next_token(Lexer *lexer) {
 			k = TOK_HASH_FOREIGN;
 		else if (wlen == 4 && strncmp(word, "link", 4) == 0)
 			k = TOK_HASH_LINK;
+		else if (wlen == 3 && strncmp(word, "run", 3) == 0)
+			k = TOK_HASH_RUN;
 		return make_token(k, start, tlen, line, column);
 	}
 
@@ -625,7 +631,11 @@ Token lexer_next_token(Lexer *lexer) {
 			advance(lexer);
 			return make_token(TOK_PIPE_PIPE, start, 2, line, column);
 		}
-		return error_token(lexer, "unexpected character (did you mean `||`?)", line, column);
+		if (peek(lexer) == '>') {
+			advance(lexer);
+			return make_token(TOK_PIPE_GT, start, 2, line, column); /* `|>` — fmap a func over an Eff's out-slots */
+		}
+		return error_token(lexer, "unexpected character (did you mean `||` or `|>`?)", line, column);
 
 	default:
 		return error_token(lexer, "unexpected character", line, column);
@@ -654,6 +664,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_PROC";
 	case TOK_MAP:
 		return "TOK_MAP";
+	case TOK_SYSTEM:
+		return "TOK_SYSTEM";
 	case TOK_QUERY:
 		return "TOK_QUERY";
 	case TOK_FUNC:
@@ -725,6 +737,8 @@ const char *token_kind_name(TokenKind kind) {
 		return "TOK_HASH_FOREIGN";
 	case TOK_HASH_LINK:
 		return "TOK_HASH_LINK";
+	case TOK_HASH_RUN:
+		return "TOK_HASH_RUN";
 
 	case TOK_EQ:
 		return "TOK_EQ";

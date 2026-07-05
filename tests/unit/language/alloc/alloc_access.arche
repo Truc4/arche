@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 Point :: arche { x :: int }
 
@@ -6,9 +6,11 @@ Point :: arche { x :: int }
   x: 42,
 }
 
-main :: proc() {
+entry :: system eff {
   fmt.printf("before access\n");
   val := Point.x[0];
-  fmt.assert(val == 42, "val not 42\n");
+  fmt.assert(val == 42, "val not 42\n")();
   fmt.printf("ok\n");
 }
+
+#run entry

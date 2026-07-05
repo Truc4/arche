@@ -46,7 +46,7 @@ clamp :: policy(len: int, i: int) {
 
 @policy(bounds)
 wrap :: policy(len: int, i: int) {
-  i = ( (i % len) + len) % len;
+  i = ((i % len) + len) % len;
 }
 
 @policy(bounds)
@@ -76,4 +76,23 @@ reject :: policy(count: int, cap: int, ok: int) {
   if (count >= cap) {
     ok = 0;
   }
+}
+
+@policy(pool)
+abort :: policy(count: int, cap: int) {
+  if (count >= cap) {
+    dprintf(2, "arche: pool full\n")(_:);
+    _exit(134);
+  }
+}
+
+Schedule :: sum {
+  seq([]Schedule) par([]Schedule) loop(Schedule) when(func() -> bool, Schedule) halt
+}
+
+once :: func(s: Schedule) -> Schedule {
+  return seq({ s, halt });
+}
+forever :: func(s: Schedule) -> Schedule {
+  return loop(s);
 }

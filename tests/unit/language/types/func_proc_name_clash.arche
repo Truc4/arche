@@ -8,5 +8,7 @@ foo :: func(x: int) -> int {
 foo :: proc(x: int) {
   fmt.printf("%d", x);
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

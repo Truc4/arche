@@ -63,6 +63,7 @@ typedef enum {
 	SEM_DIAG_map_not_a_transform,
 	SEM_DIAG_collective_in_map,
 	SEM_DIAG_invalid_monoid_op,
+
 	SEM_DIAG_move_outside_arg,
 	/* E0113/E0114 retired: arche has zero runtime allocation, no `free` statement.
 	 * Burn-on-delete (codes never reused). */
@@ -108,6 +109,8 @@ typedef enum {
 	SEM_DIAG_extern_func_bad_type,
 	SEM_DIAG_extern_func_bad_return,
 	SEM_DIAG_extern_proc_bad_return,
+	SEM_DIAG_extern_multi_out,
+	SEM_DIAG_slice_repoint,
 
 	/* Constants / meta */
 	SEM_DIAG_constant_redefined,
@@ -177,10 +180,27 @@ typedef enum {
 	SEM_DIAG_run_targets_query, /* `run X` where X is a query, not a map */
 
 	/* Entities (`insert(Name{…})`) — E0217+ */
-	SEM_DIAG_entity_missing_column, /* an entity literal omits a required column */
-	SEM_DIAG_entity_unknown_column, /* an entity literal names a field that is not a column */
-	SEM_DIAG_entity_unknown_type,   /* `Name{…}` where Name is neither an archetype nor a query */
-	SEM_DIAG_positional_insert,     /* legacy positional `insert(Pool, v0, …)` — use an entity literal */
+	SEM_DIAG_entity_missing_column,     /* an entity literal omits a required column */
+	SEM_DIAG_entity_unknown_column,     /* an entity literal names a field that is not a column */
+	SEM_DIAG_entity_unknown_type,       /* `Name{…}` where Name is neither an archetype nor a query */
+	SEM_DIAG_positional_insert,         /* legacy positional `insert(Pool, v0, …)` — use an entity literal */
+	SEM_DIAG_proc_under_applied,        /* under-applying a (non-extern) proc to "build an Eff" — only an extern
+	                                       is inert under-applied; a proc minus its out-slots is a suspended
+	                                       computation, not a value. E0221. */
+	SEM_DIAG_eff_extern_not_static,     /* an Eff at a run site whose extern is not statically one extern (a
+	                                       runtime `?:`/`match` selecting different externs) — no fn-pointer. E0222. */
+	SEM_DIAG_main_reserved,             /* a user decl named `main` — the program entry is `#run`, not `main`;
+	                                       `main` carries no special meaning and is reserved. E0225. */
+	SEM_DIAG_effect_without_eff,        /* a `map`/`system` runs an effect (insert/delete, extern/proc call, an
+	                                       Eff run) without the `eff` permission — kernels are pure by default;
+	                                       declare `eff` (or `map (Q) eff`) to run effects. E0226. */
+	SEM_DIAG_write_set_mismatch,        /* a kernel writes a bound selector column not covered by its `(writes)`
+	                                       permission list (or omits the list entirely). E0227. */
+	SEM_DIAG_indexed_write_in_selector, /* an indexed pool-column write `Pool.col[i] = …` inside a selector
+	                                   kernel — write the bound bare column instead. E0228. */
+	SEM_DIAG_self_binder_unqueried,     /* a self-binder read `me.col` of a component NOT in the map's query — a
+	                                       source-agnostic query only guarantees the queried components exist on
+	                                       the matched shape, so reaching an unqueried one is unsound. E0229. */
 
 	/* === Lints (promotable warnings) === */
 	SEM_LINT_proc_could_be_func,
@@ -196,27 +216,42 @@ typedef enum {
 	SEM_LINT_unused_query, /* a `query {…}` decl that no map references — W0025 */
 	SEM_LINT_discarded_ok,
 	SEM_LINT_raw_pool_index,
-	SEM_LINT_policy_on_safe_op,       /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
-	SEM_LINT_handler_foreign_arch,    /* a pool `?handler` body references a DIFFERENT archetype's columns */
-	SEM_LINT_redundant_guard,         /* a leading guard-exit re-tests the enclosing loop's own condition */
-	SEM_LINT_func_could_be_const,     /* a zero-param func whose body is a single `return <literal/const>;` */
-	SEM_LINT_exported_mutable_global, /* a top-level mutable global on the exported surface — shared mutable
-	                                     state must be a pool or be narrowed to #module/#file. Lint-class so
-	                                     it's tunable, but default-promoted to error (see ensure_init). */
-	SEM_LINT_outarg_shadows_outparam, /* a call out-arg `(name:)` whose COLON declares a fresh local that
-	                                     shadows the enclosing proc's out-param of the same name — the
-	                                     call's result fills the shadow, the out-param is left unwritten
-	                                     (silent lost writeback). Use `(name)` (no colon) to write it. */
-	SEM_LINT_map_writes_foreign_pool, /* a system writes a pool it does not iterate — a foreign-pool write in
-	                                     a per-entity system runs once, not per row (the driver WRITES shared
-	                                     singletons, a system READS them). Lint-class so it's tunable, but
-	                                     default-promoted to error (see ensure_init). */
-	SEM_LINT_large_stack_array,       /* a local fixed-size array `[N]T` whose storage exceeds the frame
-	                                     threshold (1 KB) — a big stack value. Prefer a single-type archetype
-	                                     pool `[N]T` (static, columnar) or a #module-private global. W0026. */
-	SEM_LINT_pointless_move,          /* `move` of a value with no ownership to transfer — currently a pool
-	                                     column (slice): it is shared, fixed storage, so `move` does nothing.
-	                                     Pass it as a plain borrow. W0027. */
+	SEM_LINT_policy_on_safe_op,        /* an explicit `!policy` on an op the prover already proved safe (dead policy) */
+	SEM_LINT_handler_foreign_arch,     /* a pool `?handler` body references a DIFFERENT archetype's columns */
+	SEM_LINT_redundant_guard,          /* a leading guard-exit re-tests the enclosing loop's own condition */
+	SEM_LINT_func_could_be_const,      /* a zero-param func whose body is a single `return <literal/const>;` */
+	SEM_LINT_exported_mutable_global,  /* a top-level mutable global on the exported surface — shared mutable
+	                                      state must be a pool or be narrowed to #module/#file. Lint-class so
+	                                      it's tunable, but default-promoted to error (see ensure_init). */
+	SEM_LINT_outarg_shadows_outparam,  /* a call out-arg `(name:)` whose COLON declares a fresh local that
+	                                      shadows the enclosing proc's out-param of the same name — the
+	                                      call's result fills the shadow, the out-param is left unwritten
+	                                      (silent lost writeback). Use `(name)` (no colon) to write it. */
+	SEM_LINT_map_writes_foreign_pool,  /* a system writes a pool it does not iterate — a foreign-pool write in
+	                                      a per-entity system runs once, not per row (the driver WRITES shared
+	                                      singletons, a system READS them). Lint-class so it's tunable, but
+	                                      default-promoted to error (see ensure_init). */
+	SEM_LINT_large_stack_array,        /* a local fixed-size array `[N]T` whose storage exceeds the frame
+	                                      threshold (1 KB) — a big stack value. Prefer a single-type archetype
+	                                      pool `[N]T` (static, columnar) or a #module-private global. W0026. */
+	SEM_LINT_pointless_move,           /* `move` of a value with no ownership to transfer — currently a pool
+	                                      column (slice): it is shared, fixed storage, so `move` does nothing.
+	                                      Pass it as a plain borrow. W0027. */
+	SEM_LINT_proc_calls_proc,          /* a proc body calls another (non-extern) proc — the flat-effect
+	                                      proc→proc ban. Reuse lives in funcs (building Eff values), so a proc
+	                                      never needs another proc; permitted callees are extern/func/map.
+	                                      Default WARN (the stdlib/apps still nest procs until the Eff
+	                                      convenience layer lands; flip to error later). W0028. */
+	SEM_LINT_pool_index_outside_query, /* an explicit index on a pool column `Pool.col[i]` (incl. the
+	                                      singleton `[0]`) outside a query/map/system fan body — pool values
+	                                      must come from a query, not hand-indexing. Default WARN (tunable to
+	                                      error per build, e.g. for an app + its libs). W0029. */
+	SEM_LINT_proc_not_primitive,       /* a `proc` that is not `#foreign`/`@syscall`/`@intrinsic` (a primitive)
+	                                      nor an `@drop` cleanup hook. `proc` is being removed: pure logic is a
+	                                      `func`, effects/pool-touching work is a `system`/`each`/`map`, and a
+	                                      result-dependent sequence decomposes across systems (producer writes a
+	                                      column, consumer reads it). Default WARN; flip to error once stdlib is
+	                                      converted. W0030. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -299,6 +334,7 @@ SemDiag *sem_emit_assign_after_move(SemanticContext *ctx, SourceLoc loc, const c
 SemDiag *sem_emit_own_requires_move_or_copy(SemanticContext *ctx, SourceLoc loc, const char *arg_name,
                                             const char *param_name, const char *func_name);
 SemDiag *sem_emit_cannot_mutate_borrowed(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_cannot_mutate_borrowed_local(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_extern_array_param_needs_own(SemanticContext *ctx, SourceLoc loc, const char *param_name,
                                                const char *proc_name);
 SemDiag *sem_emit_proc_return_has_value(SemanticContext *ctx, SourceLoc loc);
@@ -323,6 +359,8 @@ SemDiag *sem_emit_entity_missing_column(SemanticContext *ctx, SourceLoc loc, con
 SemDiag *sem_emit_entity_unknown_column(SemanticContext *ctx, SourceLoc loc, const char *type_name, const char *col);
 SemDiag *sem_emit_entity_unknown_type(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_positional_insert(SemanticContext *ctx, SourceLoc loc, const char *pool);
+SemDiag *sem_emit_proc_under_applied(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_eff_extern_not_static(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_lint_unused_query(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);
@@ -358,6 +396,11 @@ SemDiag *sem_emit_unknown_const_value(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_const_rhs_invalid(SemanticContext *ctx, SourceLoc loc);
 
 SemDiag *sem_emit_func_not_pure(SemanticContext *ctx, SourceLoc loc, const char *name, const char *reason);
+SemDiag *sem_emit_effect_without_eff(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *reason);
+SemDiag *sem_emit_write_set_mismatch(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,
+                                     const char *actual_list, int has_declared);
+SemDiag *sem_emit_indexed_write_in_selector(SemanticContext *ctx, SourceLoc loc, const char *pool);
 SemDiag *sem_emit_insert_delete_outlist(SemanticContext *ctx, SourceLoc loc, const char *name, const char *form);
 
 SemDiag *sem_emit_policy_provable_oob(SemanticContext *ctx, SourceLoc loc, const char *base, int idx, int len);
@@ -386,8 +429,12 @@ SemDiag *sem_emit_module_parse_failed(SemanticContext *ctx, SourceLoc loc, const
 SemDiag *sem_emit_binop_type_mismatch(SemanticContext *ctx, SourceLoc loc, const char *op, const char *lhs,
                                       const char *rhs);
 SemDiag *sem_emit_field_on_non_archetype(SemanticContext *ctx, SourceLoc loc, const char *base_type, const char *field);
+SemDiag *sem_emit_self_binder_unqueried(SemanticContext *ctx, SourceLoc loc, const char *binder, const char *col);
 SemDiag *sem_emit_move_outside_arg(SemanticContext *ctx, SourceLoc loc, const char *keyword);
 SemDiag *sem_emit_extern_proc_bad_return(SemanticContext *ctx, SourceLoc loc, const char *type, const char *proc_name);
+SemDiag *sem_emit_extern_multi_out(SemanticContext *ctx, SourceLoc loc, const char *proc_name, int n_out_only);
+SemDiag *sem_emit_slice_repoint(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_main_reserved(SemanticContext *ctx, SourceLoc loc);
 
 /* Tycheck (P3 type-check pass). E0200 is the general type_mismatch — every
  * typing-rule failure routes here. The `where` string describes the constraint
@@ -431,5 +478,8 @@ SemDiag *sem_emit_lint_exported_mutable_global(SemanticContext *ctx, SourceLoc l
 SemDiag *sem_emit_lint_outarg_shadows_outparam(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_large_stack_array(SemanticContext *ctx, SourceLoc loc, const char *name, int size_bytes);
 SemDiag *sem_emit_lint_pointless_move(SemanticContext *ctx, SourceLoc loc);
+SemDiag *sem_emit_lint_proc_calls_proc(SemanticContext *ctx, SourceLoc loc, const char *callee);
+SemDiag *sem_emit_lint_proc_not_primitive(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_pool_index_outside_query(SemanticContext *ctx, SourceLoc loc, const char *pool);
 
 #endif /* SEM_DIAGNOSTICS_H */

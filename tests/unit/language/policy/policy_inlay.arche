@@ -6,9 +6,11 @@
 get :: func(s: []int, i: int) -> int {
   return s[i];
 }
-main :: proc() {
+entry :: system {
   a: [4]int;
   a[0] = 1;
   i := 9;
   x := a[i];
 }
+
+#run entry

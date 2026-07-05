@@ -3,14 +3,19 @@
 pos      :: float;
 Particle :: arche { pos }
 
-[10]Particle;
+[10]Particle ?abort;
 
-dummy :: map (query { pos }) {
+dummy :: map (query { pos })(pos) {
   pos = pos;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(Particle { pos: 1.0 })(_:, _:);
-  run dummy;
-  fmt.printf("system_ran\n"); // marker lives in the driver, not the kernel
 }
+
+verify :: system eff {
+  fmt.printf("system_ran\n");
+  // marker lives in the driver, not the kernel;
+}
+
+#run seq({ seed, dummy, verify })

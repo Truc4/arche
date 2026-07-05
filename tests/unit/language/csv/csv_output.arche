@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
+// RUN: %arche build --pool-index=allow -o %t %s && %t && test -f /tmp/task1_output.csv && wc -l /tmp/task1_output.csv | grep -q "1000"
 #import { io fmt }
 Task1Data :: arche { price :: float, quantity :: int, revenue :: float }
 
@@ -6,7 +6,7 @@ Task1Data :: arche { price :: float, quantity :: int, revenue :: float }
   price: 0.0, quantity: 0,
 }
 
-main :: proc() {
+entry :: system eff {
   Task1Data.price[0]    = 100.0;
   Task1Data.quantity[0] = 5;
   Task1Data.price[1]    = 50.0;
@@ -32,8 +32,10 @@ main :: proc() {
   for (i := 0; i < 1000; i = i + 1) {
     buf: [64]char;
     fmt.sprintf(buf, "%f\n", Task1Data.revenue[i])(buf, n:);
-    io.fwrite(fd, move buf, n);
+    io.fwrite(fd, move buf, n)(_:);
   }
-  io.fclose(move fd);
+  io.fclose(move fd)(_:);
   fmt.printf("Task1 output written\n");
 }
+
+#run entry

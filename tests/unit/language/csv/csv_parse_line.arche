@@ -1,6 +1,6 @@
 // RUN: %arche build -o %t %s && %t
 #import { parse fmt }
-main :: proc() {
+entry :: system eff {
   buf: [256]char;
   buf[0] = '1';
   buf[1] = '0';
@@ -34,6 +34,8 @@ main :: proc() {
   price := parse.atof(price_str);
   qty   := parse.atoi(qty_str);
   fmt.printf("price=%f qty=%d\n", price, qty);
-  fmt.assert(price == 10.0, "price should be 10.0\n");
-  fmt.assert(qty == 10, "qty should be 10\n");
+  fmt.assert(price == 10.0, "price should be 10.0\n")();
+  fmt.assert(qty == 10, "qty should be 10\n")();
 }
+
+#run entry

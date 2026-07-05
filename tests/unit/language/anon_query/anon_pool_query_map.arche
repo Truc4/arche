@@ -2,6 +2,7 @@
 // query `Movers` is the sole handle — map over it, insert an entity through it, read columns through it.
 // The idiom: named queries + anonymous archetypes.
 // RUN: %arche build -o %t %s && %t | grep -qF "ok"
+@default(proc, pool, abort) // fixture: overflow is a test-setup error, not a branch
 #import { fmt }
 pos :: float;
 vel :: float;
@@ -9,14 +10,19 @@ vel :: float;
 
 Movers :: query { pos, vel }
 
-step :: map (Movers) {
+step :: map (Movers)(pos) {
   pos = pos + vel;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(Movers { pos: 10.0, vel: 1.0 })(_:, _:);
-  run step;
-  v := Movers.pos[0] * 10.0; // read a column THROUGH the query
-  fmt.assert(v == 110.0, "pos should be 11\n");
+}
+
+verify :: system eff {
+  v := Movers.pos[0] * 10.0;
+  // read a column THROUGH the query
+  fmt.assert(v == 110.0, "pos should be 11\n")();
   fmt.printf("ok\n");
 }
+
+#run seq({ seed, step, verify })

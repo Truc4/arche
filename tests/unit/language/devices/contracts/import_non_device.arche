@@ -5,6 +5,8 @@
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "by path|not a device|import .* by path|only devices.*by name" %t.out
 #import { plainmod }
 
-main :: proc() {
+entry :: system {
   _v := plainmod.greet();
 }
+
+#run entry

@@ -3,6 +3,8 @@
 // RUN: ! %arche build -o %t %s 2>&1 | grep -q "binary operand"
 M :: { { 1, 2, 3 } }
 
-main :: proc() {
+entry :: system {
   _ := M[0] + 1;
 }
+
+#run entry

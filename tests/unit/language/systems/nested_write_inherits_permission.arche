@@ -1,0 +1,26 @@
+// Model A: the write-permission for a shared buffer is declared ONCE, on the map that queries it. The outer
+// `map (query { buf })(buf)` owns `buf`; the inner boid-map does the actual `buf[i] = v` with NO `buf` in its
+// query or `(writes)` — a nested fan inherits the enclosing kernel's declared write permission.
+// RUN: %arche build -o %t %s && %t | grep -qF "f0=10 f3=20 f5=30 f7=40"
+#import { fmt }
+[1]arche { buf :: [8]int }
+(1)
+Boid :: arche { i :: int, v :: int }
+[4]Boid(4);
+
+seed :: system {
+  Boid.i = { 0, 3, 5, 7 };
+  Boid.v = { 10, 20, 30, 40 };
+}
+
+paint :: map (query { buf })(buf) eff {
+  map (query { i, v }) eff {
+    buf[i] = v;
+  };
+}
+
+show :: system (query { buf }) eff {
+  fmt.printf("f0=%d f3=%d f5=%d f7=%d\n", buf[0], buf[3], buf[5], buf[7]);
+}
+
+#run seq({ seed, paint, show })

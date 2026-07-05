@@ -1,0 +1,25 @@
+// A `@gpu` map with a `:=` local — the GLSL emitter lowers it to a scalar var (`float d = …`), so a
+// local-using map stays GPU-eligible. CPU path (scalar per-element) must match; `make test-gpu-exe` runs it
+// on the device. `d := x*2` then `x = d + 1` → {2*x + 1}.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "x=3 5 7 9"
+#import { fmt }
+x :: float;
+P :: arche { x }
+[4]P(4);
+
+@gpu
+
+root :: map (query { x })(x) {
+  d := x * 2.0;
+  x = d + 1.0;
+}
+
+seed :: system {
+  P.x = { 1.0, 2.0, 3.0, 4.0 };
+}
+
+verify :: system eff {
+  fmt.printf("x=%.0f %.0f %.0f %.0f\n", P.x[0], P.x[1], P.x[2], P.x[3]);
+}
+
+#run seq({ seed, root, verify })

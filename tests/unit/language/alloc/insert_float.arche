@@ -2,10 +2,12 @@
 #import { fmt }
 FloatOps :: arche { val :: float }
 
-[8]FloatOps;
+[8]FloatOps ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(FloatOps { val: 1.0 })(_:, _:);
   insert(FloatOps { val: 2.0 })(_:, _:);
-  fmt.print("done\n");
+  fmt.print("done\n")(_:);
 }
+
+#run entry

@@ -1,5 +1,7 @@
 // RUN: %arche build -o %t %s && %t
 #import { io }
-main :: proc() {
-  io.stdout_write("hello\n", 6);
+entry :: system eff {
+  io.stdout_write("hello\n", 6)(_:);
 }
+
+#run entry

@@ -4,6 +4,8 @@
 #import { fmt }
 Mob :: arche { hp :: 10 }
 
-main :: proc() {
+entry :: system {
   fmt.printf("unreachable\n");
 }
+
+#run entry

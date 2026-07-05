@@ -20,7 +20,7 @@
 #include <string.h>
 #include <unistd.h>
 
-static int glslc_available(void) {
+int arche_glslc_available(void) {
 	return system("command -v glslc >/dev/null 2>&1") == 0;
 }
 
@@ -59,6 +59,19 @@ static void emit_bytes(FILE *out, const char *sym, const unsigned char *b, long 
 	fprintf(out, "\n};\n");
 }
 
+/* Map a shader name to a valid C identifier: a module-qualified map name like `game.step` can't be a C symbol
+ * (the `.`), so every non-[A-Za-z0-9_] char becomes `_`. Only the emitted C VARIABLE is sanitized; the runtime
+ * lookup still uses the original name string, so dispatch by `"game.step"` is unaffected. */
+static void gpu_c_ident(const char *name, char *buf, size_t cap) {
+	size_t j = 0;
+	for (size_t i = 0; name[i] && j + 1 < cap; i++) {
+		char c = name[i];
+		int ok = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+		buf[j++] = ok ? c : '_';
+	}
+	buf[j] = 0;
+}
+
 int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 	if (!prog || !out_c_path)
 		return -1;
@@ -76,7 +89,7 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 	             " ArcheGpuShader;\n\n");
 
 	int embedded = 0;
-	int have_glslc = glslc_available();
+	int have_glslc = arche_glslc_available();
 	char workdir[] = "/tmp/arche_gpu_XXXXXX";
 	int have_workdir = 0;
 	if (have_glslc) {
@@ -96,12 +109,13 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 	if (have_glslc) {
 		for (int i = 0; i < prog->decl_count; i++) {
 			HirDecl *d = prog->decls[i];
-			if (!d || d->kind != HIR_DECL_MAP || !d->data.map || !d->data.map->is_gpu)
+			if (!d || d->kind != HIR_DECL_KERNEL || !d->data.kernel || d->data.kernel->kind != HIR_KERNEL_MAP ||
+			    !d->data.kernel->is_gpu)
 				continue;
-			HirMapDecl *map = d->data.map;
-			HirArchetypeDecl *arch = gpu_glsl_first_float_arch(prog, map);
+			HirKernelDecl *map = d->data.kernel;
+			HirArchetypeDecl *arch = gpu_glsl_first_emittable_arch(prog, map);
 			if (!arch)
-				continue; /* no GPU form (e.g. non-float columns) → CPU-only */
+				continue; /* no GPU form (mixed/non-32-bit columns) → CPU-only */
 			/* Names ride into fixed buffers (sym/comp/spv) and a C identifier; an absurdly long one would
 			 * truncate-and-collide. Guard explicitly and leave the map CPU-only with a note. */
 			if (!map->name || strlen(map->name) > 200) {
@@ -112,7 +126,7 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 				fprintf(stderr, "arche: note: more than 256 `@gpu` maps; the rest run on CPU\n");
 				break;
 			}
-			char *src = gpu_glsl_build_src(map, arch);
+			char *src = gpu_glsl_build_src(prog, map, arch);
 			if (!src)
 				continue;
 
@@ -143,8 +157,9 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 				free(bytes);
 				goto fail;
 			}
-			char sym[300];
-			snprintf(sym, sizeof(sym), "spv_%s", map->name);
+			char id[256], sym[300];
+			gpu_c_ident(map->name, id, sizeof(id));
+			snprintf(sym, sizeof(sym), "spv_%s", id);
 			emit_bytes(out, sym, bytes, n);
 			free(bytes);
 			entries[nentries].name = map->name;
@@ -159,9 +174,11 @@ int arche_gpu_embed(HirProgram *prog, const char *out_c_path, int quiet) {
 	/* Strict C99 has no empty/zero-length array, so size the table to at least 1 (a zero sentinel that the
 	 * count keeps out of reach). Lookup is one uniform scan bounded by the count. */
 	fprintf(out, "\nstatic const ArcheGpuShader arche_gpu_shaders[%d] = {\n", nentries > 0 ? nentries : 1);
-	for (int i = 0; i < nentries; i++)
-		fprintf(out, "  { \"%s\", spv_%s, sizeof(spv_%s), %d },\n", entries[i].name, entries[i].name, entries[i].name,
-		        entries[i].ncol);
+	for (int i = 0; i < nentries; i++) {
+		char id[256];
+		gpu_c_ident(entries[i].name, id, sizeof(id)); /* C symbol sanitized; the "%s" lookup string stays original */
+		fprintf(out, "  { \"%s\", spv_%s, sizeof(spv_%s), %d },\n", entries[i].name, id, id, entries[i].ncol);
+	}
 	if (nentries == 0)
 		fprintf(out, "  { (void *)0, (void *)0, 0, 0 },\n");
 	fprintf(out, "};\n");

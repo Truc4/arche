@@ -3,7 +3,7 @@
 // of the *_array_oob tests (which assert the default !abort DOES abort). Several wild OOB indices
 // (runtime values — literals would be provably-OOB compile errors, E0097), all clamped, exits cleanly.
 // RUN: %arche build -o %t %s && %t
-main :: proc() {
+entry :: system {
   a: [4]int;
   a[0] = 1;
   a[3] = 4;
@@ -15,3 +15,5 @@ main :: proc() {
   s = s + a[j] !clamp; // negative -> a[0]
   s = s + a[k] !clamp; // just past end -> a[3]
 }
+
+#run entry

@@ -11,6 +11,4 @@ step :: map (Nonexistent) {
   pos = pos + vel;
 }
 
-main :: proc() {
-  run step;
-}
+#run seq({ step })

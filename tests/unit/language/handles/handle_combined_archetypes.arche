@@ -4,14 +4,16 @@ Player :: arche { pos :: float }
 
 AliveList :: arche { player_ref :: handle<Player> }
 
-[10]Player;
+[10]Player ?abort;
 
-[10]AliveList;
+[10]AliveList ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Player { pos: 1.0 })(p1:, _:);
   insert(Player { pos: 2.0 })(p2:, _:);
   insert(AliveList { player_ref: p1 })(_:, _:);
   insert(AliveList { player_ref: p2 })(_:, _:);
-  fmt.print("alive list created");
+  fmt.print("alive list created")(_:);
 }
+
+#run entry

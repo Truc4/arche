@@ -6,7 +6,7 @@
 /// `no_run`: compiles but is not executed (so the wrong assertion never runs).
 ///
 /// ```arche,no_run
-/// fmt.assert(val() == 999, "would fail if run, but no_run\n");
+/// fmt.assert(val() == 999, "would fail if run, but no_run\n")();
 /// ```
 ///
 /// `compile_fail`: must fail to compile (documents a misuse), so the run passes.
@@ -18,7 +18,7 @@
 /// `should_panic`: must exit non-zero (the assertion fails on purpose).
 ///
 /// ```arche,should_panic
-/// fmt.assert(val() == 0, "intentional panic\n");
+/// fmt.assert(val() == 0, "intentional panic\n")();
 /// ```
 ///
 /// `ignore`: never compiled or run, even though it is nonsense.

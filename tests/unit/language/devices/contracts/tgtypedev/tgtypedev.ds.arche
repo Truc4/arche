@@ -1,0 +1,4 @@
+// tgtypedev's CONTRACT: shares the component `val`. Support file (not a standalone test). Its impl
+// illegally defines a tuple-group TYPE `dir(x,y)::float` that is NOT declared here.
+// RUN: true
+val :: float;

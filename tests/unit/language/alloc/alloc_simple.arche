@@ -1,4 +1,4 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 Counter :: arche { val :: int }
 
@@ -6,7 +6,9 @@ Counter :: arche { val :: int }
   val: 7,
 }
 
-main :: proc() {
-  fmt.assert(Counter.val[0] == 7, "val[0] not 7\n");
+entry :: system eff {
+  fmt.assert(Counter.val[0] == 7, "val[0] not 7\n")();
   fmt.printf("ok\n");
 }
+
+#run entry

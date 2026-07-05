@@ -1,13 +1,15 @@
 // The negative half of component_distinct: two components over the same backing are DISTINCT, so a
 // `mass` value cannot fill a `charge`-typed slot without `charge(x)`. The bind is rejected
 // ("expected 'charge'").
-// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "expected 'charge'" %t.out
+// RUN: %arche build --pool-index=allow -o %t %s > %t.out 2>&1 ; grep -qi "expected 'charge'" %t.out
 #import { fmt }
 Particle :: arche { mass :: float, charge :: float }
 [4]Particle(4);
-main :: proc() {
+entry :: system eff {
   Particle.mass[0] = 10.0;
   m := Particle.mass[0]; // m : mass
   bad: charge = m; // mass -> charge sibling : ERROR
   fmt.printf("%g\n", bad);
 }
+
+#run entry

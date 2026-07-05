@@ -1,14 +1,16 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 Particle :: arche { id :: int }
 
-[5]Particle;
+[5]Particle ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Particle { id: 1 })(_:, _:);
   insert(Particle { id: 2 })(_:, _:);
   a := Particle.id[0];
   b := Particle.id[1];
-  fmt.assert(a == 1, "bounds check failed: a != 1\n");
-  fmt.assert(b == 2, "bounds check failed: b != 2\n");
+  fmt.assert(a == 1, "bounds check failed: a != 1\n")();
+  fmt.assert(b == 2, "bounds check failed: b != 2\n")();
 }
+
+#run entry

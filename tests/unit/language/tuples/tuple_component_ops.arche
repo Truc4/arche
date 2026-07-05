@@ -1,12 +1,12 @@
-// RUN: %arche build -o %t %s && %t | grep "PASS"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep "PASS"
 #import { fmt }
 pos(x, y) :: float;
 vel(x, y) :: float;
 Particle  :: arche { pos_x, pos_y, vel_x, vel_y }
 
-[5]Particle;
+[5]Particle ?abort;
 
-main :: proc() {
+entry :: system eff {
   insert(Particle { pos_x: 0.0, pos_y: 1.0, vel_x: 0.5, vel_y: 0.1 })(_:, _:);
   insert(Particle { pos_x: 2.0, pos_y: 3.0, vel_x: 0.2, vel_y: 0.3 })(_:, _:);
   insert(Particle { pos_x: 4.0, pos_y: 5.0, vel_x: 0.1, vel_y: 0.2 })(_:, _:);
@@ -20,7 +20,9 @@ main :: proc() {
   x0i := x0 * 10.0;
   y2i := y2 * 10.0;
   fmt.printf("x0i=%g (expect 5), y2i=%g (expect 52)\n", x0i, y2i);
-  fmt.assert(x0i == 5, "FAIL: pos_x[0]\n");
-  fmt.assert(y2i == 52, "FAIL: pos_y[2]\n");
+  fmt.assert(x0i == 5, "FAIL: pos_x[0]\n")();
+  fmt.assert(y2i == 52, "FAIL: pos_y[2]\n")();
   fmt.printf("PASS\n");
 }
+
+#run entry

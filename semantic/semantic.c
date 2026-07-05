@@ -1,4 +1,5 @@
 #include "semantic.h"
+#include "../hir/hir.h" /* ScheduleTree — the value-CTFE fold target for #run */
 #include "../parser/parser.h"
 #include "../syntax/syntax_view.h"
 #include "sem_decls.h"
@@ -79,6 +80,11 @@ struct SemanticContext {
 	ArchetypeInfo **archetypes; /* one per unique shape */
 	int archetype_count;
 
+	/* `@default(proc, pool, X)` policy name (the program-wide pool overflow default), or NULL → reject.
+	 * Cached during decl collection so the insert `ok`-gate can resolve fallibility. Not owned (points
+	 * into the syntax tree source via a sem_dupz copy freed in semantic_context_free). */
+	char *default_pool_policy;
+
 	AliasEntry **aliases; /* one per arche declaration */
 	int alias_count;
 
@@ -148,6 +154,19 @@ struct SemanticContext {
 	/* Track which archetype we're analyzing a map for (NULL if not in map) */
 	const char *current_map_archetype;
 
+	/* The active self-binder name (`as me`) inside a map body, else NULL, with the self-binder MAP's OWN query
+	 * columns. `me.<col>` may read ONLY one of these (a source-agnostic query guarantees only those exist on the
+	 * matched shape). Checked against the map's own params, NOT any bound variable — an enclosing system's
+	 * columns are in scope too, but the self is the INNER map's element, so its query alone bounds `me`. */
+	const char *self_binder;
+	const ParamSummary *self_binder_params;
+	int self_binder_nparams;
+
+	/* A columnar `system (query {…} as Flock)` binds `Flock` to name the whole queried column: `Flock.<col>`
+	 * resolves against `system_binder_arch` (the query's matched shape), the neighbour fold domain. */
+	const char *system_binder;
+	const char *system_binder_arch;
+
 	/* Track the proc currently being analyzed (NULL if not in a proc body).
 	 * Used by each_field to verify its RHS is an `archetype` parameter of this proc. */
 	DeclSummary *current_proc;
@@ -159,8 +178,24 @@ struct SemanticContext {
 	/* Track if inside proc/map body (for alloc enforcement) */
 	int in_body;
 
+	/* The entry unit declares a `#run` — the program's one entry point (replaces `main`). Signals a
+	 * binary (closed world) for dead-code analysis, exactly as a `main` decl used to. */
+	int entry_has_run;
+
 	/* 1 while analyzing a `map` body. A `map` supports no `return` at all (naked or valued). */
 	int in_map;
+
+	/* Per-kernel collection of the bound selector columns the body assigns (for the `(writes)` permission
+	 * check). Active (`k_collect`) only inside a kernel body; saved/restored across nested inline fans so a
+	 * fan's writes don't leak to its enclosing system. Each entry is an owned column-name string. */
+	int k_collect;
+	char **k_writes;
+	int k_write_count;
+	/* Stack of the ENCLOSING kernels' nodes carrying their declared `(writes)` (SN_WRITE_PARAM children), from
+	 * outermost [0] to the current kernel [depth-1]. Lets a nested fan write a column a surrounding kernel
+	 * already declared writable without re-declaring it (model A) — the permission lives once, on the owner. */
+	SyntaxView kwrite_stack[16];
+	int kwrite_depth;
 
 	/* 1 only while analyzing a call that sits in a statement / bind-RHS position (where an
 	 * *action* is allowed). A proc or extern call is an action, not a value, so it may appear
@@ -405,6 +440,7 @@ static TypeId callable_type_alias_id(SemanticContext *ctx, const char *name) {
 }
 
 static char *sem_dupz(const char *s);
+static void kernel_record_write(SemanticContext *ctx, const char *col); /* Slice 2 (writes) collector */
 
 /* Record an enum's type name + its (variant → value) entries. The type-alias-to-int registration
  * is done by the caller (register_type_alias is defined later). */
@@ -459,6 +495,28 @@ static int enum_is_type(SemanticContext *ctx, const char *name) {
 		if (strcmp(ctx->enum_type_names[i], name) == 0)
 			return 1;
 	return 0;
+}
+
+/* If `name` is a sum variant constructor (bare, e.g. `leaf` of `Tree :: sum { leaf(int) … }`), return
+ * the sum's TypeId and (if requested) the variant index + payload count; else TYID_UNKNOWN. First match
+ * wins across all sums. */
+static TypeId sum_ctor_lookup(SemanticContext *ctx, const char *name, int *out_variant, int *out_pcount) {
+	if (!ctx || !name)
+		return TYID_UNKNOWN;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d || d->kind != DECL_SUM || d->sum_type_id == TYID_UNKNOWN)
+			continue;
+		for (int v = 0; v < d->sum_variant_count; v++)
+			if (strcmp(d->sum_variant_names[v], name) == 0) {
+				if (out_variant)
+					*out_variant = v;
+				if (out_pcount)
+					*out_pcount = d->sum_variant_pcounts[v];
+				return d->sum_type_id;
+			}
+	}
+	return TYID_UNKNOWN;
 }
 
 /* Look up a variant's value. If `en` is non-NULL, scope to that enum; else search all enums
@@ -836,12 +894,19 @@ static void analyze_drop_decl(SemanticContext *ctx, DeclSummary *proc, const cha
 		return;
 	if (proc->out_param_count != 0) {
 		sem_emit_drop_invalid(ctx, proc->loc,
-		                      "a `@drop` destructor must be `proc (own T)()` — it may not have out-parameters");
+		                      "a `@drop` destructor may not have out-parameters — it tears down, it does not return");
 		return;
 	}
+
+	/* `@drop(T)` registers T's destructor, keyed by the type name. It fires whenever a value of type T
+	 * dies: an OPAQUE local at scope exit (RAII), or a pool COLUMN of type T when its row is `delete`d —
+	 * the resource the row holds (e.g. an fd kept as data) is released as the row leaves the pool. One
+	 * rule, two storages. T must be a DISTINCT type — an opaque handle or a user `enum` — never a raw
+	 * primitive: otherwise every `i64` column would be mistaken for a resource. The destructor takes
+	 * exactly one `own T` parameter (the dying value) and returns nothing. */
 	if (proc->param_count != 1) {
 		sem_emit_drop_invalid(ctx, proc->loc,
-		                      "a `@drop` destructor must take exactly one `own` parameter of an opaque type");
+		                      "a `@drop` destructor must take exactly one `own` parameter of the dropped type");
 		return;
 	}
 	ParamSummary *p = &proc->params[0];
@@ -849,11 +914,14 @@ static void analyze_drop_decl(SemanticContext *ctx, DeclSummary *proc, const cha
 		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be `own`");
 		return;
 	}
-	TypeId p_tid = p->type_id;
-	const char *p_resolved = sem_tyid_name(ctx, p_tid);              /* "opaque" */
-	const char *p_nominal = tyid_nominal_name(ctx->ty_arena, p_tid); /* the written opaque name */
-	if (!p_resolved || strcmp(p_resolved, "opaque") != 0) {
-		sem_emit_drop_invalid(ctx, proc->loc, "a `@drop` destructor's parameter must be of an opaque type");
+	const char *p_resolved = sem_tyid_name(ctx, p->type_id);              /* "opaque" for an opaque handle */
+	const char *p_nominal = tyid_nominal_name(ctx->ty_arena, p->type_id); /* the written type name */
+	int t_is_opaque = p_resolved && strcmp(p_resolved, "opaque") == 0;
+	int t_is_enum = declared_type && enum_is_type(ctx, declared_type);
+	if (!t_is_opaque && !t_is_enum) {
+		sem_emit_drop_invalid(ctx, proc->loc,
+		                      "a `@drop` destructor's type must be an opaque handle or an enum — a distinct "
+		                      "resource type, not a raw primitive");
 		return;
 	}
 	/* The `@drop(<type>)` name must match the parameter's type — the decorator states what is
@@ -863,7 +931,7 @@ static void analyze_drop_decl(SemanticContext *ctx, DeclSummary *proc, const cha
 		                      "`@drop(...)` names a different type than the destructor's parameter — they must match");
 		return;
 	}
-	register_drop(ctx, p_nominal, proc->name, proc->loc);
+	register_drop(ctx, declared_type ? declared_type : p_nominal, proc->name, proc->loc);
 }
 
 static void push_scope(SemanticContext *ctx) {
@@ -1021,6 +1089,10 @@ static void mark_last_const(SemanticContext *ctx) {
 
 static void analyze_expression(SemanticContext *ctx, SyntaxView v);
 static void analyze_statement(SemanticContext *ctx, SyntaxView v);
+static void analyze_inline_fan(SemanticContext *ctx, SyntaxView f, int is_map);
+static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid);
+static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name);
+static ParamSummary sem_param_summary_node(SyntaxView p);
 static int proc_param_is_inout(DeclSummary *proc, int param_idx);
 
 /* By-reference aggregate param types: arrays are passed by reference (borrowed read-only by
@@ -1123,6 +1195,18 @@ static const char *resolve_type_alias(SemanticContext *ctx, const char *name) {
 			break;
 	}
 	return name;
+}
+
+/* The IMMEDIATE backing of a one-step alias (`handle :: win` → "win"), or NULL if `name` is not a
+ * registered alias. Unlike resolve_type_alias (which follows to the ULTIMATE backing), this exposes one
+ * link so a caller can walk the chain and recognise an intermediate ancestor. */
+const char *semantic_alias_backing_step(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return NULL;
+	for (int i = 0; i < ctx->type_alias_count; i++)
+		if (alias_name_matches(ctx->type_alias_names[i], name))
+			return ctx->type_alias_backings[i];
+	return NULL;
 }
 
 /* 1 if `name` is a registered nominal type alias (qualified or bare). */
@@ -1393,6 +1477,13 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 	char *idnt = sv_resolved_name(ctx, v);
 	int nf = sv_count(v, SN_FIELD_NAME);
 
+	/* `Flock.<col>` — the system query binder names the whole queried column. Resolve field access as if the
+	 * base were the query's matched archetype, so `Flock.pos`/`Flock.pos.x` check against its columns. */
+	if (nf > 0 && idnt && ctx->system_binder && ctx->system_binder_arch && strcmp(idnt, ctx->system_binder) == 0) {
+		free(idnt);
+		idnt = strdup(ctx->system_binder_arch);
+	}
+
 	/* `Enum.variant` is a compile-time constant — the old code folded it before any symbol/field
 	 * check. No diagnostics; its type is recorded by sem_expr_type_id. */
 	if (nf == 1 && enum_is_type(ctx, idnt)) {
@@ -1429,6 +1520,37 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 	 * base is itself a FIELD (not a NAME), so only the nested-tuple expansion `arch.tuple.comp`
 	 * fires — replicate that for nf==2 — and otherwise the simple base-NAME field checks apply. */
 	char *field_name = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
+
+	/* SOUNDNESS: a self-binder `me.<col>` may read ONLY a component the map QUERIED. A source-agnostic query
+	 * guarantees just the queried components exist on the matched shape, so reaching any other (`me.pos` when
+	 * the query is `{ nvel }`) is unsound — hard error (E0229). The queried columns are bound as is_param
+	 * variables; the first field after the binder must be one of them. */
+	if (ctx->self_binder && idnt && strcmp(idnt, ctx->self_binder) == 0) {
+		char *first = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, 0));
+		/* `me.id` is the INTRINSIC read-only pool-row identity, not a queried component — the query hands it
+		 * (it isn't stored, never written, needs no `id` in the query). Accept it and skip the queried-check
+		 * and the generic column-field validation below (`id` is no archetype field). */
+		if (nf == 1 && first && strcmp(first, "id") == 0) {
+			free(first);
+			free(field_name);
+			free(idnt);
+			return;
+		}
+		int queried = 0;
+		for (int p = 0; p < ctx->self_binder_nparams && first; p++)
+			if (ctx->self_binder_params[p].name && strcmp(ctx->self_binder_params[p].name, first) == 0) {
+				queried = 1;
+				break;
+			}
+		if (!queried) {
+			sem_emit_self_binder_unqueried(ctx, field_loc, ctx->self_binder, first ? first : "?");
+			free(first);
+			free(field_name);
+			free(idnt);
+			return;
+		}
+		free(first);
+	}
 
 	/* nf>=2: nested `arch.tuple.comp` → arch must have a `tuple_comp` field. Old code only handled a
 	 * single level of nesting (base FIELD whose base is a NAME), i.e. nf==2. */
@@ -1483,6 +1605,14 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 						}
 					if (is_query)
 						goto done;
+					/* A named-vector CONSTANT base (`CENTER.X` where `CENTER(X,Y) :: (…)`): the tuple-group
+					 * const flattens to per-member value consts, and `CENTER.X` desugars to `CENTER_X` in
+					 * lowering. Accept the base here (codegen reads the flattened const). */
+					for (int ci = 0; ci < ctx->decl_count; ci++)
+						if (ctx->decls[ci] && ctx->decls[ci]->kind == DECL_CONST && ctx->decls[ci]->name &&
+						    strcmp(ctx->decls[ci]->name, idnt) == 0 &&
+						    tyid_kind(ctx->ty_arena, ctx->decls[ci]->const_type_value_id) == TYK_TUPLE)
+							goto done;
 				}
 				sem_emit_undefined_field_base(ctx, field_loc, idnt);
 				goto done;
@@ -1756,6 +1886,17 @@ static int sem_arch_covers_col(ArchetypeInfo *ai, const char *col) {
 /* The type of an archetype field `base.field` (a field of an archetype name or of a var of that
  * archetype). TYID_UNKNOWN if not an archetype field. */
 static TypeId archetype_field_type_id(SemanticContext *ctx, const char *base_name, const char *field_name) {
+	/* `w.x` on a tuple VALUE local (`w := pos`, a 2-vector): the field type is the tuple member's type — so
+	 * `w.x * w.y` is float, and `sqrt(…)` / a `:=` bind infer float rather than the int default. */
+	VariableInfo *tv = find_variable(ctx, base_name);
+	if (tv && tyid_kind(ctx->ty_arena, tv->type_id) == TYK_TUPLE) {
+		int cnt = tyid_tuple_count(ctx->ty_arena, tv->type_id);
+		for (int fi = 0; fi < cnt; fi++) {
+			const char *fn = tyid_tuple_field_name(ctx->ty_arena, tv->type_id, fi);
+			if (fn && strcmp(fn, field_name) == 0)
+				return tyid_tuple_field_type(ctx->ty_arena, tv->type_id, fi);
+		}
+	}
 	ArchetypeInfo *arch = find_archetype(ctx, base_name);
 	if (!arch) {
 		VariableInfo *var = find_variable(ctx, base_name);
@@ -1831,6 +1972,8 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
 		if (is_len_prop(fld) || is_pool_extent_prop(fld))
 			r = tyid_of_prim(ctx->ty_arena, PRIM_INT);
+		else if (nf == 1 && ctx->self_binder && idnt && strcmp(idnt, ctx->self_binder) == 0 && strcmp(fld, "id") == 0)
+			r = tyid_of_prim(ctx->ty_arena, PRIM_INT); /* `me.id` — intrinsic pool-row identity */
 		else if (nf == 1)
 			r = archetype_field_type_id(ctx, idnt, fld);
 		free(fld);
@@ -1845,6 +1988,13 @@ static TypeId name_type_id(SemanticContext *ctx, SyntaxView v) {
 	char *nm = sv_name_expr_dup(v);
 	TypeId out = TYID_UNKNOWN;
 	if (nm) {
+		/* A bare name that is a NULLARY sum constructor (`empty`, `halt`) is a value of its sum type. */
+		int sc_pc = -1;
+		TypeId sc = sum_ctor_lookup(ctx, nm, NULL, &sc_pc);
+		if (sc != TYID_UNKNOWN && sc_pc == 0) {
+			free(nm);
+			return sc;
+		}
 		VariableInfo *var = find_variable(ctx, nm);
 		if (var && var->type_id != TYID_UNKNOWN) {
 			TyKind tk = tyid_kind(ctx->ty_arena, var->type_id);
@@ -1972,8 +2122,29 @@ static TypeId binary_type_id(SemanticContext *ctx, SyntaxView v) {
 		return tyid_of_prim(ctx->ty_arena, PRIM_INT);
 	if (op == OP_AND || op == OP_OR)
 		return tyid_of_prim(ctx->ty_arena, PRIM_INT);
+	if (op == OP_FMAP) {
+		/* `eff |> fin` — fmap a pure func over the Eff's out-slots: the result is an Eff yielding the
+		 * finalizer's RETURN types. The left must be an Eff; the right is a func NAME (not a value), so its
+		 * returns come from its decl. The finalizer rides in the build func body — recovered at codegen. */
+		TypeId lt = sem_expr_type_id(ctx, sem_node_at_expr(v, 0));
+		if (tyid_kind(ctx->ty_arena, lt) != TYK_EFF)
+			return TYID_UNKNOWN;
+		char *fname = sv_resolved_name(ctx, sem_node_at_expr(v, 1));
+		DeclSummary *fd = fname ? find_func_sig(ctx, fname) : NULL;
+		TypeId res = TYID_UNKNOWN;
+		if (fd && fd->return_type_count > 0)
+			res = tyid_of_eff_structural(ctx->ty_arena, fd->return_type_ids, fd->return_type_count);
+		free(fname);
+		return res;
+	}
 	TypeId lt = sem_expr_type_id(ctx, sem_node_at_expr(v, 0));
 	TypeId rt = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+	/* Tuple arithmetic: `a - b` (tuple ∘ tuple) is element-wise; `v * s` / `v / s` (tuple ∘ scalar) scales
+	 * every lane. Either way the result is the tuple type — so `.x`/`.y` still resolve on the result. */
+	if (tyid_kind(ctx->ty_arena, lt) == TYK_TUPLE)
+		return lt;
+	if (tyid_kind(ctx->ty_arena, rt) == TYK_TUPLE)
+		return rt;
 	char ln[64];
 	char rn[64];
 	tyid_display(ctx->ty_arena, lt, ln, sizeof(ln));
@@ -2016,16 +2187,70 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 	const char *func_name = resolved ? resolved : fallback;
 	TypeId result = TYID_UNKNOWN;
 	if (func_name) {
-		if (is_width_int_name(func_name) || is_primitive_type_name(func_name) || is_type_alias(ctx, func_name)) {
+		/* `seq(a, b)` (2 args) is the Eff applicative sequence, NOT the Schedule `seq([]Schedule)` sum
+		 * constructor (1 array arg) — distinguished by arity so the sum-ctor lookup doesn't shadow it. */
+		int seq_argc = 0;
+		while (sv_present(sem_node_at_expr(v, seq_argc)))
+			seq_argc++;
+		int is_eff_seq = (strcmp(func_name, "seq") == 0 && seq_argc == 2);
+		TypeId sctor = is_eff_seq ? TYID_UNKNOWN : sum_ctor_lookup(ctx, func_name, NULL, NULL);
+		if (sctor != TYID_UNKNOWN) {
+			result = sctor; /* a sum variant constructor `V(args)` yields its sum type */
+		} else if (is_width_int_name(func_name) || is_primitive_type_name(func_name) || is_type_alias(ctx, func_name)) {
 			result = sem_tyid_of_name(ctx, func_name); /* cast target (alias/prim/width; int→i32 canonical) */
 		} else if (strcmp(func_name, "insert") == 0) {
 			result = sem_tyid_of_name(ctx, "handle");
 		} else if (strcmp(func_name, "reduce") == 0) {
 			/* `reduce(op, col)` folds a column to a scalar of the column's element type (arg 1). */
 			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+		} else if (strcmp(func_name, "sqrt") == 0) {
+			/* `sqrt(x)` yields the type of its argument (float). */
+			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 0));
 		} else if (strcmp(func_name, "select") == 0) {
 			/* `select(cond, a, b)` yields the type of its value branches (arg 1). */
 			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+		} else if (strcmp(func_name, "seq") == 0) {
+			/* `seq(a, b)` yields the LAST Eff's type (its out-slots) — the applicative sequence result. */
+			result = sem_expr_type_id(ctx, sem_node_at_expr(v, 1));
+		} else if (strcmp(func_name, "zip") == 0 && seq_argc >= 2) {
+			/* `zip(e1, …, eN)` — the applicative PRODUCT: an Eff whose out-slots are the CONCATENATION of all
+			 * args' out-slots (each arg is itself an Eff). No combiner; the run-site binds the slots
+			 * positionally, or a `|> fin` over the zip folds them all into the finalizer. */
+			TypeId slots[32];
+			const char *names[32];
+			int total = 0;
+			int ok = 1;
+			for (int ai = 0; ai < seq_argc && ok && total < 32; ai++) {
+				TypeId at = sem_expr_type_id(ctx, sem_node_at_expr(v, ai));
+				if (tyid_kind(ctx->ty_arena, at) != TYK_EFF) {
+					ok = 0;
+					break;
+				}
+				int oc = tyid_eff_out_count(ctx->ty_arena, at);
+				for (int oi = 0; oi < oc && total < 32; oi++) {
+					slots[total] = tyid_eff_out_at(ctx->ty_arena, at, oi);
+					names[total] = tyid_eff_out_name_at(ctx->ty_arena, at, oi);
+					total++;
+				}
+			}
+			if (ok)
+				result = tyid_of_eff_named(ctx->ty_arena, NULL, slots, names, total);
+		} else if (strcmp(func_name, "pure") == 0 && seq_argc <= 1) {
+			/* `pure(x)` lifts x into an `Eff` yielding x; `pure()` is the empty `Eff()`. */
+			if (seq_argc == 1) {
+				TypeId xt = sem_expr_type_id(ctx, sem_node_at_expr(v, 0));
+				const char *nm = NULL;
+				result = tyid_of_eff_named(ctx->ty_arena, NULL, &xt, &nm, 1);
+			} else {
+				result = tyid_of_eff_named(ctx->ty_arena, NULL, NULL, NULL, 0);
+			}
+		} else if (strcmp(func_name, "ifS") == 0 && seq_argc == 3) {
+			/* GUARD form (else = `pure()`): the then-result is discarded, so `ifS` yields `Eff()` — same as
+			 * `whenS`. Value-producing `ifS` (arms unifying to a non-empty `Eff(T)`) is the deferred case. */
+			result = tyid_of_eff_named(ctx->ty_arena, NULL, NULL, NULL, 0);
+		} else if (strcmp(func_name, "whenS") == 0 && seq_argc == 2) {
+			/* `whenS(cond, body)` runs `body` or nothing — the skip arm has no value, so it yields `Eff()`. */
+			result = tyid_of_eff_named(ctx->ty_arena, NULL, NULL, NULL, 0);
 		} else {
 			GroupInfo *gi = find_group(ctx, func_name);
 			if (gi) {
@@ -2051,8 +2276,33 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
 				}
 			} else {
 				DeclSummary *fs = find_func_sig(ctx, func_name);
-				if (fs && fs->return_type_count > 0)
-					result = fs->return_type_ids[0];
+				if (fs && fs->return_type_count > 0) {
+					result = fs->return_type_ids[0]; /* a func's single declared return (incl. a structural Eff) */
+				} else {
+					/* BUILD SITE: an extern under-applied in VALUE position (its in-args, no out-slots) builds
+					 * an Eff value — the out-slots are the extern's out-params, and the concrete extern identity
+					 * rides in the type for the run-site fusion. A VOID extern (no out-params) builds the empty
+					 * `Eff()`. Only an extern is inert under-applied (a proc → E0221, emitted in analyze_expression).
+					 */
+					DeclSummary *ps = find_proc_sig(ctx, func_name);
+					if (ps && ps->is_extern) {
+						int oc = ps->out_param_count;
+						TypeId obuf[16];
+						const char *nbuf[16];
+						TypeId *outs = oc > 16 ? malloc((size_t)oc * sizeof(TypeId)) : obuf;
+						const char **names = oc > 16 ? malloc((size_t)oc * sizeof(const char *)) : nbuf;
+						for (int i = 0; i < oc; i++) {
+							outs[i] = ps->out_params[i].type_id;
+							names[i] =
+							    ps->out_params[i].name; /* INFER the out-slot names from the extern's out-params */
+						}
+						result = tyid_of_eff_named(ctx->ty_arena, func_name, outs, names, oc);
+						if (outs != obuf)
+							free(outs);
+						if (names != nbuf)
+							free(names);
+					}
+				}
 			}
 		}
 	}
@@ -2122,9 +2372,19 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		int is_var = name_var != NULL;
 		int is_arch = find_archetype(ctx, name) != NULL;
 		int is_const = semantic_get_const_value(ctx, name) != NULL;
+		int is_nullary_ctor = sum_ctor_lookup(ctx, name, NULL, NULL) != TYID_UNKNOWN; /* a bare `halt`/`empty` */
+		/* A named-vector CONSTANT (`CENTER(X,Y) :: (…)`) used as a whole tuple VALUE (`CENTER - me.pos`): its
+		 * flattened members are the value consts, but the bare name is a valid tuple value too. */
+		int is_tuple_const = 0;
+		for (int ci = 0; ci < ctx->decl_count && !is_tuple_const; ci++) {
+			DeclSummary *cc = ctx->decls[ci];
+			if (cc && cc->kind == DECL_CONST && cc->name && strcmp(cc->name, name) == 0 &&
+			    tyid_kind(ctx->ty_arena, cc->const_type_value_id) == TYK_TUPLE)
+				is_tuple_const = 1;
+		}
 		if (is_var)
 			name_var->is_referenced = 1;
-		if (!is_known_func && !is_var && !is_arch && !is_const)
+		if (!is_known_func && !is_var && !is_arch && !is_const && !is_nullary_ctor && !is_tuple_const)
 			sem_emit_undefined_symbol(ctx, loc, name);
 		else if (is_var && name_var->is_consumed)
 			sem_emit_use_after_consume(ctx, loc, name);
@@ -2161,13 +2421,32 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 	case SN_SLICE_EXPR:
 		/* a read-only borrowed sub-view: base + optional bounds, consumes nothing */
 		analyze_base_chain(ctx, v, loc);
+		/* not-sliceable (E0201): a scalar cannot be sliced — same rule as indexing. This is what makes a
+		 * `rawptr` (an inert i64 foreign address) usable ONLY through `mem.bound`: `raw[0:n]` is a hard
+		 * error, so `bound` is structurally the only door from an address to memory. Unlike `INDEX`, a
+		 * slice never collapses an array to an element, so a scalar base is unambiguously wrong. */
+		if (sv_count(v, SN_FIELD_NAME) == 0) {
+			char *bn = sv_resolved_name(ctx, v);
+			VariableInfo *bv = bn ? find_variable(ctx, bn) : NULL;
+			TyKind bvk = bv ? tyid_kind(ctx->ty_arena, bv->type_id) : TYK_UNKNOWN;
+			if (bv && (bvk == TYK_PRIM || bvk == TYK_NOMINAL) && !name_is_static_array(ctx, bn)) {
+				const char *rn = sem_tyid_name(ctx, bv->type_id);
+				if (rn && is_primitive_type_name(rn) && strcmp(rn, "str") != 0 && strcmp(rn, "void") != 0)
+					sem_emit_not_indexable(ctx, loc, rn);
+			}
+			free(bn);
+		}
 		for (int i = 0; sv_present(sem_node_at_expr(v, i)); i++)
 			analyze_expression(ctx, sem_node_at_expr(v, i));
 		break;
 
 	case SN_BINARY_EXPR:
 		analyze_expression(ctx, sem_node_at_expr(v, 0));
-		analyze_expression(ctx, sem_node_at_expr(v, 1));
+		/* `eff |> fin`: the RHS is a pure func NAME (the finalizer) — recovered by name at codegen and
+		 * type-checked via find_func_sig (see OP_FMAP in binary_type_id), NOT a value to resolve. Analyzing
+		 * it as a variable would flag a QUALIFIED finalizer (`mem.bound`) as an undefined variable. */
+		if (sem_binary_op(v) != OP_FMAP)
+			analyze_expression(ctx, sem_node_at_expr(v, 1));
 		break;
 
 	case SN_UNARY_EXPR: {
@@ -2255,13 +2534,79 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			break;
 		}
 
+		/* `sqrt(x)` — the float square-root builtin. Pure, vectorizable, GPU-portable (GLSL `sqrt`); lowers
+		 * to LLVM's `@llvm.sqrt.f32`. Recognized here so it isn't flagged undefined. */
+		if (func_name && strcmp(func_name, "sqrt") == 0) {
+			if (argc != 1)
+				sem_emit_wrong_arity(ctx, loc, "sqrt", 1, argc);
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* `seq(a, b)` — applicative sequence of two independent Effs: run `a` then `b`, yield `b` (§5).
+		 * Recognized here so the name isn't flagged undefined; codegen runs both externs in order via the
+		 * build-func fusion. Gated on EXACTLY two args so it never shadows the Schedule combinator
+		 * `seq([]Schedule)` (a sum constructor taking one array literal — `seq({ a, b })`). */
+		if (func_name && strcmp(func_name, "seq") == 0 && argc == 2) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* `zip(e1, …, eN)` — applicative PRODUCT of N independent Effs (§5): run each, surface ALL their
+		 * out-slots (a `|> fin` then folds them). Recognized here so the name isn't flagged undefined; codegen
+		 * runs the N externs and binds their out-slots via the build-func fusion. Gated on ≥2 args. */
+		if (func_name && strcmp(func_name, "zip") == 0 && argc >= 2) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* `pure(x)` / `pure()` — the applicative UNIT: lift a value into an `Eff`, or the empty `Eff()` (the
+		 * explicit no-op arm for `ifS`/`whenS`). Recognized here so the name isn't flagged undefined; codegen
+		 * folds it to a value-only no-op (no effect leaf runs). */
+		if (func_name && strcmp(func_name, "pure") == 0 && argc <= 1) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
+		/* `ifS(cond, then, else)` / `whenS(cond, body)` — the SELECTIVE (§5): run `then`/`body` iff `cond`
+		 * (a PURE value), else the `else` arm (ifS) or nothing (whenS = implicit `pure()`). The conditional
+		 * layer over the static applicative — arms stay statically visible, only WHICH runs is gated (no
+		 * `bind`). Recognized here; codegen emits the guard/branch around the folded arm(s). */
+		if (func_name &&
+		    ((strcmp(func_name, "ifS") == 0 && argc == 3) || (strcmp(func_name, "whenS") == 0 && argc == 2))) {
+			for (int i = 0; i < argc; i++) {
+				ctx->analyzing_call_arg = 1;
+				analyze_expression(ctx, sem_node_at_expr(v, i));
+			}
+			free(func_name);
+			break;
+		}
+
 		/* Collectives — `reduce(op, col)` / `scan(op, col)` fold or prefix-fold a whole column over a
 		 * monoid; `sort(col)` sorts the pool by a key column. Recognized here so the op-literal first arg
-		 * and the builtin name aren't flagged undefined; only the column arg is analyzed. A collective is a
-		 * whole-column operation, so it is illegal inside a `map` (which is strictly per-element). */
+		 * and the builtin name aren't flagged undefined; only the column arg is analyzed. `reduce` IS legal in
+		 * a `map`: a per-element `reduce(+, <expr over Pool.col + this element>)` is the neighbour-reduction /
+		 * self-join (each element folds over the pool). `scan`/`sort` remain whole-column-only (they rewrite
+		 * the column / permute the pool — not a per-element result), so they stay illegal in a `map`. */
 		if (func_name &&
 		    (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0 || strcmp(func_name, "sort") == 0)) {
-			if (ctx->in_map)
+			if (ctx->in_map && strcmp(func_name, "reduce") != 0)
 				sem_emit_collective_in_map(ctx, loc, func_name);
 			int is_sort = strcmp(func_name, "sort") == 0;
 			/* sort takes 1 arg (key column) or 2 (key + `asc`/`desc`); reduce/scan take exactly 2. */
@@ -2300,9 +2645,10 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 			int is_arch = find_archetype(ctx, func_name) != NULL;
 			int is_const = semantic_get_const_value(ctx, func_name) != NULL;
 			int is_decl = !hidden && find_callable_sig(ctx, func_name) != NULL;
+			int is_sum_ctor = sum_ctor_lookup(ctx, func_name, NULL, NULL) != TYID_UNKNOWN;
 			if (cv)
 				cv->is_referenced = 1;
-			if (!is_known_func && !is_group && !is_decl && !cv && !is_arch && !is_const)
+			if (!is_known_func && !is_group && !is_decl && !cv && !is_arch && !is_const && !is_sum_ctor)
 				sem_emit_undefined_symbol(ctx, loc, func_name);
 			else if (cv && cv->is_consumed)
 				sem_emit_use_after_consume(ctx, loc, func_name);
@@ -2367,10 +2713,18 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 		 * be the value of a proc-call statement carrying an out-list. A bare `insert(…)`, an `x := insert(…)`
 		 * bind, or a nested `i32(insert(…))` (any context with !call_stmt_ok) is rejected here. The valid
 		 * `insert(P,…)(h:, ok:)` / `delete(h)(ok:)` form analyzes its call with call_stmt_ok set. */
-		if (strcmp(func_name, "insert") == 0 && !outlist_call_ok)
-			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
-		if (strcmp(func_name, "delete") == 0 && !outlist_call_ok)
-			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
+		if (strcmp(func_name, "insert") == 0 && !outlist_call_ok) {
+			/* A bare `insert(E{…})` (no out-list) is allowed only into an INFALLIBLE pool — there is no `ok`
+			 * to handle. A fallible (`reject`) pool still requires the `(handle:, ok:)` statement form. */
+			SyntaxView ie0 = sem_node_at_expr(v, 0);
+			char *ianm =
+			    (sv_present(ie0) && sv_kind(ie0) == SN_ENTITY_EXPR) ? sem_txt_dup(sv_token(ie0, TOK_IDENT)) : NULL;
+			int ifall = sem_insert_is_fallible(ctx, v, ianm);
+			free(ianm);
+			if (ifall)
+				sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+		}
+		/* `delete` aborts on a stale handle (infallible) → no `ok` to handle, so a bare `delete(h)` is fine. */
 		if (strcmp(func_name, "insert") == 0)
 			sem_check_insert_handler(ctx, v, loc); /* validate the `?handler` (sigil + @policy(pool)) */
 
@@ -2382,9 +2736,17 @@ static void analyze_expression(SemanticContext *ctx, SyntaxView v) {
 				ParamSummary *params = cs->params;
 				int is_extern = cs->is_extern;
 				int is_proc = cs->kind == DECL_PROC;
-				/* value/action boundary: a proc/extern is an action — not nestable in an expr. */
-				if ((is_proc || is_extern) && !call_stmt_ok)
-					sem_emit_action_in_expression(ctx, loc, is_extern ? "extern" : "proc", func_name);
+				/* value/action boundary. An action (proc/extern) is not a value — UNLESS it is an EXTERN, which
+				 * BUILDS an Eff in value position (the one legal action-as-value, §3): an extern with out-slots
+				 * under-applies to `Eff(out…)`, and a VOID extern (no out-slots) builds the empty `Eff()` — a
+				 * value-less effect run with a bare `()`. A (non-extern) proc in value position is E0221 (only an
+				 * extern is inert under-applied; a proc minus its out-slots is a suspended computation). */
+				if ((is_proc || is_extern) && !call_stmt_ok) {
+					if (is_extern)
+						; /* extern in value position → builds an Eff value (Eff(out…), or Eff() if void) */
+					else
+						sem_emit_proc_under_applied(ctx, loc, func_name);
+				}
 				int n = param_count < argc ? param_count : argc;
 				/* explicit-view: record the resolved param (name + own) per argument node id */
 				for (int j = 0; j < n; j++) {
@@ -2698,6 +3060,74 @@ static int sem_read_mb_targets(SemanticContext *ctx, SyntaxView v, MbTarget **ou
 	return n;
 }
 
+/* Is an `insert` into `arch_name` FALLIBLE — i.e. can it leave `ok=0`, so the call must handle `ok`?
+ * Resolves the overflow policy exactly like codegen's `cg_insert_handler`: per-call `?h` › pool decl `?h`
+ * › `@default(proc,pool,X)` › baseline `reject`. Only `reject` is fallible; `abort`/`evict_*`/custom are
+ * infallible (the policy handles overflow — its non-`reject` name signals "I handle it"). */
+static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name) {
+	/* 1. per-call `?handler` on the insert (`insert(P{…}) ?abort`). */
+	SyntaxView pol = sv_child(call, SN_POLICY_REF);
+	if (sv_present(pol)) {
+		char *pn = sem_txt_dup(sv_token(pol, TOK_IDENT));
+		int fall = pn && strcmp(pn, "reject") == 0;
+		free(pn);
+		return fall;
+	}
+	/* 2. the pool's declared `[N]P ?handler` (a STATIC_KIND_ARCHETYPE decl). SKIP `is_requirement` decls —
+	 * a datasheet `[N]P` minimum carries no policy; the DRIVER's real pool does (mirrors codegen's
+	 * `pool_overflow_policy`). Scanning past requirements also means a per-file view that sees ONLY the
+	 * datasheet minimum finds no real pool → the leniency below applies. */
+	int pool_found = 0;
+	if (arch_name)
+		for (int i = 0; i < ctx->decl_count; i++) {
+			DeclSummary *d = ctx->decls[i];
+			if (d && d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARCHETYPE && !d->is_requirement &&
+			    d->name && strcmp(d->name, arch_name) == 0) {
+				pool_found = 1;
+				if (d->overflow_policy)
+					return strcmp(d->overflow_policy, "reject") == 0;
+				break; /* found, but no `?handler` → fall through to @default / baseline */
+			}
+		}
+	/* 3. The pool is NOT declared in this analysis unit — e.g. a module/device file analyzed on its own
+	 * (the LSP, or `arche check <module>`), where the DRIVER owns the pool and its policy. We cannot see
+	 * the policy, so be LENIENT (treat as infallible: don't demand `ok`, allow the bare form). A genuinely
+	 * pool-less insert surfaces as a separate `no storage` error, and a WHOLE-PROGRAM build always sees the
+	 * pool — so this only relaxes the per-file view, keeping the LSP in step with the compiler. */
+	if (!pool_found)
+		return 0;
+	/* 4. pool found but no `?handler` → program `@default(proc, pool, X)` › `reject` baseline. */
+	if (ctx->default_pool_policy)
+		return strcmp(ctx->default_pool_policy, "reject") == 0;
+	return 1;
+}
+
+/* Does kernel-node `bn` declare `col` in its `(writes)` (SN_WRITE_PARAM children)? */
+static int node_declares_write(SyntaxView bn, const char *col) {
+	if (!sv_present(bn) || !col)
+		return 0;
+	int n = sv_count(bn, SN_WRITE_PARAM);
+	for (int j = 0; j < n; j++) {
+		char *dn = sem_txt_dup(sv_token(sv_child_at(bn, SN_WRITE_PARAM, j), TOK_IDENT));
+		int eq = dn && strcmp(dn, col) == 0;
+		free(dn);
+		if (eq)
+			return 1;
+	}
+	return 0;
+}
+
+/* Is `col` a declared `(writes)` column of the current kernel OR any ENCLOSING kernel on the stack? A
+ * query-bound column named there is a legitimate write target — including a BUFFER (array) column
+ * (`framebuffer :: [N]int`) the borrowed-array rule would otherwise treat as read-only, and one a surrounding
+ * kernel owns that a nested fan writes without re-declaring (model A). */
+static int col_is_declared_write(SemanticContext *ctx, const char *col) {
+	for (int d = ctx->kwrite_depth - 1; d >= 0; d--)
+		if (node_declares_write(ctx->kwrite_stack[d], col))
+			return 1;
+	return 0;
+}
+
 static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 	if (!sv_present(v))
 		return;
@@ -2710,32 +3140,21 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 	 * to fall through to its own, more specific `map_no_return` message.) */
 	if (ctx->in_map) {
 		SyntaxNodeKind mk = sv_kind(v);
-		if (mk != SN_ASSIGN_STMT && mk != SN_RETURN_STMT) {
+		/* A `map` is the per-element variant of a `system`, so its body permits the same control flow — `:=`
+		 * locals, `if`, `for`, `match`, `break`/`continue`. A branch-free body still vectorizes / runs on the
+		 * GPU; a branchy one runs as a scalar per-element loop (derived placement, not a hard error). Still
+		 * rejected: `run`/`each_field` (not per-element transforms) and a bare call/expression statement
+		 * (effects stay gated by `eff`; a discarded call has no place in a transform). `return` falls through
+		 * to its own `map_no_return`. */
+		if (mk != SN_ASSIGN_STMT && mk != SN_RETURN_STMT && mk != SN_BIND_STMT && mk != SN_IF_STMT &&
+		    mk != SN_FOR_STMT && mk != SN_MATCH_STMT && mk != SN_BREAK_STMT && mk != SN_CONTINUE_STMT) {
 			const char *w;
 			switch (mk) {
-			case SN_IF_STMT:
-				w = "`if`";
-				break;
-			case SN_FOR_STMT:
-				w = "`for`";
-				break;
-			case SN_MATCH_STMT:
-				w = "`match`";
-				break;
-			case SN_BREAK_STMT:
-				w = "`break`";
-				break;
-			case SN_CONTINUE_STMT:
-				w = "`continue`";
-				break;
 			case SN_RUN_STMT:
 				w = "`run`";
 				break;
 			case SN_EACH_FIELD_STMT:
 				w = "`each_field`";
-				break;
-			case SN_BIND_STMT:
-				w = "a local binding (`:=`)";
 				break;
 			default:
 				w = "a call / expression statement";
@@ -2907,6 +3326,27 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		analyze_expression(ctx, value);
 		ctx->stmt_call_ok = 0;
 		implicit_move_consume(ctx, value);
+		/* Slice 2 — the `(writes)` permission. Inside a selector kernel, ban an indexed pool-column write
+		 * (`Pool.col[i] = …`); collect a write to a bound selector column for the declared-write-set check. */
+		if (ctx->current_map_archetype && sv_kind(target) == SN_INDEX_EXPR && sv_count(target, SN_FIELD_NAME) > 0) {
+			char *root = sv_resolved_name(ctx, target);
+			/* Only ban hand-indexing the kernel's OWN selector pool — that column is bound by name, so the
+			 * index is the smell. A FOREIGN pool isn't bound here (indexing is its only access), and writing
+			 * it is W0024's domain (map_writes_foreign_pool), so leave that case alone. */
+			if (root && find_archetype(ctx, root) &&
+			    find_archetype(ctx, root) == find_archetype(ctx, ctx->current_map_archetype))
+				sem_emit_indexed_write_in_selector(ctx, sem_node_loc(target.node), root);
+			free(root);
+		}
+		if (ctx->k_collect) {
+			char *wbase = sv_name_expr_dup(target);
+			if (wbase) {
+				VariableInfo *wv = find_variable(ctx, wbase);
+				if (wv && wv->is_param) /* a bound selector column (not a local / pool / singleton) */
+					kernel_record_write(ctx, wbase);
+			}
+			free(wbase);
+		}
 		if (sv_kind(target) == SN_NAME_EXPR) {
 			char *tn = sv_resolved_name(ctx, target);
 			VariableInfo *t = find_variable(ctx, tn);
@@ -2914,6 +3354,12 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_assign_to_const(ctx, sem_node_loc(target.node), tn);
 			else if (t && t->is_consumed)
 				sem_emit_assign_after_move(ctx, sem_node_loc(target.node), tn);
+			else if (t && !t->is_out_place && !t->is_param && tyid_kind(ctx->ty_arena, t->type_id) == TYK_SLICE)
+				/* A slice's pointer is fixed at creation: a LOCAL slice variable (born at its `:=`) may be
+				 * written THROUGH (`s[i] = x`) but never REASSIGNED to a different slice (`s = other`) — that
+				 * would repoint the view. An out-param writeback (`out = buf[0:r]`, is_out_place) and a param
+				 * are the proc's result/input places, not a local repoint, and are exempt. */
+				sem_emit_slice_repoint(ctx, sem_node_loc(target.node), tn);
 			free(tn);
 		}
 		/* An aggregate value const (`XS :: {…}`) is immutable — reject both `XS = …` and an element
@@ -2925,14 +3371,20 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				sem_emit_assign_to_const(ctx, sem_node_loc(target.node), tln);
 			free(tln);
 		}
-		/* Purity: a borrowed (non-`move`) array parameter is read-only. Uses the leftmost name. */
+		/* A borrowed (non-`own`) array/slice VIEW is read-only — you may not write through it. This is one
+		 * rule for two shapes, consistent: a borrowed array/slice PARAM, and a LOCAL slice that borrows a
+		 * fresh local's storage (`s := buf[0:4]` — `s` aliases the live `buf`; writing `s[i]` would mutate
+		 * `buf` through the alias). To write either, take ownership (`own` param + `move` in, or `move` the
+		 * buffer into the slice). Uses the leftmost name. */
 		{
 			const char *rn = ctx->model ? sem_model_ref_name(ctx->model, sv_id(target)) : NULL;
 			char *ln = rn ? sem_dupz(rn) : sv_name_expr_dup(target);
 			VariableInfo *pv = ln ? find_variable(ctx, ln) : NULL;
-			if (pv && pv->is_param && !pv->is_own && !pv->is_out_place &&
-			    type_is_byref_aggregate(ctx->ty_arena, pv->type_id))
+			if (pv && !pv->is_own && !pv->is_out_place && pv->is_param &&
+			    type_is_byref_aggregate(ctx->ty_arena, pv->type_id) && !col_is_declared_write(ctx, ln))
 				sem_emit_cannot_mutate_borrowed(ctx, loc, ln);
+			else if (pv && !pv->is_own && !pv->is_out_place && !pv->is_param && pv->borrows_local)
+				sem_emit_cannot_mutate_borrowed_local(ctx, loc, ln);
 			free(ln);
 		}
 		/* A map READS shared singletons but must not WRITE a foreign pool. Writing an archetype that is
@@ -3102,11 +3554,31 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		break;
 	}
 
-	case SN_EXPR_STMT:
+	case SN_EXPR_STMT: {
+		/* An anonymous `each(Q) { … };` in statement position is the inline per-element fan (a nested loop)
+		 * — analyze it as an each (bind its columns as per-element scalars, body sees the enclosing scope).
+		 * `each` is a value-form, which sem_node_at_expr filters out — reach the raw first node child. */
+		SyntaxView raw = {NULL, v.src};
+		for (int ci = 0; ci < v.node->child_count; ci++)
+			if (v.node->children[ci].tag == SE_NODE) {
+				raw = (SyntaxView){v.node->children[ci].as.node, v.src};
+				break;
+			}
+		if (sv_present(raw) && sv_kind(raw) == SN_EACH_EXPR) {
+			analyze_inline_fan(ctx, raw, 0);
+			break;
+		}
+		/* A nested PURE `map (Q) { … }` in statement position is the honest self-join's inner scalar kernel
+		 * (G7): analyze it as an inline map fan (in_map + `as me` self-binder). */
+		if (sv_present(raw) && sv_kind(raw) == SN_MAP_EXPR) {
+			analyze_inline_fan(ctx, raw, 1);
+			break;
+		}
 		ctx->stmt_call_ok = 1;
 		analyze_expression(ctx, sem_node_at_expr(v, 0));
 		ctx->stmt_call_ok = 0;
 		break;
+	}
 
 	case SN_RETURN_STMT: {
 		int rcount = sem_expr_count(v);
@@ -3138,6 +3610,14 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 					ctx->error_count++;
 				}
 				free(nm);
+			} else if (ctx->current_func && sv_kind(rv) == SN_ARRAY_LIT_EXPR) {
+				/* `return {1000, 2}` from a `-> [N]T` func: a fresh array literal returned BY VALUE is the same
+				 * copy-out as returning a named local array (its storage is the callee's frame) — unimplemented.
+				 * The named case above is caught; this direct-literal form used to slip through and silently
+				 * miscompile (a `[N x i8]` global handed back as garbage). Reject it for parity. */
+				fprintf(stderr, "Error: cannot return an array literal by value (array copy-out is not implemented); "
+				                "return an `own` parameter or thread a caller-provided buffer instead\n");
+				ctx->error_count++;
 			}
 			/* A freshly-formed slice/row of a LOCAL stack array escaping by return is a dangling pointer
 			 * — the local's storage is reclaimed on return. Only applies when the func actually returns a
@@ -3232,6 +3712,7 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 		MbTarget *mbt = NULL;
 		int mbt_count = sem_read_mb_targets(ctx, v, &mbt);
 		DeclSummary *mb_callee_proc = NULL;
+		DeclSummary *mb_callee_func = NULL;
 		SyntaxView mb_value = {NULL, v.src};
 		/* the value is the sole call/expr child */
 		for (int i = 0; i < v.node->child_count; i++)
@@ -3257,23 +3738,56 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(mb_value)) : NULL;
 			char *cnf = cn ? sem_dupz(cn) : sem_cv_dup(sv_child(mb_value, SN_CALLEE_NAME));
 			mb_callee_proc = find_proc_sig(ctx, cnf);
+			if (!mb_callee_proc)
+				mb_callee_func = find_func_sig(ctx, cnf); /* multi-bind from a func runs its returns into the targets */
 			if (cnf && strcmp(cnf, "insert") == 0)
 				mb_builtin = "insert";
 			else if (cnf && strcmp(cnf, "delete") == 0)
 				mb_builtin = "delete";
 			free(cnf);
 		}
-		/* Validate the mandatory out-list arity: insert → (handle:, ok:), delete → (ok:). */
-		if (mb_builtin && strcmp(mb_builtin, "insert") == 0 && mbt_count != 2)
-			sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
-		if (mb_builtin && strcmp(mb_builtin, "delete") == 0 && mbt_count != 1)
+		/* Out-list arity + the `ok`-handling rule, gated on the pool's overflow policy:
+		 *  • insert into a FALLIBLE pool (`reject` — the default): the insert can drop the row, so `ok`
+		 *    MUST be handled — slot 1 present and non-`_`. Discarding it (or omitting it) is the
+		 *    `discarded_ok` error. The handle (slot 0) stays optional.
+		 *  • insert into an INFALLIBLE pool (`?abort`/`?evict_*`/custom): overflow is handled by the
+		 *    policy, so `ok` is meaningless — 0/1/2 outs all legal, no lint.
+		 *  • delete aborts on a stale handle (infallible) → 0 or 1 out, no lint.
+		 * More outs than the builtin produces is always an error. */
+		if (mb_builtin && strcmp(mb_builtin, "insert") == 0) {
+			SyntaxView e0 = sv_present(mb_value) ? sem_node_at_expr(mb_value, 0) : (SyntaxView){NULL, v.src};
+			char *arch_nm =
+			    (sv_present(e0) && sv_kind(e0) == SN_ENTITY_EXPR) ? sem_txt_dup(sv_token(e0, TOK_IDENT)) : NULL;
+			int fallible = sem_insert_is_fallible(ctx, mb_value, arch_nm);
+			free(arch_nm);
+			if (mbt_count > 2) {
+				sem_emit_insert_delete_outlist(ctx, loc, "insert", "insert(P, …)(handle:, ok:)");
+			} else if (fallible) {
+				int ok_handled = (mbt_count == 2 && mbt[1].name && strcmp(mbt[1].name, "_") != 0);
+				if (!ok_handled)
+					sem_emit_lint_discarded_ok(ctx, loc, "insert");
+			}
+		}
+		if (mb_builtin && strcmp(mb_builtin, "delete") == 0 && mbt_count > 1)
 			sem_emit_insert_delete_outlist(ctx, loc, "delete", "delete(h)(ok:)");
-		/* W0016 discarded_ok: the capacity/handle `ok` (insert's 2nd out, delete's only out) was
-		 * discarded with `_` — a silently-ignored failure. */
-		if (mb_builtin) {
-			int ok_idx = (strcmp(mb_builtin, "insert") == 0) ? 1 : 0;
-			if (ok_idx < mbt_count && mbt[ok_idx].name && strcmp(mbt[ok_idx].name, "_") == 0)
-				sem_emit_lint_discarded_ok(ctx, loc, mb_builtin);
+
+		/* RUN SITE (Eff): when the call value is an Eff — an extern under-applied, directly or built and
+		 * returned by a func — the out-args RUN it, binding the Eff's out-slots. Type each target from the
+		 * slots (below) and check arity here. A func-built Eff is STRUCTURAL at this point (the concrete
+		 * extern lives in the func body and is recovered at codegen); its out-slots are what the run binds. */
+		TypeId mb_eff = TYID_UNKNOWN;
+		int mb_eff_oc = 0;
+		if (!mb_builtin && !mb_callee_proc && sv_present(mb_value)) {
+			TypeId vt = sem_expr_type_id(ctx, mb_value);
+			if (tyid_kind(ctx->ty_arena, vt) == TYK_EFF) {
+				mb_eff = vt;
+				mb_eff_oc = tyid_eff_out_count(ctx->ty_arena, vt);
+				if (mbt_count != mb_eff_oc) {
+					fprintf(stderr, "Error: running this Eff yields %d result%s but %d out-argument%s given\n",
+					        mb_eff_oc, mb_eff_oc == 1 ? "" : "s", mbt_count, mbt_count == 1 ? "" : "s");
+					ctx->error_count++;
+				}
+			}
 		}
 
 		/* W0011 inout_redundant: an in-arg NAME equal to an out-target NAME at an in-out position. */
@@ -3300,6 +3814,13 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 			TypeId bind_type = t->type_id;
 			if (bind_type == TYID_UNKNOWN && mb_callee_proc && i < mb_callee_proc->out_param_count)
 				bind_type = mb_callee_proc->out_params[i].type_id;
+			/* Running an Eff binds its OUT-SLOTS — this MUST precede the plain-func-return case below, because a
+			 * func→Eff's declared return IS the `Eff(out…)` type; running it (`listen(p)(s:)`) yields the
+			 * out-slot (`socket`), not the Eff value. (A plain multi-return func has no Eff, so it falls through.) */
+			if (bind_type == TYID_UNKNOWN && mb_eff != TYID_UNKNOWN && i < mb_eff_oc)
+				bind_type = tyid_eff_out_at(ctx->ty_arena, mb_eff, i);
+			if (bind_type == TYID_UNKNOWN && mb_callee_func && i < mb_callee_func->return_type_count)
+				bind_type = mb_callee_func->return_type_ids[i]; /* func return slot → target type (keeps nominal id) */
 			/* mandatory-ok builtins: insert → (handle, int), delete → (int). */
 			int is_handle_slot = 0;
 			if (bind_type == TYID_UNKNOWN && mb_builtin) {
@@ -3932,6 +4453,188 @@ int semantic_try_const_int(SemanticContext *ctx, SyntaxView e, int *out) {
 	return 0;
 }
 
+/* ===== Value-CTFE: fold a Schedule expression to a constant ScheduleTree (Approach A) =====
+ * Constructors (run/seq/par/loop/when/halt) build nodes directly; combinator funcs (once/forever/user)
+ * are INLINED — their params bind to the call args and their straight-line `return <expr>` body is folded.
+ * System/predicate references are captured as names (symrefs), never evaluated. */
+typedef struct {
+	const char *name;
+	SyntaxView expr;
+} SchedBind;
+typedef struct {
+	SchedBind binds[32];
+	int n;
+	int depth;
+} SchedScope;
+
+static ScheduleTree *sched_node(SchedKind k) {
+	ScheduleTree *t = calloc(1, sizeof(ScheduleTree));
+	t->kind = k;
+	return t;
+}
+/* Local free for the fold's error paths (the public schedule_tree_free lives in hir.o, which the
+ * analyzer binary doesn't link). */
+static void sched_free_local(ScheduleTree *t) {
+	if (!t)
+		return;
+	for (int i = 0; i < t->child_count; i++)
+		sched_free_local(t->children[i]);
+	free(t->children);
+	free(t->sym);
+	free(t);
+}
+static void sched_add_child(ScheduleTree *t, ScheduleTree *c) {
+	t->children = realloc(t->children, (t->child_count + 1) * sizeof(ScheduleTree *));
+	t->children[t->child_count++] = c;
+}
+
+static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *scope);
+
+/* The `return <expr>` value of a straight-line func body, else absent. */
+static SyntaxView func_return_expr(const DeclSummary *fn) {
+	SyntaxView none = {NULL, fn->body_node.src};
+	if (!sv_present(fn->body_node))
+		return none;
+	for (int i = 0, n = sem_stmt_count(fn->body_node); i < n; i++) {
+		SyntaxView s = sem_stmt_at(fn->body_node, i);
+		if (sv_kind(s) == SN_RETURN_STMT)
+			return sem_node_at_expr(s, 0);
+	}
+	return none;
+}
+
+static ScheduleTree *fold_sched(SemanticContext *ctx, SyntaxView e, SchedScope *scope) {
+	if (!sv_present(e) || scope->depth > CTFE_MAX_DEPTH)
+		return NULL;
+	if (sv_kind(e) == SN_PAREN_EXPR)
+		return fold_sched(ctx, sem_first_expr(e), scope);
+
+	/* A schedule LEAF is a bare/qualified system/map/each name — no `run(...)` wrapper. (`map`/`each` are
+	 * kinds of systems; all three are dispatched by naming them directly in `#run`.) A simple name may also
+	 * be a bound combinator param (`s` in `forever(s)`) or `halt`; those are checked first. A qualified name
+	 * (`device.integrate`) is a postfix access, not a bare SN_NAME_EXPR — `sv_name_expr_dup` gives its
+	 * leftmost segment for param/halt matching, but the LEAF sym uses the FULL dotted name (`sem_cv_dup`).
+	 * Codegen resolves the name (full-or-tail) and errors if it is a query, not a runnable kernel. */
+	if (sv_kind(e) == SN_NAME_EXPR || sv_kind(e) == SN_FIELD_EXPR || has_nested_base(e)) {
+		char *seg = sv_name_expr_dup(e); /* leftmost segment (the whole name when unqualified) */
+		ScheduleTree *r = NULL;
+		int is_bound = 0;
+		if (seg)
+			for (int i = scope->n - 1; i >= 0; i--) /* a bound combinator param → fold its arg */
+				if (strcmp(scope->binds[i].name, seg) == 0) {
+					r = fold_sched(ctx, scope->binds[i].expr, scope);
+					is_bound = 1;
+					break;
+				}
+		if (!is_bound) {
+			if (seg && sum_ctor_lookup(ctx, seg, NULL, NULL) != TYID_UNKNOWN && strcmp(seg, "halt") == 0) {
+				r = sched_node(SCHED_HALT);
+			} else {
+				char *full = sem_cv_dup(e); /* the full dotted name */
+				if (full) {
+					r = sched_node(SCHED_RUN);
+					r->sym = full;
+				}
+			}
+		}
+		free(seg);
+		return r;
+	}
+
+	if (sv_kind(e) != SN_CALL_EXPR)
+		return NULL;
+
+	/* `gpu.sync(Pool)` — explicit GPU->CPU residency sync leaf. Handled before the generic callee-name
+	 * path, which returns NULL for qualified (`a.b`) calls. */
+	if (sv_count(e, SN_FIELD_NAME) == 1 && sem_expr_count(e) == 1) {
+		char *base = sv_name_expr_dup(e); /* leftmost callee segment ("gpu"); SN_CALLEE_NAME is empty when qualified */
+		char *fld = sem_cv_dup(sv_child_at(e, SN_FIELD_NAME, 0));
+		int is_gpu_sync = base && fld && strcmp(base, "gpu") == 0 && strcmp(fld, "sync") == 0;
+		free(base);
+		free(fld);
+		if (is_gpu_sync) {
+			ScheduleTree *g = sched_node(SCHED_GPU_SYNC);
+			g->sym = sv_name_expr_dup(sem_node_at_expr(e, 0)); /* the pool/archetype name */
+			return g;
+		}
+	}
+
+	char *callee = semantic_call_callee_name(ctx, e);
+	if (!callee)
+		return NULL;
+	int argc = sem_expr_count(e);
+	ScheduleTree *r = NULL;
+
+	if ((strcmp(callee, "seq") == 0 || strcmp(callee, "par") == 0) && argc == 1) {
+		SyntaxView lit = sem_node_at_expr(e, 0); /* an array literal of sub-schedules */
+		if (sv_kind(lit) == SN_ARRAY_LIT_EXPR) {
+			r = sched_node(strcmp(callee, "seq") == 0 ? SCHED_SEQ : SCHED_PAR);
+			for (int i = 0, n = sem_expr_count(lit); i < n; i++) {
+				ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(lit, i), scope);
+				if (!c) {
+					sched_free_local(r);
+					r = NULL;
+					break;
+				}
+				sched_add_child(r, c);
+			}
+		}
+	} else if (strcmp(callee, "loop") == 0 && argc == 1) {
+		ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(e, 0), scope);
+		if (c) {
+			r = sched_node(SCHED_LOOP);
+			sched_add_child(r, c);
+		}
+	} else if (strcmp(callee, "when") == 0 && argc == 2) {
+		ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(e, 1), scope);
+		if (c) {
+			r = sched_node(SCHED_WHEN);
+			r->sym = sv_name_expr_dup(sem_node_at_expr(e, 0)); /* a predicate func name */
+			sched_add_child(r, c);
+		}
+	} else {
+		/* a combinator func (once/forever/user) — inline: bind params to args, fold its return body */
+		const DeclSummary *fn = semantic_find_callable_sig(ctx, callee);
+		if (fn && fn->kind == DECL_FUNC && fn->param_count == argc && scope->n + argc <= 32) {
+			SchedScope inner = *scope;
+			inner.depth = scope->depth + 1;
+			for (int i = 0; i < argc; i++) {
+				inner.binds[inner.n].name = fn->params[i].name;
+				inner.binds[inner.n].expr = sem_node_at_expr(e, i);
+				inner.n++;
+			}
+			r = fold_sched(ctx, func_return_expr(fn), &inner);
+		}
+	}
+	free(callee);
+	return r;
+}
+
+/* Public entry: fold `#run`'s expression(s) to a constant ScheduleTree, or NULL if they don't fold. The
+ * node may be a single expression (`#run <expr>`) or the SN_RUN_DECL block (`#run { e1, e2, … }`), which
+ * runs its entries in order (an implicit `seq`). */
+ScheduleTree *semantic_try_const_schedule(SemanticContext *ctx, SyntaxView e) {
+	if (!ctx || !sv_present(e))
+		return NULL;
+	SchedScope scope = {0};
+	if (sv_kind(e) == SN_RUN_DECL) {
+		int n = sem_expr_count(e);
+		if (n == 1)
+			return fold_sched(ctx, sem_node_at_expr(e, 0), &scope);
+		ScheduleTree *seq = sched_node(SCHED_SEQ);
+		for (int i = 0; i < n; i++) {
+			ScheduleTree *c = fold_sched(ctx, sem_node_at_expr(e, i), &scope);
+			if (!c) {
+				sched_free_local(seq);
+				return NULL;
+			}
+			sched_add_child(seq, c);
+		}
+		return seq;
+	}
+	return fold_sched(ctx, e, &scope);
+}
+
 static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	if (!alloc)
 		return;
@@ -3939,6 +4642,12 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	/* Validate archetype exists */
 	ArchetypeInfo *arch = find_archetype(ctx, alloc->name);
 	if (!arch) {
+		/* An anonymous `[N]arche{…}` in a DEVICE impl: its synthetic `__shape_…` name (module-qualified as
+		 * `mod.__shape_…`) won't resolve — but a device impl can't allocate a pool at all, so stay silent here
+		 * and let `sem_check_device_impl_decls` emit the ONE clean "a device's impl cannot allocate a pool" hard
+		 * error instead of a confusing "shape is global". */
+		if (alloc->from_device_impl)
+			return;
 		const char *dot = alloc->name ? strrchr(alloc->name, '.') : NULL;
 		if (dot)
 			/* A shape is GLOBAL vocabulary — qualifying it is meaningless (only a device's systems are
@@ -3998,8 +4707,8 @@ static void analyze_static_decl(SemanticContext *ctx, DeclSummary *alloc) {
 	}
 	/* Record the driver pool's capacity so the final sweep can check it against datasheet minimums. */
 	arch->alloc_capacity = alloc->static_pool_count;
-	/* Guaranteed-live initial count (M): the bounds prover elides a column index proven `< M`. Mirrors
-	 * codegen's old static-count elision; only set when an explicit init_size literal was given. */
+	/* Guaranteed-live initial count (M): the bounds prover elides a column index proven `< M`. Only set
+	 * from an explicit init_size literal (`Arch[N](M)`) — a singleton declares its live row as `[1]P(1)`. */
 	arch->alloc_init_count = alloc->static_init_length_present ? alloc->static_init_count : 0;
 
 	/* Validate: init block requires explicit init_size parameter */
@@ -4033,6 +4742,11 @@ static void sem_format_shape_fields(ArchetypeInfo *arch, char *out, size_t cap) 
  * hard error; a driver pool smaller than the composed minimum is an error. Also emit a non-fatal note
  * when two+ datasheets require the same shape (shared pool). Sizing is keyed off the shape, so order
  * of requirement vs allocation decls does not matter. */
+/* Datasheet storage requirements vs the driver's pools. This is a WHOLE-PROGRAM (link-stage) check — it
+ * only makes sense once every unit is assembled — so it is NOT part of the shared per-file semantic pass
+ * (`analyze_program_core`); the compiler frontend calls `semantic_check_storage_requirements` after analysis.
+ * The analyzer (which sees one file at a time) never runs it, so it doesn't false-positive on a device whose
+ * storage the unseen driver provides. */
 static void sem_check_storage_requirements(SemanticContext *ctx) {
 	for (int a = 0; a < ctx->archetype_count; a++) {
 		ArchetypeInfo *arch = ctx->archetypes[a];
@@ -4070,6 +4784,17 @@ static void sem_check_storage_requirements(SemanticContext *ctx) {
 	}
 }
 
+/* Public entry: the whole-program datasheet-storage check, run by the compiler frontend AFTER analysis (it
+ * needs every unit assembled — the driver's pools meeting the devices' requirements). Returns the number of
+ * errors emitted. Not part of the per-file analyzer path. */
+int semantic_check_storage_requirements(SemanticContext *ctx) {
+	if (!ctx)
+		return 0;
+	int before = ctx->error_count;
+	sem_check_storage_requirements(ctx);
+	return ctx->error_count - before;
+}
+
 static void sem_check_device_impl_decls(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
@@ -4081,9 +4806,32 @@ static void sem_check_device_impl_decls(SemanticContext *ctx) {
 		 * device that uses a shape must define it where it uses it (so it resolves locally) — every
 		 * definition of the same shape coalesces by its canonical component types. Only TYPES (the
 		 * shared vocabulary, which belong in the datasheet) and STORAGE (the driver's) are forbidden. */
-		if (d->kind == DECL_ENUM)
+		/* A shape MAY live in the impl, but a component carrying an INLINE type (`Thing :: arche { extra :: int }`)
+		 * DEFINES that component's type here — inline `name :: T` is just sugar for a top-level `name :: T` type
+		 * decl, the device's shared vocabulary, which belongs in the datasheet. A BARE component (`{ val }`)
+		 * merely references a declared type and is fine. */
+		if (d->kind == DECL_ARCHETYPE) {
+			for (int fi = 0; fi < d->field_count; fi++)
+				if (sv_present(d->fields[fi].type_node)) {
+					const char *fn = d->fields[fi].name ? d->fields[fi].name : "?";
+					fprintf(stderr,
+					        "Error: a device's impl cannot define a type (inline component '%s.%s :: …') — a "
+					        "component type is shared vocabulary and belongs in its .ds.arche datasheet (write the "
+					        "bare '%s' here and declare its type in the datasheet)\n",
+					        nm0 ? nm0 : "?", fn, fn);
+					ctx->error_count++;
+				}
+			continue;
+		}
+		if (d->kind == DECL_ENUM || d->kind == DECL_SUM)
 			what = "define a type";
 		else if (d->kind == DECL_CONST && nm0 && is_type_alias(ctx, nm0)) /* type alias / opaque (not a value const) */
+			what = "define a type";
+		else if (d->kind == DECL_CONST && tyid_kind(ctx->ty_arena, d->const_type_value_id) == TYK_TUPLE &&
+		         !sv_present(d->const_value))
+			/* A tuple-group TYPE (`pos(x,y) :: float`) — a queryable component-type vocabulary — belongs in the
+			 * datasheet. (A named-vector VALUE const `CENTER(X,Y) :: (320,240)` HAS a value and is allowed: it is
+			 * a constant, not a shared type.) */
 			what = "define a type";
 		else if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARCHETYPE)
 			what = "allocate a pool";
@@ -4149,11 +4897,26 @@ static int name_is_proc_typed_param(SemanticContext *ctx, DeclSummary *proc, con
 /* Run the proc-could-be-func and proc-no-effect lints on a non-extern proc. */
 /* A proc "could be a func" iff its body would pass func-purity — the SAME predicate
  * `enforce_func_purity` uses — so the lint and the hard error agree on what "pure" means. */
-static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode);
+static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode, DeclSummary *owner);
+
+/* A name that is the checked decl's own PARAMETER is a local binding, not a global — even when a
+ * program-level mutable global of the same name exists (the param shadows it). The purity walk is
+ * syntactic (name-string based), so without this an `os.write(…, buf, …)` param `buf` is misread as a
+ * read of a program's global `buf`. (Locals introduced in the body are not handled here — params are
+ * the shape that bites the func→Eff stdlib wrappers.) */
+static int name_is_owner_param(DeclSummary *owner, const char *nm) {
+	if (!owner || !nm)
+		return 0;
+	for (int i = 0; i < owner->param_count; i++)
+		if (owner->params[i].name && strcmp(owner->params[i].name, nm) == 0)
+			return 1;
+	return 0;
+}
 
 static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	if (!proc || proc->is_extern)
-		return; /* #foreign procs are exempt — in-out IS the C-ABI idiom there. */
+		return; /* #foreign procs never reach here (analyze_proc_decl returns early); the C-ABI in-out
+		         * shadow note is emitted there. */
 
 	/* W0012 inout_param_shadow: a non-foreign proc with an in-out param (an out-param shadowing the
 	 * in-param of the same name). The in-out idiom is legitimate ONLY for `#foreign` procs (C-ABI
@@ -4162,30 +4925,41 @@ static void lint_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 		if (proc_param_is_inout(proc, i))
 			sem_emit_lint_inout_param_shadow(ctx, proc->loc, proc->params[i].name ? proc->params[i].name : "<param>");
 
+	if (proc->is_drop)
+		return; /* `@drop` cleanup hooks stay procs (runtime-invoked); revisit if the dtor form changes. */
 	if (proc->allow_pure_proc)
 		return;
 
-	/* A proc taking a proc-typed callback param is inherently action-shaped: it
-	 * exists to invoke that callback (an effect the purity walk can't see, since
-	 * the callee is a param, not a named proc). Don't nudge it toward `func`. */
+	/* A proc taking a proc-typed callback param is action-shaped (it exists to invoke the callback). The
+	 * callback feature is orthogonal to proc-elimination — leave it for now. */
 	for (int i = 0; i < proc->param_count; i++)
 		if (name_is_proc_typed_param(ctx, proc, proc->params[i].name))
 			return;
 
-	/* A proc whose body has effects is legitimately a proc — nothing to lint. */
-	if (func_purity_body_view(ctx, proc->body_node) != NULL)
+	/* A proc taking an `archetype` param is a compile-time REFLECTIVE GENERIC: it is monomorphized per
+	 * archetype and walks the fields with `#each_field`, exactly the way a callback proc monomorphizes per
+	 * callback. Like callbacks, archetype reflection is orthogonal to proc-elimination — it is not a
+	 * result-dependent effectful sequence to decompose across systems — so it stays a proc. (`csv.load` is
+	 * the canonical case: an archetype-targeted loader.) */
+	for (int i = 0; i < proc->param_count; i++)
+		if (tyid_kind(ctx->ty_arena, proc->params[i].type_id) == TYK_ARCHETYPE_CATEGORY)
+			return;
+
+	/* `proc` is being removed. Only `#foreign`/`@syscall`/`@intrinsic` primitives (returned above via
+	 * `is_extern`) and `@drop` hooks stay procs. Everything else — pure or effectful, INCLUDING `main` —
+	 * must become a `func`/`system`/`each`/`map`, or decompose a result-dependent sequence across systems.
+	 * The comprehensive ban (W0030) SUBSUMES the finer proc lints below: when it is ENABLED (default), it
+	 * fires and we stop. When it is DISABLED (`-Wno-proc_not_primitive`, for code not doing
+	 * proc-elimination), we fall through to the legacy `proc_could_be_func` / `proc_no_effect` guidance. */
+	if (sem_emit_lint_proc_not_primitive(ctx, proc->loc, proc->name ? proc->name : "<unknown>"))
 		return;
 
-	/* Pure body. `main` is the entry point: it can't be removed and can't be a func, and an empty/
-	 * effect-free main is a normal mid-edit state — never lint it (neither could-be-func nor no-effect).
-	 * A `func` returns EXACTLY ONE value, so only a SINGLE-out pure proc could be a func; a multi-out
-	 * pure proc is legitimately a (multi-return) proc — no lint. A zero-out pure proc does nothing
-	 * observable — flag for removal. The purity test is the SAME predicate enforce_func_purity uses, so
-	 * "could be a func" means exactly "would compile as a func". */
-	int is_main = proc->name && strcmp(proc->name, "main") == 0;
-	if (is_main) {
+	/* Legacy nuanced lints — reached only when W0030 is disabled. A proc with an effectful body is
+	 * legitimately a proc here; a SINGLE-out pure proc could be a func; a zero-out pure proc does nothing
+	 * observable. (`main` is no longer special — it is an ordinary proc name, not the entry.) */
+	if (func_purity_body_view(ctx, proc->body_node, proc) != NULL)
 		return;
-	} else if (proc->out_param_count == 1) {
+	if (proc->out_param_count == 1) {
 		sem_emit_lint_proc_could_be_func(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
 	} else if (proc->out_param_count == 0) {
 		sem_emit_lint_proc_no_effect(ctx, proc->loc, proc->name ? proc->name : "<unknown>");
@@ -4225,36 +4999,84 @@ static const char *func_call_effect_reason(SemanticContext *ctx, const char *nam
  * subtree rooted at `v` (a statement or expression view), or NULL if pure. Mirrors the old AST
  * walker: a `run`, an effectful call, or a read/write of archetype/global state is an effect. A
  * func's only inputs are its params + `::` constants, so any static/global touch makes it impure. */
-static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
+static const char *purity_walk(SemanticContext *ctx, SyntaxView v, DeclSummary *owner, int kernel_mode) {
 	if (!sv_present(v))
 		return NULL;
 	const char *r;
 	SyntaxNodeKind k = sv_kind(v);
 	if (k == SN_RUN_STMT)
 		return "runs a map (`run`)";
-	if (k == SN_CALL_EXPR) {
-		const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
-		char *fb = (!cn && sv_count(v, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(v, SN_CALLEE_NAME)) : NULL;
-		const char *name = cn ? cn : fb;
-		if (name && (r = func_call_effect_reason(ctx, name))) {
+	if (k == SN_EXPR_STMT) {
+		/* A bare Eff value in statement position is RUN — codegen executes it (`fmt.printf("…");` runs printf).
+		 * Building an Eff and binding it to a local is pure; discarding it bare runs it. (The out-list run form
+		 * `f(in)(out:)` is an SN_PROC_CALL_STMT, handled below.) */
+		SyntaxView e = sem_node_at_expr(v, 0);
+		if (sv_present(e) && tyid_kind(ctx->ty_arena, sem_expr_type_id(ctx, e)) == TYK_EFF)
+			return "runs an effect (an Eff value)";
+	}
+	if (k == SN_PROC_CALL_STMT) {
+		/* The out-list form `f(in)(out:)` RUNS f. Running an extern, a proc, or an archetype-mutating
+		 * builtin is an effect — even though the inner call node is typed TYK_EFF (building the effect is
+		 * pure; running it via the out-list is not), so the SN_CALL_EXPR branch's `!= TYK_EFF` guard skips
+		 * it. Flag the run here from the callee. A run of a pure func (multi-bind) stays pure. */
+		SyntaxView inner = {NULL, v.src};
+		for (int i = 0; i < v.node->child_count; i++)
+			if (v.node->children[i].tag == SE_NODE && v.node->children[i].as.node->kind == SN_CALL_EXPR) {
+				inner = (SyntaxView){v.node->children[i].as.node, v.src};
+				break;
+			}
+		if (sv_present(inner)) {
+			/* Running an Eff (the out-list supplies its out-slots) is an effect regardless of how the Eff
+			 * was built — a func that under-applies an extern returns an Eff, and running THAT is impure even
+			 * though the build func is pure. (A multi-bind from a plain-valued func stays pure: not TYK_EFF.) */
+			if (tyid_kind(ctx->ty_arena, call_type_id(ctx, inner)) == TYK_EFF)
+				return "runs an effect (an Eff value)";
+			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(inner)) : NULL;
+			char *fb =
+			    (!cn && sv_count(inner, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(inner, SN_CALLEE_NAME)) : NULL;
+			const char *name = cn ? cn : fb;
+			if (name && (r = func_call_effect_reason(ctx, name))) {
+				free(fb);
+				return r;
+			}
 			free(fb);
-			return r;
 		}
-		free(fb);
-	} else if (k == SN_ASSIGN_STMT) {
+	}
+	if (k == SN_CALL_EXPR) {
+		/* An under-applied extern in value position BUILDS an Eff — a pure value, not an effect run. A
+		 * func MAY build effects (it just can't run them), so an Eff-typed call is pure; we still recurse
+		 * into its args below. (The build site types such a call as TYK_EFF; a real effect run is an
+		 * SN_PROC_CALL_STMT, whose nested extern call is NOT typed Eff and stays flagged.) */
+		if (tyid_kind(ctx->ty_arena, call_type_id(ctx, v)) != TYK_EFF) {
+			const char *cn = ctx->model ? sem_model_callee_name(ctx->model, sv_id(v)) : NULL;
+			char *fb = (!cn && sv_count(v, SN_FIELD_NAME) == 0) ? sem_cv_dup(sv_child(v, SN_CALLEE_NAME)) : NULL;
+			const char *name = cn ? cn : fb;
+			if (name && (r = func_call_effect_reason(ctx, name))) {
+				free(fb);
+				return r;
+			}
+			free(fb);
+		}
+	} else if (k == SN_ASSIGN_STMT && !kernel_mode) {
+		/* Writing static memory is impure for a FUNC, but a KERNEL exists to write its columns/singletons —
+		 * that's data work, governed by the (write-set), not the `eff` permission. So in kernel_mode this is
+		 * not an effect. */
 		char *tn = sv_resolved_name(ctx, sem_node_at_expr(v, 0));
 		const char *rr = NULL;
-		if (tn && find_archetype(ctx, tn))
-			rr = "writes static memory (an archetype column)";
-		else if (tn && is_static_name(ctx, tn))
-			rr = "writes a mutable global";
+		if (tn && !name_is_owner_param(owner, tn)) {
+			if (find_archetype(ctx, tn))
+				rr = "writes static memory (an archetype column)";
+			else if (is_static_name(ctx, tn))
+				rr = "writes a mutable global";
+		}
 		free(tn);
 		if (rr)
 			return rr;
-	} else if (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR) {
+	} else if (!kernel_mode && (k == SN_NAME_EXPR || k == SN_FIELD_EXPR || k == SN_INDEX_EXPR || k == SN_SLICE_EXPR)) {
+		/* Reading static memory is impure for a FUNC; a kernel reads its columns/singletons freely. */
 		char *nm = sv_resolved_name(ctx, v);
 		const char *rr = NULL;
-		if (nm) {
+		if (nm && !name_is_owner_param(owner, nm)) {
 			if (find_archetype(ctx, nm))
 				rr = "reads static memory (an archetype column)";
 			else if (is_static_name(ctx, nm) && !name_is_const_static_array(ctx, nm))
@@ -4266,16 +5088,29 @@ static const char *purity_walk(SemanticContext *ctx, SyntaxView v) {
 	}
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE)
-			if ((r = purity_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src})))
+			if ((r = purity_walk(ctx, (SyntaxView){v.node->children[i].as.node, v.src}, owner, kernel_mode)))
 				return r;
 	return NULL;
 }
 
 /* Pure iff every statement in the decl's body (its `node` view) is pure. */
-static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode) {
+static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declnode, DeclSummary *owner) {
 	const char *r;
 	for (int i = 0, n = sem_stmt_count(declnode); i < n; i++)
-		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i))))
+		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i), owner, 0)))
+			return r;
+	return NULL;
+}
+
+/* The first TRUE side-effect in a kernel body (a `map`/`system`/`each`), or NULL if effect-free. Unlike
+ * func purity, a kernel's reads/writes of its own columns and singletons are data work (not effects) — only
+ * insert/delete/dealloc, calls to externs/`#foreign`/procs, and running an `Eff` count. The walk recurses
+ * into nested kernels, so an effect inside an inline `each`/`map (Q) eff` propagates to the enclosing
+ * `system` for free. A kernel that trips this without the `eff` permission is a hard error. */
+static const char *kernel_effect_body_view(SemanticContext *ctx, SyntaxView declnode, DeclSummary *owner) {
+	const char *r;
+	for (int i = 0, n = sem_stmt_count(declnode); i < n; i++)
+		if ((r = purity_walk(ctx, sem_stmt_at(declnode, i), owner, 1)))
 			return r;
 	return NULL;
 }
@@ -4285,7 +5120,7 @@ static const char *func_purity_body_view(SemanticContext *ctx, SyntaxView declno
 static void enforce_func_purity(SemanticContext *ctx, DeclSummary *func) {
 	if (!func || func->is_extern || func->is_policy)
 		return; /* a policy is a macro, not a pure func — it may mutate operands and call `exit()` */
-	const char *reason = func_purity_body_view(ctx, func->body_node);
+	const char *reason = func_purity_body_view(ctx, func->body_node, func);
 	if (reason) {
 		sem_emit_func_not_pure(ctx, func->loc, func->name ? func->name : "<unknown>", reason);
 	}
@@ -4391,6 +5226,18 @@ static int bnd_lit_int(SyntaxView v) {
 	int val = atoi(p);
 	free(t);
 	return neg ? -1 : val; /* a negative literal is never a valid index */
+}
+
+/* Like bnd_lit_int but also folds a compile-time integer expression — e.g. a `NBALLS :: 5` const used
+ * as a loop bound `i < NBALLS`. Returns the nonneg value, or -1 if it isn't a nonneg constant int. */
+static int bnd_const_int(SemanticContext *ctx, SyntaxView v) {
+	int lit = bnd_lit_int(v);
+	if (lit >= 0)
+		return lit;
+	int folded;
+	if (sv_present(v) && semantic_try_const_int(ctx, v, &folded) && folded >= 0)
+		return folded;
+	return -1;
 }
 
 /* If `v` is a plain NAME expr (no field chain), its name (owned), else NULL. */
@@ -4707,8 +5554,9 @@ static void bnd_collect_facts(SemanticContext *ctx, DeclSummary *d, SyntaxView c
 		char *b = bnd_extent_base(ctx, r);
 		if (v && b)
 			bnd_env_add(e, v, b, 0);
-		/* v < K (literal) → litub(v, K) — proves v into a sized T[N] with K <= N */
-		int rlit = bnd_lit_int(r);
+		/* v < K (literal or const, e.g. `i < NBALLS`) → litub(v, K) — proves v into a sized T[N] /
+		 * a column with K <= N */
+		int rlit = bnd_const_int(ctx, r);
 		if (v && rlit >= 0)
 			bnd_env_add_litub(e, v, rlit);
 		/* v < count|cap (a @policy(pool) extent param) → v is within the handled pool's extent */
@@ -5256,6 +6104,16 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		}
 		free(root);
 	}
+	/* W0029: a pool column indexed by hand `Pool.col[i]` (incl. the singleton `[0]`). Pool values must come
+	 * from a query/map/system selector, never hand-indexing. A well-formed fan body reads columns by their
+	 * bound NAME (never `Pool.col[i]`), so this needs no fan-body exemption — it only catches the escape
+	 * hatch (singleton reads, gather, test/verify peeks). WARN by default; an app build tunes it to error. */
+	if (e->lint_columns && sv_kind(v) == SN_INDEX_EXPR && sv_count(v, SN_FIELD_NAME) > 0) {
+		char *root = sv_resolved_name(ctx, v);
+		if (root && find_archetype(ctx, root))
+			sem_emit_lint_pool_index_outside_query(ctx, sem_node_loc(v.node), root);
+		free(root);
+	}
 	/* Failure-policy validation on a pool-column index (`Arch.f[i] !policy`). kind 3 = column: there's
 	 * no static count, so the only proof path is symbolic — `i` proven `0 <= i < Arch.count/length` by a
 	 * guard/loop (`bnd_proven` against the LIVE count, sounder than codegen's static-count elision). A
@@ -5332,6 +6190,17 @@ static const char *bnd_check_expr(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 		int kind = base ? bnd_base_kind(ctx, d, e, base, &n) : 0;
 		bnd_policy_check(ctx, d, e, v, 1, base, kind, n);
 		free(base);
+	}
+	/* W0029 for a pool-column SLICE `Pool.col[lo:hi]` (incl. the whole-column `[0:cap]`) outside a query —
+	 * the sibling of the `[i]` index case above. A well-formed fan body reads a column by its bound NAME, so
+	 * a hand-built column view is the escape hatch: today's pool-column READER fills `CharBuf.cb[0:cap]` as a
+	 * read OUT buffer outside a query. Lint-only for now (the read-into-column form is migrating to a query);
+	 * shares the `--pool-index=allow` / `@allow(pool_index_outside_query)` opt-out with the index case. */
+	if (e->lint_columns && sv_kind(v) == SN_SLICE_EXPR && expr_is_pool_column_view(ctx, v)) {
+		char *root = sv_resolved_name(ctx, v);
+		if (root)
+			sem_emit_lint_pool_index_outside_query(ctx, sem_node_loc(v.node), root);
+		free(root);
 	}
 	for (int i = 0; i < v.node->child_count; i++)
 		if (v.node->children[i].tag == SE_NODE) {
@@ -5545,7 +6414,9 @@ static const char *bnd_check_stmt(SemanticContext *ctx, DeclSummary *d, SyntaxVi
 static void sem_check_raw_pool_lint(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_MAP && d->kind != DECL_SYSTEM &&
+		     d->kind != DECL_EACH) ||
+		    d->is_extern)
 			continue;
 		if (!sv_present(d->body_node))
 			continue;
@@ -5617,7 +6488,9 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		}
 	case DECL_FUNC: /* also policies — a policy is a DECL_FUNC with is_policy */
 	case DECL_PROC:
-	case DECL_SYS: {
+	case DECL_SYSTEM: /* the composer — its own kind (a `system` reference), not a proc */
+	case DECL_EACH:   /* the per-element fan — its own kind (an `each` reference) */
+	case DECL_MAP: {
 		/* Each form gets its OWN callable kind — func/proc/map/policy never unify. Params are common;
 		 * a func carries its return list, a proc its out-params, map/policy none. */
 		/* foreign decls have a fully computed signature (sem_fill_decl_type_ids types their params/returns
@@ -5628,11 +6501,16 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 		for (int i = 0; i < np; i++)
 			/* func/proc/policy params are typed (`a: int`); a map's are bare COMPONENT names whose type
 			 * is the component itself — resolve those by name so `map(pos, vel)` isn't `map(<unknown>)`. */
-			params[i] = (d->kind == DECL_SYS && d->params[i].name) ? sem_tyid_of_name(ctx, d->params[i].name)
-			                                                       : d->params[i].type_id;
+			params[i] = ((d->kind == DECL_MAP || d->kind == DECL_SYSTEM || d->kind == DECL_EACH) && d->params[i].name)
+			                ? sem_tyid_of_name(ctx, d->params[i].name)
+			                : d->params[i].type_id;
 		TypeId out;
-		if (d->kind == DECL_SYS) {
+		if (d->kind == DECL_MAP) {
 			out = tyid_of_map(ctx->ty_arena, params, np);
+		} else if (d->kind == DECL_SYSTEM) {
+			out = tyid_of_nominal(ctx->ty_arena, "system"); /* a system reference — its OWN kind, not a proc */
+		} else if (d->kind == DECL_EACH) {
+			out = tyid_of_nominal(ctx->ty_arena, "each"); /* an each reference — its OWN kind */
 		} else if (d->is_policy) {
 			out = tyid_of_policy(ctx->ty_arena, params, np);
 		} else if (d->kind == DECL_PROC) {
@@ -5661,8 +6539,9 @@ static TypeId sem_decl_type_id(SemanticContext *ctx, DeclSummary *d) {
 	case DECL_ARCHETYPE:
 		return tyid_of_archetype_category(ctx->ty_arena);
 	case DECL_ENUM:
-		/* An enum decl (`Method :: enum{…}`) DENOTES a type, so its `⟨type⟩` slot is the `type` meta —
-		 * the longhand `Method : type : enum{…}`, mirroring the type-alias arm in DECL_CONST. */
+	case DECL_SUM:
+		/* An enum/sum decl (`Method :: enum{…}`, `Schedule :: sum{…}`) DENOTES a type, so its `⟨type⟩`
+		 * slot is the `type` meta — the longhand `Method : type : enum{…}`. */
 		return sem_tyid_of_name(ctx, "type");
 	case DECL_FUNC_GROUP:
 		return TYID_UNKNOWN; /* an overload SET has no single type — a principled "none", not a dropped kind */
@@ -5788,7 +6667,9 @@ static void sem_check_policy_cycles(SemanticContext *ctx) {
 static void sem_check_policies(SemanticContext *ctx) {
 	for (int di = 0; di < ctx->decl_count; di++) {
 		DeclSummary *d = ctx->decls[di];
-		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYS) || d->is_extern)
+		if ((d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_MAP && d->kind != DECL_SYSTEM &&
+		     d->kind != DECL_EACH) ||
+		    d->is_extern)
 			continue;
 		if (!sv_present(d->body_node))
 			continue;
@@ -5839,7 +6720,8 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 			/* An extern is assumed to mutate every in-param (no body to verify). A mutated borrow
 			 * breaks the read-only contract, so a by-ref array in-param must be `own` — UNLESS an
 			 * out-param shadows it (in-out), in which case the write targets the out place. */
-			if (type_is_byref_aggregate(ctx->ty_arena, p->type_id) && !p->is_own && !proc_param_is_inout(proc, i)) {
+			if (type_is_byref_aggregate(ctx->ty_arena, p->type_id) && !p->is_own && !proc_param_is_inout(proc, i) &&
+			    !proc->is_syscall) {
 				sem_emit_extern_array_param_needs_own(ctx, p->loc, p->name ? p->name : "?", proc->name);
 			}
 			/* `consume` is valid on any param type (consume consumes — not opaque-special). */
@@ -5849,12 +6731,33 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	/* For extern procs, validate the out-param types too (parity with extern func return). An
 	 * out-only out-param maps to the C return value; an in-out one to an in-place pointer write. */
 	if (proc->is_extern) {
+		int out_only = 0;
 		for (int i = 0; i < proc->out_param_count; i++) {
 			const char *tname = tyid_nominal_name(ctx->ty_arena, proc->out_params[i].type_id);
 			if (tname && !is_primitive_type_name(tname) && !find_archetype(ctx, tname) && !is_type_alias(ctx, tname)) {
 				sem_emit_extern_proc_bad_return(ctx, proc->out_params[i].loc, tname, proc->name);
 			}
+			/* An out-only out-param (its name is NOT also an in-param) maps to the C return value; an in-out
+			 * one (name in BOTH lists) is an in-place pointer write. A C function returns exactly one value,
+			 * so AT MOST ONE out-only out-param is representable. More than one was silently miscompiled (the
+			 * 2nd+ were dropped, the C signature declared one return, garbage bound) — reject it instead. */
+			const char *on = proc->out_params[i].name;
+			int is_inout = 0;
+			for (int j = 0; on && j < proc->param_count; j++)
+				if (proc->params[j].name && strcmp(proc->params[j].name, on) == 0) {
+					is_inout = 1;
+					break;
+				}
+			if (!is_inout)
+				out_only++;
 		}
+		if (out_only > 1)
+			sem_emit_extern_multi_out(ctx, proc->loc, proc->name, out_only);
+		/* An in-out param on a `#foreign`/`@syscall` proc — a name in BOTH the in-list and out-list — is the
+		 * SANCTIONED C-ABI idiom for a caller-allocated buffer the C side fills/reads through one pointer arg
+		 * (`sys_clock(clk, ts)(ts)`, `gfx_be_present(win, px, …)(px)`). It's correct and, with no read-only
+		 * foreign-slice option, unavoidable — so it is NOT a lint. (The non-foreign W0012 above still flags an
+		 * accidental in-out shadow in a real arche proc; the call-site out-arg footgun is a separate concern.) */
 		return;
 	}
 
@@ -5924,65 +6827,322 @@ static void analyze_proc_decl(SemanticContext *ctx, DeclSummary *proc) {
 	lint_proc_decl(ctx, proc);
 }
 
+/* A `system` is the composer: a no-arg body with full control flow that `run`s maps and calls
+ * procs/funcs/externs. Analyze its body like a parameterless proc. (Phase 1: permissive — the
+ * system→system ban and scheduled-only rule are Phase 3.) */
+/* Match a query's columns to an archetype and bind each column as a per-row variable. Shared by `map` (the
+ * pure fan) and a query-bearing `system` (the effectful fan) — "same logic as map, don't reinvent". Returns
+ * the matched archetype's alias name (or NULL if no archetype has all the columns). */
+static const char *bind_query_archetype(SemanticContext *ctx, DeclSummary *d) {
+	/* Each query column resolves to whichever archetype owns a field of that name (source-agnostic). For a
+	 * single query that is one archetype; for a JOIN the columns span several. The "driver" — the archetype
+	 * whose row count drives the loop — is the non-singleton one; every other joined archetype must be a
+	 * `[1]` singleton (alloc_capacity == 1), which broadcasts. Returns the driver's alias (for tuple-subfield
+	 * resolution like `pos.x` in the body). */
+	ArchetypeInfo *driver_arch = NULL;
+	ArchetypeInfo *singleton = NULL;
+	for (int p = 0; p < d->param_count; p++) {
+		ArchetypeInfo *owner = NULL;
+		for (int a = 0; a < ctx->archetype_count; a++)
+			if (sem_arch_covers_col(ctx->archetypes[a], d->params[p].name)) { /* group-aware (`pos`↦`pos_x`/…) */
+				owner = ctx->archetypes[a];
+				break;
+			}
+		FieldInfo *field = owner ? find_field(owner, d->params[p].name) : NULL;
+		if (field && tyid_kind(ctx->ty_arena, field->type_id) == TYK_HANDLE)
+			sem_emit_handle_in_map_param(ctx, d->params[p].loc, d->params[p].name);
+		if (owner) {
+			if (owner->alloc_capacity == 1)
+				singleton = owner;
+			else
+				driver_arch = owner;
+		}
+		reject_meta_type(ctx, d->params[p].type_id, d->params[p].loc, "query column type");
+		TypeId param_type = d->params[p].type_id;
+		if (param_type == TYID_UNKNOWN && field)
+			param_type = field->type_id;
+		/* A tuple-group column (`pos(x,y)::float`) queried by name resolves to its TYK_TUPLE VALUE type, so the
+		 * body can use `pos` as a 2-vector (`pos * K`, `near(me.pos, pos)`). The flattened `pos_x`/`pos_y` remain
+		 * for column storage; this is the value view. */
+		param_type = sem_expand_tuple_nominal(ctx, param_type);
+		for (int ci = 0; ci < ctx->decl_count; ci++) {
+			DeclSummary *cc = ctx->decls[ci];
+			if (cc && cc->kind == DECL_CONST && cc->name && strcmp(cc->name, d->params[p].name) == 0 &&
+			    tyid_kind(ctx->ty_arena, cc->const_type_value_id) == TYK_TUPLE) {
+				param_type = cc->const_type_value_id;
+				break;
+			}
+		}
+		add_variable(ctx, d->params[p].name, param_type);
+		mark_last_param(ctx, d->params[p].is_own);
+	}
+	ArchetypeInfo *chosen = driver_arch ? driver_arch : singleton;
+	return chosen ? archetype_any_alias(ctx, chosen) : NULL;
+}
+
+/* ===== Slice 2: the `(writes)` permission ===== */
+
+/* Record a bound-column write (deduped) into the active per-kernel collector. */
+static void kernel_record_write(SemanticContext *ctx, const char *col) {
+	if (!col)
+		return;
+	for (int i = 0; i < ctx->k_write_count; i++)
+		if (strcmp(ctx->k_writes[i], col) == 0)
+			return; /* dedup */
+	ctx->k_writes = realloc(ctx->k_writes, (size_t)(ctx->k_write_count + 1) * sizeof(char *));
+	ctx->k_writes[ctx->k_write_count++] = sem_dupz(col);
+}
+
+/* Begin collecting bound-column writes for a kernel body. Saves the parent collector (so a nested inline
+ * fan's writes don't leak to its enclosing system) and starts fresh. */
+static void kernel_writes_begin(SemanticContext *ctx, int *sv_collect, char ***sv_w, int *sv_n) {
+	*sv_collect = ctx->k_collect;
+	*sv_w = ctx->k_writes;
+	*sv_n = ctx->k_write_count;
+	ctx->k_collect = 1;
+	ctx->k_writes = NULL;
+	ctx->k_write_count = 0;
+}
+
+/* Check the collected actual write-set against the kernel's declared `(writes)` (SN_WRITE_PARAM children of
+ * `knode`); emit E0227 if any actual bound-column write is undeclared (or the list is absent). Over-declaring
+ * is permitted (forward-compatible; avoids false positives on any write form the collector misses). Then free
+ * this kernel's collector and restore the parent's. */
+static void kernel_writes_end(SemanticContext *ctx, SyntaxView knode, const char *kind, const char *name, SourceLoc loc,
+                              int sv_collect, char **sv_w, int sv_n) {
+	int nd = sv_count(knode, SN_WRITE_PARAM);
+	int missing = 0;
+	for (int i = 0; i < ctx->k_write_count && !missing; i++) {
+		int found = 0;
+		for (int j = 0; j < nd && !found; j++) {
+			char *dn = sem_txt_dup(sv_token(sv_child_at(knode, SN_WRITE_PARAM, j), TOK_IDENT));
+			if (dn && strcmp(dn, ctx->k_writes[i]) == 0)
+				found = 1;
+			free(dn);
+		}
+		/* Not in THIS kernel's `(writes)`: a nested fan may write a column an ENCLOSING kernel already declared
+		 * writable (model A) — the current kernel is already popped, so the stack holds the enclosing chain. */
+		if (!found && col_is_declared_write(ctx, ctx->k_writes[i]))
+			found = 1;
+		if (!found)
+			missing = 1;
+	}
+	if (missing) {
+		size_t cap = 4;
+		for (int i = 0; i < ctx->k_write_count; i++)
+			cap += strlen(ctx->k_writes[i]) + 2;
+		char *list = malloc(cap);
+		size_t p = 0;
+		list[p++] = '(';
+		for (int i = 0; i < ctx->k_write_count; i++) {
+			if (i) {
+				list[p++] = ',';
+				list[p++] = ' ';
+			}
+			size_t l = strlen(ctx->k_writes[i]);
+			memcpy(list + p, ctx->k_writes[i], l);
+			p += l;
+		}
+		list[p++] = ')';
+		list[p] = '\0';
+		sem_emit_write_set_mismatch(ctx, loc, kind, name, list, nd > 0);
+		free(list);
+	}
+	for (int i = 0; i < ctx->k_write_count; i++)
+		free(ctx->k_writes[i]);
+	free(ctx->k_writes);
+	ctx->k_collect = sv_collect;
+	ctx->k_writes = sv_w;
+	ctx->k_write_count = sv_n;
+}
+
+static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
+	if (!sys)
+		return;
+	register_func(ctx, sys->name); /* so a call (and the schedule) can resolve the name */
+	push_scope(ctx);
+	DeclSummary *prev_proc = ctx->current_proc;
+	ctx->current_proc = sys;
+	/* A query-bearing `system(Q)` is COLUMNAR: bind its columns (so `pos.x`/`color` resolve in the body) and
+	 * do NOT set `ctx->in_map` — the body permits effects (no E0046). The body operates on whole columns and
+	 * runs boundary effects; per-element iteration is `each`. A run-once `system { }` has no params. */
+	const char *old_arch = ctx->current_map_archetype;
+	if (sys->param_count > 0)
+		ctx->current_map_archetype = bind_query_archetype(ctx, sys);
+	/* `system (query {…} as Flock)`: bind `Flock` to the query's matched shape so `Flock.<col>` resolves as
+	 * that column (the neighbour fold domain of a nested `map (… as me)`). */
+	const char *old_sysbind = ctx->system_binder;
+	const char *old_sysbind_arch = ctx->system_binder_arch;
+	SyntaxView qbind = sv_child_at(sys->body_node, SN_QUERY_BIND, 0);
+	if (sv_present(qbind) && ctx->current_map_archetype) {
+		ctx->system_binder = sem_own_str(ctx, sem_txt_dup(sv_token(qbind, TOK_IDENT)));
+		ctx->system_binder_arch = ctx->current_map_archetype;
+	}
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = sys->body_node;
+	ctx->kwrite_depth++;
+	ctx->in_body = 1;
+	for (int i = 0, n = sem_stmt_count(sys->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(sys->body_node, i));
+	ctx->in_body = 0;
+	ctx->kwrite_depth--;
+	/* Pure by default: a `system` may run effects only with the `eff` permission. The walk recurses into any
+	 * inline `each`/`map (Q) eff`, so a system that runs effects through a nested kernel is caught too. */
+	if (!sv_present(sv_child_at(sys->body_node, SN_EFF, 0))) {
+		const char *reason = kernel_effect_body_view(ctx, sys->body_node, sys);
+		if (reason)
+			sem_emit_effect_without_eff(ctx, sys->loc, "system", sys->name, reason);
+	}
+	kernel_writes_end(ctx, sys->body_node, "system", sys->name, sys->loc, sv_collect, sv_w, sv_n);
+	ctx->current_map_archetype = old_arch;
+	ctx->system_binder = old_sysbind;
+	ctx->system_binder_arch = old_sysbind_arch;
+	pop_scope(ctx);
+	ctx->current_proc = prev_proc;
+}
+
+static void analyze_each_decl(SemanticContext *ctx, DeclSummary *each) {
+	if (!each)
+		return;
+	register_func(ctx, each->name); /* so the schedule can resolve the name */
+	push_scope(ctx);
+	DeclSummary *prev_proc = ctx->current_proc;
+	ctx->current_proc = each;
+	/* `each(Q)` is the PER-ELEMENT fan: bind its columns (resolved per-element in codegen's row loop) and do
+	 * NOT set `ctx->in_map` — the body permits control flow + effects, like a system. Binding is identical to
+	 * a query-system; only codegen differs (scalars at the current row vs whole columns). */
+	const char *old_arch = ctx->current_map_archetype;
+	ctx->current_map_archetype = bind_query_archetype(ctx, each);
+	/* `each (query {…} as w)`: bind the matched row's handle to `w` — a `handle(driver)` local for
+	 * `delete(w)(ok:)` / relationship filters. The row handle is NOT a query column (handles are banned as
+	 * columns, E0037); it arrives via the `as` binder, outside the column layer. */
+	SyntaxView rb = sv_child_at(each->body_node, SN_QUERY_BIND, 0);
+	if (sv_present(rb) && ctx->current_map_archetype) {
+		char *rv = sem_own_str(ctx, sem_txt_dup(sv_token(rb, TOK_IDENT)));
+		add_variable_with_archetype(ctx, rv, tyid_of_handle(ctx->ty_arena, ctx->current_map_archetype),
+		                            ctx->current_map_archetype);
+	}
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = each->body_node;
+	ctx->kwrite_depth++;
+	ctx->in_body = 1;
+	for (int i = 0, n = sem_stmt_count(each->body_node); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(each->body_node, i));
+	ctx->in_body = 0;
+	ctx->kwrite_depth--;
+	kernel_writes_end(ctx, each->body_node, "map", each->name, each->loc, sv_collect, sv_w, sv_n);
+	ctx->current_map_archetype = old_arch;
+	pop_scope(ctx);
+	ctx->current_proc = prev_proc;
+}
+
+/* Analyze an anonymous inline fan appearing as a statement (HIR_STMT_EACH). `f` is the SN_EACH_EXPR (effectful
+ * fan) or SN_MAP_EXPR (pure fan, `is_map`) view: its body statements are its direct children (sem_stmt_*); its
+ * columns come from its child SN_QUERY_EXPR(s). Bind the columns as per-element scalars in a fresh scope nested
+ * inside the enclosing one (so the body sees both its columns AND the enclosing locals), then analyze the body.
+ * When `is_map` (a nested pure `map`, the honest self-join's inner scalar kernel — G7): set `in_map` so the
+ * transform-only rule applies, and register the `as me` column self-binder (see analyze_map_decl). */
+static void analyze_inline_fan(SemanticContext *ctx, SyntaxView f, int is_map) {
+	DeclSummary ds = {0};
+	ds.kind = DECL_EACH;
+	int nq = sv_count(f, SN_QUERY_EXPR);
+	int total = 0;
+	for (int q = 0; q < nq; q++)
+		total += sv_count(sv_child_at(f, SN_QUERY_EXPR, q), SN_PARAM);
+	ds.params = calloc(total ? total : 1, sizeof(ParamSummary));
+	for (int q = 0; q < nq; q++) {
+		SyntaxView iq = sv_child_at(f, SN_QUERY_EXPR, q);
+		int npq = sv_count(iq, SN_PARAM);
+		for (int i = 0; i < npq; i++)
+			ds.params[ds.param_count++] = sem_param_summary_node(sv_child_at(iq, SN_PARAM, i));
+	}
+	push_scope(ctx);
+	const char *old_arch = ctx->current_map_archetype;
+	ctx->current_map_archetype = bind_query_archetype(ctx, &ds);
+	SyntaxView selfbind = sv_child_at(f, SN_QUERY_BIND, 0);
+	const char *prev_self = ctx->self_binder;
+	const ParamSummary *prev_sp = ctx->self_binder_params;
+	int prev_snp = ctx->self_binder_nparams;
+	if (is_map && sv_present(selfbind) && ctx->current_map_archetype) {
+		char *self = sem_own_str(ctx, sem_txt_dup(sv_token(selfbind, TOK_IDENT)));
+		add_variable_with_archetype(ctx, self, TYID_UNKNOWN, ctx->current_map_archetype);
+		ctx->self_binder = self;
+		ctx->self_binder_params = ds.params;
+		ctx->self_binder_nparams = ds.param_count;
+	}
+	int prev_in_map = ctx->in_map;
+	if (is_map)
+		ctx->in_map = 1;
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = f;
+	ctx->kwrite_depth++;
+	int old_in_body = ctx->in_body;
+	ctx->in_body = 1;
+	for (int i = 0, n = sem_stmt_count(f); i < n; i++)
+		analyze_statement(ctx, sem_stmt_at(f, i));
+	ctx->in_body = old_in_body;
+	ctx->kwrite_depth--;
+	kernel_writes_end(ctx, f, "map", NULL, sem_node_loc(f.node), sv_collect, sv_w, sv_n);
+	ctx->in_map = prev_in_map;
+	ctx->self_binder = prev_self;
+	ctx->self_binder_params = prev_sp;
+	ctx->self_binder_nparams = prev_snp;
+	ctx->current_map_archetype = old_arch;
+	pop_scope(ctx);
+	free(ds.params);
+}
+
 static void analyze_map_decl(SemanticContext *ctx, DeclSummary *map) {
 	if (!map)
 		return;
-
 	push_scope(ctx);
-
-	/* infer which archetype this map operates on by matching parameter names to fields */
-	const char *map_archetype = NULL;
-	ArchetypeInfo *arch_info = NULL;
-	for (int a = 0; a < ctx->archetype_count; a++) {
-		int matches = 0;
-		for (int p = 0; p < map->param_count; p++) {
-			if (find_field(ctx->archetypes[a], map->params[p].name)) {
-				matches++;
-			}
-		}
-		/* if all parameters match fields in this archetype, this is our archetype */
-		if (matches == map->param_count && map->param_count > 0) {
-			map_archetype = archetype_any_alias(ctx, ctx->archetypes[a]);
-			arch_info = ctx->archetypes[a];
-			break;
-		}
-	}
-
-	/* Check that no parameter is a handle column */
-	if (arch_info) {
-		for (int p = 0; p < map->param_count; p++) {
-			FieldInfo *field = find_field(arch_info, map->params[p].name);
-			if (field && tyid_kind(ctx->ty_arena, field->type_id) == TYK_HANDLE) {
-				sem_emit_handle_in_map_param(ctx, map->params[p].loc, map->params[p].name);
-			}
-		}
-	}
-
-	/* add parameters as variables, using field types from archetype if available */
-	for (int i = 0; i < map->param_count; i++) {
-		reject_meta_type(ctx, map->params[i].type_id, map->params[i].loc, "map parameter type");
-		TypeId param_type = map->params[i].type_id;
-		/* If no explicit type and we found the archetype, use the field's type */
-		if (param_type == TYID_UNKNOWN && arch_info) {
-			FieldInfo *field = find_field(arch_info, map->params[i].name);
-			if (field)
-				param_type = field->type_id;
-		}
-		add_variable(ctx, map->params[i].name, param_type);
-		mark_last_param(ctx, map->params[i].is_own);
-	}
-
+	const char *map_archetype = bind_query_archetype(ctx, map);
 	const char *old_map_archetype = ctx->current_map_archetype;
 	ctx->current_map_archetype = map_archetype;
-
+	/* `map (query {…} as me)`: the pure-map column self-binder. `me.<col>` is THIS element's bound column —
+	 * register `me` with the map's archetype so `me.col` resolves like a bare column access (lowering then
+	 * collapses `me.col`→`col`). Binding self is not an effect, so no `eff` is required (unlike the eff fan's
+	 * delete-handle `as w`, handled in analyze_each_decl). */
+	SyntaxView selfbind = sv_child_at(map->body_node, SN_QUERY_BIND, 0);
+	const char *prev_self = ctx->self_binder;
+	const ParamSummary *prev_sp = ctx->self_binder_params;
+	int prev_snp = ctx->self_binder_nparams;
+	if (sv_present(selfbind) && map_archetype) {
+		char *self = sem_own_str(ctx, sem_txt_dup(sv_token(selfbind, TOK_IDENT)));
+		add_variable_with_archetype(ctx, self, TYID_UNKNOWN, map_archetype);
+		ctx->self_binder = self;
+		ctx->self_binder_params = map->params;
+		ctx->self_binder_nparams = map->param_count;
+	}
 	int prev_in_map = ctx->in_map;
+	/* `map` is the pure per-element kernel: E0046 (transform-only) active. The effectful per-entity fan is
+	 * `map (Q) eff`, which parses to SN_EACH_EXPR (analyze_each_decl), so it never reaches here. */
 	ctx->in_map = 1;
+	int sv_collect, sv_n;
+	char **sv_w;
+	kernel_writes_begin(ctx, &sv_collect, &sv_w, &sv_n);
+	if (ctx->kwrite_depth < 16)
+		ctx->kwrite_stack[ctx->kwrite_depth] = map->body_node;
+	ctx->kwrite_depth++;
 	ctx->in_body = 1;
 	for (int i = 0, n = sem_stmt_count(map->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(map->body_node, i));
 	ctx->in_body = 0;
+	ctx->kwrite_depth--;
+	kernel_writes_end(ctx, map->body_node, "map", map->name, map->loc, sv_collect, sv_w, sv_n);
 	ctx->in_map = prev_in_map;
-
+	ctx->self_binder = prev_self;
+	ctx->self_binder_params = prev_sp;
+	ctx->self_binder_nparams = prev_snp;
 	ctx->current_map_archetype = old_map_archetype;
 	pop_scope(ctx);
 }
@@ -6111,11 +7271,30 @@ static void analyze_func_decl(SemanticContext *ctx, DeclSummary *func) {
 		mark_last_param(ctx, func->params[i].is_own);
 	}
 
+	/* Out-params: a func may produce several results via an out-param list (the form `proc` used to
+	 * carry; `proc` is now foreign-only). Register each as a writable place the body fills, exactly as
+	 * a proc does — out-only is a fresh owned slot, an in-out shadows its in-list borrow. */
+	for (int i = 0; i < func->out_param_count; i++) {
+		const char *on = func->out_params[i].name;
+		int in_idx = -1;
+		for (int j = 0; j < func->param_count; j++)
+			if (func->params[j].name && on && strcmp(func->params[j].name, on) == 0) {
+				in_idx = j;
+				break;
+			}
+		add_variable(ctx, on, func->out_params[i].type_id);
+		mark_last_param(ctx, in_idx >= 0 ? func->params[in_idx].is_own : 1);
+		mark_last_out_place(ctx);
+	}
+
 	DeclSummary *prev_func = ctx->current_func;
+	DeclSummary *prev_proc = ctx->current_proc;
 	ctx->current_func = func;
+	ctx->current_proc = func; /* so out-param name resolution (keyed on current_proc) sees the slots */
 	for (int i = 0, n = sem_stmt_count(func->body_node); i < n; i++)
 		analyze_statement(ctx, sem_stmt_at(func->body_node, i));
 	ctx->current_func = prev_func;
+	ctx->current_proc = prev_proc;
 
 	enforce_func_purity(ctx, func); /* a `func` must be pure — hard error if not */
 	lint_func_could_be_const(ctx, func);
@@ -6154,8 +7333,14 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 	case DECL_PROC:
 		analyze_proc_decl(ctx, ds);
 		break;
-	case DECL_SYS:
+	case DECL_MAP:
 		analyze_map_decl(ctx, ds);
+		break;
+	case DECL_SYSTEM:
+		analyze_system_decl(ctx, ds);
+		break;
+	case DECL_EACH:
+		analyze_each_decl(ctx, ds);
 		break;
 	case DECL_FUNC:
 		analyze_func_decl(ctx, ds);
@@ -6172,6 +7357,9 @@ static void analyze_decl(SemanticContext *ctx, DeclSummary *ds) {
 		break;
 	case DECL_ENUM:
 		/* Registered in pass 0 (enum type + variants); erased before lowering. */
+		break;
+	case DECL_SUM:
+		/* Registered in pass 0 (sum type + variant constructors); erased before lowering. */
 		break;
 	case DECL_QUERY:
 		/* A column set — no body to analyze; its columns are validated where a map consumes them. */
@@ -6366,6 +7554,13 @@ TypeId sem_tyid_of_name(SemanticContext *ctx, const char *n) {
 		return tyid_of_prim(arena, PRIM_VOID);
 	if (strcmp(r, "opaque") == 0)
 		return tyid_of_nominal(arena, "opaque");
+	/* A sum type name resolves to its interned TYK_SUM identity (forward-declared before payloads are
+	 * interned, so a recursive payload `[]Self` resolves here too). */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d && d->kind == DECL_SUM && d->name && d->sum_type_id != TYID_UNKNOWN && strcmp(d->name, r) == 0)
+			return d->sum_type_id;
+	}
 	/* Any other name (an archetype, or `char_array` should it reach here) interns as a distinct nominal
 	 * — NOT collapsed to a prim — so its spelling round-trips for lowering (e.g. CHAR_ARRAY). */
 	return tyid_of_nominal(arena, r);
@@ -6380,6 +7575,9 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 	TypeArena *arena = ctx->ty_arena;
 	switch (sv_kind(t)) {
 	case SN_TYPE_REF: {
+		/* `system` in type position (the Schedule `run` leaf's payload): a system-reference type. */
+		if (sv_has_token(t, TOK_SYSTEM))
+			return tyid_of_nominal(arena, "system");
 		char *raw = sem_type_ref_name(t);
 		TypeId id;
 		if (strcmp(raw, "archetype") == 0)
@@ -6404,16 +7602,15 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 		char *en = sem_txt_dup(sv_token(t, TOK_IDENT));
 		TypeId elem = (strcmp(en, "opaque") == 0) ? tyid_of_nominal(arena, "opaque") : sem_tyid_of_name(ctx, en);
 		free(en);
+		/* Each dimension is a const-expression sub-node (`[16]`, `[SIZE]`, `[W * H]`) — CTFE-fold it. */
 		int ranks[16], nr = 0;
 		for (int i = 0; i < t.node->child_count && nr < 16; i++)
-			if (t.node->children[i].tag == SE_TOKEN && t.node->children[i].as.token.kind == TOK_NUMBER) {
-				char buf[32];
-				int l = (int)t.node->children[i].as.token.length;
-				if (l > 31)
-					l = 31;
-				memcpy(buf, t.src + t.node->children[i].as.token.offset, l);
-				buf[l] = '\0';
-				ranks[nr++] = atoi(buf);
+			if (t.node->children[i].tag == SE_NODE) {
+				SyntaxView sz = {t.node->children[i].as.node, t.src};
+				int r = 0;
+				if (!semantic_try_const_int(ctx, sz, &r))
+					sem_emit_alloc_count_not_literal(ctx, sem_node_loc(sz.node)); /* array size must be const */
+				ranks[nr++] = r;
 			}
 		TypeId cur = elem;
 		for (int i = nr - 1; i >= 0; i--)
@@ -6458,6 +7655,19 @@ TypeId sem_intern_view(SemanticContext *ctx, SyntaxView t) {
 			free(names);
 		if (types != tbuf)
 			free(types);
+		return out;
+	}
+	case SN_TYPE_EFF: {
+		/* `Eff(T…)` — the out-slot types are the direct type-node children. This is the STRUCTURAL form
+		 * (extern_name NULL); a build site mints the concrete `Eff#extern` separately. */
+		int n = sv_type_count_sem(t);
+		TypeId tbuf[16];
+		TypeId *outs = n > 16 ? malloc((size_t)n * sizeof(TypeId)) : tbuf;
+		for (int i = 0; i < n; i++)
+			outs[i] = sem_intern_view(ctx, sem_type_at(t, i));
+		TypeId out = tyid_of_eff_structural(arena, outs, n);
+		if (outs != tbuf)
+			free(outs);
 		return out;
 	}
 	case SN_TYPE_PROC:
@@ -6626,6 +7836,8 @@ static Operator sem_tok_to_op(TokenKind k) {
 		return OP_AND;
 	case TOK_PIPE_PIPE:
 		return OP_OR;
+	case TOK_PIPE_GT:
+		return OP_FMAP;
 	default:
 		return OP_NONE;
 	}
@@ -6710,6 +7922,23 @@ static int syntax_has_drop_decorator(SyntaxView d) {
 		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
 			continue;
 		if (e2->as.token.length == 4 && memcmp(d.src + e2->as.token.offset, "drop", 4) == 0)
+			return 1;
+	}
+	return 0;
+}
+
+/* `@syscall(N)` present on the decl? (the number itself is codegen's concern; semantic only needs to know
+ * a proc is a typed syscall so its in/out lists govern buffer mutability — see analyze_proc_decl.) */
+static int syntax_has_syscall_decorator(SyntaxView d) {
+	int n = d.node->child_count;
+	for (int i = 0; i + 1 < n; i++) {
+		const SyntaxElem *e1 = &d.node->children[i];
+		if (e1->tag != SE_TOKEN || e1->as.token.kind != TOK_AT)
+			continue;
+		const SyntaxElem *e2 = &d.node->children[i + 1];
+		if (e2->tag != SE_TOKEN || e2->as.token.kind != TOK_IDENT)
+			continue;
+		if (e2->as.token.length == 7 && memcmp(d.src + e2->as.token.offset, "syscall", 7) == 0)
 			return 1;
 	}
 	return 0;
@@ -6897,8 +8126,9 @@ static SyntaxView sem_rhs_form(SyntaxView d) {
 		if (d.node->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = d.node->children[i].as.node->kind;
-		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR || k == SN_ARCH_EXPR ||
-		    k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
+		if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_MAP_EXPR || k == SN_SYSTEM_EXPR ||
+		    k == SN_EACH_EXPR || k == SN_ARCH_EXPR || k == SN_GROUP_EXPR || k == SN_ENUM_EXPR || k == SN_SUM_EXPR ||
+		    k == SN_QUERY_EXPR || k == SN_TYPE_PROC || k == SN_TYPE_FUNC) {
 			SyntaxView v = {d.node->children[i].as.node, d.src};
 			return v;
 		}
@@ -7121,7 +8351,7 @@ static void sem_rename_decl_summary(DeclSummary *ds, const char *prefix, char **
 	switch (ds->kind) {
 	case DECL_ARCHETYPE:
 	case DECL_PROC:
-	case DECL_SYS:
+	case DECL_MAP:
 	case DECL_FUNC:
 	case DECL_STATIC:
 	case DECL_CONST:
@@ -7587,6 +8817,8 @@ static void sem_check_default_directives(SemanticContext *ctx, const SyntaxNode 
 			sem_emit_duplicate_default(ctx, loc, kindname, catname);
 		} else {
 			seen[effect][cat] = 1;
+			if (effect == 0 && cat == 2 && policy) /* @default(proc, pool, X): cache for the insert ok-gate */
+				ctx->default_pool_policy = sem_dupz(policy);
 		}
 		free(policy);
 	}
@@ -7679,27 +8911,51 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 	sem_check_one_region_per_file(root, src);
 
+	/* Region-band visibility for the file being compiled directly (the "run this file" file). It is NOT a
+	 * special "entry" role — nothing about a file is intrinsically an entry point, and the same file may be
+	 * `#import`'d elsewhere — so it honors `#file`/`#module` bands exactly like the module loader does
+	 * (sem_add_module_decl): a `#file` banner narrows the rest of the file to VIS_FILE, a `#module` banner
+	 * to VIS_UNIT, a `{ ... }` block scopes the band to its children. This is what lets a driver hold
+	 * private mutable state (`#file` then `win : window`) without tripping W0022. */
+	int file_local = 0; /* sticky once a `#file` banner is seen */
+	int unit_band = 0;  /* sticky once a `#module` banner is seen */
+
 	for (int i = 0; i < root->child_count; i++) {
 		if (root->children[i].tag != SE_NODE)
 			continue;
 		SyntaxNodeKind k = root->children[i].as.node->kind;
-		/* A region marker. The banner form contributes no decls here (its following siblings are
-		 * collected normally); a `{ ... }` block's child decls are collected inline. In the main
-		 * file there is no export band to narrow (that's module-only), so the marker kind is moot. */
+		/* A region marker. The banner form narrows the rest of the file (sticky); a `{ ... }` block's child
+		 * decls are collected inline and scoped to the block's own band. `#foreign`/`#import` don't narrow. */
 		if (k == SN_REGION) {
 			const SyntaxNode *rn = root->children[i].as.node;
-			if (sv_has_token((SyntaxView){rn, src}, TOK_LBRACE)) {
+			SyntaxView rv = {rn, src};
+			int is_file = sv_has_token(rv, TOK_HASH_FILE);
+			int is_module = sv_has_token(rv, TOK_HASH_MODULE);
+			if (sv_has_token(rv, TOK_LBRACE)) {
+				Visibility block_vis = is_file     ? VIS_FILE
+				                       : is_module ? VIS_UNIT
+				                                   : (file_local ? VIS_FILE : (unit_band ? VIS_UNIT : VIS_EXPORTED));
 				for (int c = 0; c < rn->child_count; c++) {
 					if (rn->children[c].tag != SE_NODE)
 						continue;
 					if (!sem_is_collectible_decl(rn->children[c].as.node->kind))
 						continue;
 					DeclSummary *ad = decl_summary_from_node(ctx, (SyntaxView){rn->children[c].as.node, src});
-					if (ad)
+					if (ad) {
+						ad->visibility = block_vis;
 						ctx->decls[ctx->decl_count++] = ad;
+					}
 				}
+			} else if (is_file) {
+				file_local = 1;
+			} else if (is_module) {
+				unit_band = 1;
 			}
 			continue;
+		}
+		if (k == SN_RUN_DECL) {
+			ctx->entry_has_run = 1; /* a `#run` is the program entry — marks this unit a binary */
+			continue;               /* #run is folded + dispatched in lowering/codegen */
 		}
 		if (k < SN_WORLD_DECL || k > SN_USE_DECL)
 			continue;
@@ -7724,6 +8980,7 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 		DeclSummary *ad = decl_summary_from_node(ctx, dv);
 		if (ad) {
+			ad->visibility = file_local ? VIS_FILE : (unit_band ? VIS_UNIT : VIS_EXPORTED);
 			ctx->decls[ctx->decl_count++] = ad;
 			/* Anonymous pool `[N]arche { cols }`: also register its synthetic shape (unless an identical
 			 * one is already registered) so the pool allocates and a query matches it by columns. */
@@ -7780,7 +9037,7 @@ static void sem_collect_decls(SemanticContext *ctx, const SyntaxNode *root, cons
 
 /* A callable decl: the kinds reachability tracks as call/seed targets and roots. */
 static int decl_is_callable(DeclKind k) {
-	return k == DECL_FUNC || k == DECL_PROC || k == DECL_FUNC_GROUP || k == DECL_SYS;
+	return k == DECL_FUNC || k == DECL_PROC || k == DECL_FUNC_GROUP || k == DECL_MAP;
 }
 
 /* A reference TARGET: any top-level decl a name/call can resolve to. Broader than callable so the
@@ -7941,33 +9198,51 @@ static const char *sem_decl_module_path(SemanticContext *ctx, const DeclSummary 
 	return NULL;
 }
 
-/* W0022 exported_mutable_global — a top-level mutable global (scalar or non-const buffer) on the
- * exported surface is banned: shared mutable state must be a pool (the world's columnar storage) or
- * be narrowed to #module/#file. Pools (STATIC_KIND_ARCHETYPE) and immutable `::` consts (static_is_const)
- * are exempt. Scoped to user code; bundled core/stdlib is never flagged. Default severity is error (the
- * lint is default-promoted in ensure_init); `--exported-mutable=warn|allow` and @allow(...) relax it. */
+/* W0022 exported_mutable_global — a top-level mutable global (scalar or non-const buffer) on the EXPORTED
+ * surface is banned: any importer could mutate it across the contract boundary, so shared mutable state
+ * must be a pool (the world's columnar storage) or be made private with #module/#file. The rule is purely
+ * VISIBILITY-based — it fires on any VIS_EXPORTED (no-banner) mutable global, in ANY file. Nothing is
+ * special about the file you happen to run: "entry-ness" is not a property of a file, only of how you
+ * invoked the compiler, and the same file may be #import'd elsewhere. So a driver that wants private
+ * mutable state marks it `#file` (visible only in that file) — it is then not exported and not flagged.
+ * Pools (STATIC_KIND_ARCHETYPE) and immutable `::` consts (static_is_const) are exempt. Default severity is
+ * error (default-promoted in ensure_init); `--exported-mutable=warn|allow` and @allow(...) relax it. */
 static void sem_check_exported_mutable(SemanticContext *ctx) {
 	if (!ctx->model || ctx->decl_count <= 0)
 		return;
-	int core_off = semantic_print_line_offset();
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
-		if (d->kind != DECL_STATIC || d->visibility != VIS_EXPORTED || d->is_requirement)
-			continue;
-		if (d->origin != DECL_ORIGIN_ENTRY && d->origin != DECL_ORIGIN_USER_MODULE)
-			continue; /* never flag bundled core/stdlib */
+		if (d->kind != DECL_STATIC || d->is_requirement)
+			continue; /* visibility-agnostic: a mutable global is banned even when `#file`/`#module` private */
 		int is_mutable =
 		    d->static_kind == STATIC_KIND_SCALAR || (d->static_kind == STATIC_KIND_ARRAY && !d->static_is_const);
 		if (!is_mutable)
 			continue; /* pools (archetype) and immutable `::` consts are exempt */
-		if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
-			continue; /* prepended core prelude — not user code */
 		/* re-arm @allow suppression for this decl (sem_emit_v matches the slug) */
 		ctx->active_allow_slugs = d->allow_slugs;
 		ctx->active_allow_slug_count = d->allow_slug_count;
 		sem_emit_lint_exported_mutable_global(ctx, d->loc, d->name);
 		ctx->active_allow_slugs = NULL;
 		ctx->active_allow_slug_count = 0;
+	}
+}
+
+/* E0225 main_reserved — a user decl named `main`. The program entry is a `#run` schedule, never a decl
+ * called `main`; `main` carries no special meaning and is reserved so it cannot masquerade as an entry.
+ * Fires for any user-authored (non-stdlib/core) non-foreign callable named `main`. */
+static void sem_check_main_reserved(SemanticContext *ctx) {
+	if (!ctx || ctx->decl_count <= 0)
+		return;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d->name || strcmp(d->name, "main") != 0 || d->is_extern)
+			continue;
+		if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
+			continue;
+		if (d->kind != DECL_PROC && d->kind != DECL_FUNC && d->kind != DECL_SYSTEM && d->kind != DECL_EACH &&
+		    d->kind != DECL_MAP && d->kind != DECL_FUNC_GROUP)
+			continue;
+		sem_emit_main_reserved(ctx, d->loc);
 	}
 }
 
@@ -7989,21 +9264,19 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 	 * iff it defines `main` — then it is a closed world and any unreachable entry decl is dead. With no
 	 * `main` (e.g. the LSP opened a library module on its own), flag NOTHING in the entry unit, so a
 	 * library's public API is never reported dead while you type. */
-	int entry_is_binary = 0;
-	for (int i = 0; i < ctx->decl_count; i++) {
+	int entry_is_binary = ctx->entry_has_run; /* a `#run` is the program entry (the new binary signal) */
+	for (int i = 0; i < ctx->decl_count && !entry_is_binary; i++) {
 		DeclSummary *d = ctx->decls[i];
-		if (d->origin == DECL_ORIGIN_ENTRY && d->name && strcmp(d->name, "main") == 0) {
-			entry_is_binary = 1;
-			break;
-		}
+		if (d->origin == DECL_ORIGIN_ENTRY && d->name && strcmp(d->name, "main") == 0)
+			entry_is_binary = 1; /* legacy: a `main` decl still signals a binary */
 	}
 	int work_n = 0;
-	/* seed roots. Systems are entry points — invoked by `run`, which records no call edge — so seed
-	 * every `map` and walk its body; a func/proc reachable only from a map is thus kept alive
-	 * (maps themselves are never flagged). Other callables seed only when they are roots. */
+	/* seed roots. map/system/each are entry points — scheduled by name (which records no call edge) — so
+	 * seed every one and walk its body; a func/proc/extern reachable only from one is thus kept alive (they
+	 * themselves are never flagged). Other callables seed only when they are roots. */
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *d = ctx->decls[i];
-		if (d->kind == DECL_SYS)
+		if (d->kind == DECL_MAP || d->kind == DECL_SYSTEM || d->kind == DECL_EACH)
 			dead_mark(ctx, i, reachable, work, &work_n);
 		else if ((d->kind == DECL_FUNC || d->kind == DECL_PROC || d->kind == DECL_FUNC_GROUP) && dead_is_root(d))
 			dead_mark(ctx, i, reachable, work, &work_n);
@@ -8107,7 +9380,7 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 		int used = 0;
 		for (int j = 0; j < ctx->decl_count && !used; j++) {
 			DeclSummary *m = ctx->decls[j];
-			if (!m || m->kind != DECL_SYS)
+			if (!m || m->kind != DECL_MAP)
 				continue;
 			SyntaxView form = sem_rhs_form(m->node);
 			if (!sv_present(form))
@@ -8132,6 +9405,51 @@ static void sem_check_dead_code(SemanticContext *ctx) {
 
 	free(reachable);
 	free(work);
+}
+
+/* W0028 proc_calls_proc — the flat-effect proc→proc ban. A `proc` body may not call another (non-extern)
+ * proc; permitted callees are extern/func/map. The LOCAL rule ("no proc directly calls a proc") yields the
+ * transitive ban for free — if no proc calls a proc directly, none reaches one indirectly. Reuse lives in
+ * funcs that build Eff values, so a proc never needs another proc. Default WARN (the stdlib/apps still nest
+ * procs until the Eff convenience layer lands). Dependency code (core/stdlib) is not flagged, matching the
+ * dead-code lints. Stronger than E0050 (action_in_expression), which only catches a proc call nested in an
+ * expression — this also catches the bare statement form `other_proc();`. */
+static void proc_leaf_walk(SemanticContext *ctx, const SyntaxNode *n, const char *src) {
+	if (!n)
+		return;
+	SyntaxView v = (SyntaxView){n, src};
+	if (sv_kind(v) == SN_CALL_EXPR) {
+		DefId cd = sem_model_callee_def(ctx->model, sv_id(v));
+		if (!defid_is_none(cd) && cd.index < ctx->decl_count) {
+			DeclSummary *callee = ctx->decls[cd.index];
+			if (callee && callee->kind == DECL_PROC && !callee->is_extern &&
+			    !sem_diag_slug_suppressed(ctx, "proc_calls_proc"))
+				sem_emit_lint_proc_calls_proc(ctx, sem_node_loc(n), callee->name);
+		}
+	}
+	for (int i = 0; i < n->child_count; i++)
+		if (n->children[i].tag == SE_NODE)
+			proc_leaf_walk(ctx, n->children[i].as.node, src);
+}
+
+static void sem_check_proc_leaf(SemanticContext *ctx) {
+	if (!ctx->model || ctx->decl_count <= 0)
+		return;
+	int core_off = semantic_print_line_offset();
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (d->kind != DECL_PROC || d->is_extern || !d->body_node.node)
+			continue;
+		if (d->origin == DECL_ORIGIN_STDLIB || d->origin == DECL_ORIGIN_CORE)
+			continue; /* dependency — not linted (matches dead-code) */
+		if (d->origin == DECL_ORIGIN_ENTRY && core_off > 0 && d->loc.line <= core_off)
+			continue; /* prepended core prelude — not user code */
+		ctx->active_allow_slugs = d->allow_slugs;
+		ctx->active_allow_slug_count = d->allow_slug_count;
+		proc_leaf_walk(ctx, d->body_node.node, d->body_node.src);
+		ctx->active_allow_slugs = NULL;
+		ctx->active_allow_slug_count = 0;
+	}
 }
 
 /* ========== PUBLIC API ========== */
@@ -8176,6 +9494,11 @@ static void analyze_program_core(SemanticContext *ctx) {
 				continue;
 			}
 			if (tvk == TYK_TUPLE) {
+				/* A named-vector CONSTANT (`CENTER(X,Y) :: (320,240)`) carries a tuple VALUE: register each
+				 * flattened member as a VALUE const (`CENTER_X = 320`), so `CENTER.X` (rewritten to `CENTER_X`
+				 * by the tuple-group desugar) resolves to its value. A tuple TYPE group (`pos(x,y) :: float`)
+				 * instead registers per-member type aliases (the column-flattening path). */
+				int is_value_form = sv_present(c->const_value) && sv_kind(c->const_value) == SN_TUPLE_LIT;
 				for (int f = 0; f < tyid_tuple_count(ctx->ty_arena, tv); f++) {
 					TypeId ft = tyid_tuple_field_type(ctx->ty_arena, tv, f);
 					const char *fbacking = sem_tyid_name(ctx, ft);
@@ -8187,7 +9510,15 @@ static void analyze_program_core(SemanticContext *ctx) {
 					size_t L = strlen(c->name) + 1 + strlen(fn) + 1;
 					char *aname = malloc(L);
 					snprintf(aname, L, "%s_%s", c->name, fn);
-					register_type_alias(ctx, aname, fbacking, cloc, dsheet); /* aname leaks like the old path */
+					if (is_value_form) {
+						SyntaxView ev = sem_node_at_expr(c->const_value, f);
+						/* the lexeme leaks like `aname` — register_value_const retains the pointer (it does not
+						 * copy a plain float/int lexeme), so freeing it here would dangle the stored value. */
+						char *lex = sv_present(ev) ? sem_cv_dup(ev) : NULL;
+						register_value_const(ctx, aname, lex ? lex : "0", fbacking, cloc);
+					} else {
+						register_type_alias(ctx, aname, fbacking, cloc, dsheet); /* aname leaks like the old path */
+					}
 				}
 			} else {
 				const char *backing = sem_tyid_name(ctx, tv);
@@ -8309,6 +9640,39 @@ static void analyze_program_core(SemanticContext *ctx) {
 		 * (so `match`/comparison and `printf("%d", …)` work), but a raw int is NOT usable as the enum —
 		 * you must name a case (`color.red`) or convert explicitly (`color(0)`). */
 		register_type_alias_tiered(ctx, sem_dupz(e->name), "int", 0, e->loc, e->is_datasheet);
+	}
+
+	/* Sum types (tagged unions): TWO-PHASE so a variant payload may reference the sum itself (`[]Self`)
+	 * or another sum. Pass 1 forward-declares every sum (so its name resolves in sem_tyid_of_name); pass 2
+	 * interns each variant's payload type-nodes (recursive refs now resolve) and completes the type.
+	 * Compile-time only — erased before lowering. */
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *s = ctx->decls[i];
+		if (s->kind == DECL_SUM)
+			s->sum_type_id = tyid_sum_forward(ctx->ty_arena, s->name);
+	}
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *s = ctx->decls[i];
+		if (s->kind != DECL_SUM)
+			continue;
+		int nv = s->sum_variant_count;
+		const char **vnames = malloc((nv ? nv : 1) * sizeof(char *));
+		TypeId **vpayloads = malloc((nv ? nv : 1) * sizeof(TypeId *));
+		int *vpcounts = malloc((nv ? nv : 1) * sizeof(int));
+		for (int v = 0; v < nv; v++) {
+			vnames[v] = s->sum_variant_names[v];
+			int pc = s->sum_variant_pcounts[v];
+			vpcounts[v] = pc;
+			vpayloads[v] = malloc((pc ? pc : 1) * sizeof(TypeId));
+			for (int p = 0; p < pc; p++)
+				vpayloads[v][p] = sem_intern_view(ctx, s->sum_variant_ptypes[v][p]);
+		}
+		tyid_sum_complete(ctx->ty_arena, s->sum_type_id, vnames, (const TypeId *const *)vpayloads, vpcounts, nv);
+		for (int v = 0; v < nv; v++)
+			free(vpayloads[v]);
+		free(vpayloads);
+		free(vpcounts);
+		free(vnames);
 	}
 
 	/* Inline component definitions: `arche Foo { hp :: int, … }` mints the nominal type `hp`
@@ -8444,8 +9808,9 @@ static void analyze_program_core(SemanticContext *ctx) {
 		}
 	}
 
-	/* pass 2.5: device datasheet storage requirements vs the driver's pools (min met, none missing). */
-	sem_check_storage_requirements(ctx);
+	/* pass 2.5: device-impl decl checks. The datasheet STORAGE requirement check is whole-program (it needs
+	 * the driver's pools), so it runs from the compiler frontend via semantic_check_storage_requirements,
+	 * not here — the per-file analyzer must not flag a device whose storage the unseen driver provides. */
 	sem_check_device_impl_decls(ctx);
 	sem_check_datasheet_decls(ctx);
 	sem_check_raw_pool_lint(ctx);  /* W0017: advise handles for unprovable pool-column indexing */
@@ -8487,18 +9852,26 @@ static void analyze_program_core(SemanticContext *ctx) {
 	tycheck_run(ctx);
 
 	/* pass 5: dead-code lint (W0013) — reachability sweep over the resolved DeclTable. */
+	sem_check_main_reserved(ctx); /* E0225: `main` is reserved — entry is `#run` */
 	sem_check_dead_code(ctx);
 
 	/* pass 6: exported-mutable lint (W0022) — ban global mutable state on the exported surface. */
 	sem_check_exported_mutable(ctx);
+
+	/* pass 7: proc-leaf lint (W0028) — the flat-effect proc→proc ban (warn by default). */
+	sem_check_proc_leaf(ctx);
 }
 
 /* Allocate + zero-initialize a SemanticContext and register builtins. Shared by both
  * entry points. */
 static SemanticContext *make_context(void) {
 	SemanticContext *ctx = malloc(sizeof(SemanticContext));
+	ctx->k_collect = 0; /* Slice 2 (writes) collector — inactive outside a kernel body */
+	ctx->k_writes = NULL;
+	ctx->k_write_count = 0;
 	ctx->archetypes = NULL;
 	ctx->archetype_count = 0;
+	ctx->default_pool_policy = NULL;
 	ctx->decls = NULL;
 	ctx->decl_count = 0;
 	ctx->interfaces = NULL;
@@ -8546,6 +9919,12 @@ static SemanticContext *make_context(void) {
 	ctx->scope_count = 0;
 	ctx->error_count = 0;
 	ctx->current_map_archetype = NULL;
+	ctx->self_binder = NULL;
+	ctx->self_binder_params = NULL;
+	ctx->self_binder_nparams = 0;
+	ctx->kwrite_depth = 0;
+	ctx->system_binder = NULL;
+	ctx->system_binder_arch = NULL;
 	ctx->current_proc = NULL;
 	ctx->current_func = NULL;
 	ctx->in_map = 0;
@@ -8666,7 +10045,7 @@ static void walk_matches(SemanticContext *ctx, const SyntaxNode *n, const char *
 }
 
 /* The node whose direct children are a proc/func/map body's statements. In the unified grammar a
- * `name :: proc(){…}` decl node carries the body under its SN_PROC_EXPR/SN_FUNC_EXPR/SN_SYS_EXPR
+ * `name :: proc(){…}` decl node carries the body under its SN_PROC_EXPR/SN_FUNC_EXPR/SN_MAP_EXPR
  * value-form child; the legacy SN_*_DECL form holds the statements directly. */
 static SyntaxView sem_decl_body_node(SyntaxView dn) {
 	if (!sv_present(dn))
@@ -8680,7 +10059,8 @@ static SyntaxView sem_decl_body_node(SyntaxView dn) {
 	for (int i = 0; i < dn.node->child_count; i++)
 		if (dn.node->children[i].tag == SE_NODE) {
 			SyntaxNodeKind k = dn.node->children[i].as.node->kind;
-			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_SYS_EXPR)
+			if (k == SN_PROC_EXPR || k == SN_FUNC_EXPR || k == SN_POLICY_EXPR || k == SN_MAP_EXPR ||
+			    k == SN_SYSTEM_EXPR || k == SN_EACH_EXPR)
 				return (SyntaxView){dn.node->children[i].as.node, dn.src};
 		}
 	return dn;
@@ -8747,6 +10127,7 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 	ds->body_node = sem_decl_body_node(dv);
 	syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 	ds->is_drop = syntax_has_drop_decorator(dv);
+	ds->is_syscall = syntax_has_syscall_decorator(dv);
 	ds->drop_type = syntax_drop_type(dv);
 	ds->is_transparent = syntax_const_alias_marked(dv);
 	int decorated = sem_decl_is_decorated(dv.node);
@@ -8864,10 +10245,23 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 		return ds;
 	}
 	if (!decorated && sv_has_token(dv, TOK_LPAREN)) {
-		/* tuple group: type_value = a tuple of the parenthesized suffix names, each typed by the shared
-		 * type after `::`. */
+		/* tuple group: type_value = a tuple of the parenthesized suffix names. EITHER a shape `pos(x,y) :: T`
+		 * (a shared type), OR a named-vector CONSTANT `CENTER(X, Y) :: (320.0, 240.0)` — a tuple VALUE. In the
+		 * value form the member type is inferred from the first element and the value is recorded so the const
+		 * pass can register the flattened per-field value consts (`CENTER_X`, `CENTER_Y`). */
+		SyntaxView tupval = sem_node_at_expr(dv, 0); /* an SN_TUPLE_LIT value RHS, if present */
+		int is_value_form = sv_present(tupval) && sv_kind(tupval) == SN_TUPLE_LIT;
 		SyntaxView memberty = sem_type_at(dv, 0);
-		TypeId shared_id = sv_present(memberty) ? sem_intern_view(ctx, memberty) : TYID_UNKNOWN;
+		TypeId shared_id;
+		if (is_value_form) {
+			SyntaxView e0 = sem_node_at_expr(tupval, 0);
+			shared_id = sv_present(e0) ? sem_literal_type_id(ctx, e0) : tyid_of_prim(ctx->ty_arena, PRIM_INT);
+			ds->const_value = tupval;
+			ds->const_value_kind = sem_expr_kind_of(sv_kind(tupval));
+			ds->const_value_loc = sem_node_loc(tupval.node);
+		} else {
+			shared_id = sv_present(memberty) ? sem_intern_view(ctx, memberty) : TYID_UNKNOWN;
+		}
 		int in_paren = 0, n = 0;
 		for (int i = 0; i < dv.node->child_count; i++)
 			if (dv.node->children[i].tag == SE_TOKEN) {
@@ -8929,6 +10323,23 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 	return ds;
 }
 
+/* True if the decl node carries the `@allow_pure_proc` decorator (a `@ allow_pure_proc` token pair). The
+ * decorator lives on the DECL node, not the proc body form — checking the form (an earlier bug) never saw
+ * it, so the documented escape hatch silently did nothing. */
+static int sem_decl_has_allow_pure_proc(SyntaxView dv) {
+	if (!sv_present(dv))
+		return 0;
+	for (int i = 0; i + 1 < dv.node->child_count; i++) {
+		const SyntaxElem *e1 = &dv.node->children[i];
+		const SyntaxElem *e2 = &dv.node->children[i + 1];
+		if (e1->tag == SE_TOKEN && e1->as.token.kind == TOK_AT && e2->tag == SE_TOKEN &&
+		    e2->as.token.kind == TOK_IDENT && e2->as.token.length == 15 &&
+		    memcmp(dv.src + e2->as.token.offset, "allow_pure_proc", 15) == 0)
+			return 1;
+	}
+	return 0;
+}
+
 static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) {
 	if (sv_kind(dv) == SN_WORLD_DECL) {
 		DeclSummary *ds = calloc(1, sizeof(DeclSummary));
@@ -8940,6 +10351,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		ds->name = sem_txt_dup(sv_token(dv, TOK_IDENT));
 		syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 		ds->is_drop = syntax_has_drop_decorator(dv);
+		ds->is_syscall = syntax_has_syscall_decorator(dv);
 		ds->drop_type = syntax_drop_type(dv);
 		return ds;
 	}
@@ -8952,6 +10364,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		ds->body_node = sem_decl_body_node(dv);
 		syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 		ds->is_drop = syntax_has_drop_decorator(dv);
+		ds->is_syscall = syntax_has_syscall_decorator(dv);
 		ds->drop_type = syntax_drop_type(dv);
 		if (sv_has_token(dv, TOK_LBRACKET)) {
 			/* pool `Name[C](N){V}` — archetype name = dotted IDENT head before `[`; field values are
@@ -8963,7 +10376,8 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			int al = 0;
 			int cap = dv.node->child_count + 1;
 			ds->static_fields = calloc(cap, sizeof(SyntaxView));
-			int phase = 0; /* 1=cap 2=len 3=fields */
+			int phase = 0;     /* 1=cap 2=len 3=fields */
+			int after_cap = 0; /* name follows `[]`; ignore leading decorator idents (`@resident`/`@gpu`) */
 			for (int i = 0; i < dv.node->child_count; i++) {
 				SyntaxElem *ch = &dv.node->children[i];
 				if (ch->tag == SE_TOKEN) {
@@ -8974,9 +10388,12 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 						phase = 2;
 					else if (tk == TOK_LBRACE)
 						phase = 3;
-					else if (tk == TOK_RBRACKET || tk == TOK_RPAREN || tk == TOK_RBRACE)
+					else if (tk == TOK_RBRACKET) {
+						after_cap = 1;
 						phase = 0;
-					else if (tk == TOK_IDENT && phase == 0) {
+					} else if (tk == TOK_RPAREN || tk == TOK_RBRACE)
+						phase = 0;
+					else if (tk == TOK_IDENT && phase == 0 && after_cap) {
 						/* archetype name segment (top level, after the capacity `[]`) */
 						if (al > 0 && al < (int)sizeof(an) - 1)
 							an[al++] = '.';
@@ -9018,6 +10435,12 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 					sem_synth_shape_name(ash, an, sizeof(an));
 			}
 			ds->name = sem_dupz(an);
+			/* `[N]P ?handler` — the pool's overflow policy (gates whether an insert must handle `ok`). */
+			{
+				SyntaxView ovp = sv_child(dv, SN_POLICY_REF);
+				if (sv_present(ovp))
+					ds->overflow_policy = sem_txt_dup(sv_token(ovp, TOK_IDENT));
+			}
 		} else {
 			char *aname = sem_txt_dup(sv_token(dv, TOK_IDENT));
 			SyntaxView arr_ty = sem_type_at(dv, 0);
@@ -9029,18 +10452,13 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			if (is_array) {
 				ds->static_kind = STATIC_KIND_ARRAY;
 				ds->static_type_id = tyid_elem(ctx->ty_arena, full_id);
-				for (int i = 0; i < arr_ty.node->child_count; i++)
-					if (arr_ty.node->children[i].tag == SE_TOKEN &&
-					    arr_ty.node->children[i].as.token.kind == TOK_NUMBER) {
-						char buf[32];
-						int l = (int)arr_ty.node->children[i].as.token.length;
-						if (l > 31)
-							l = 31;
-						memcpy(buf, arr_ty.src + arr_ty.node->children[i].as.token.offset, l);
-						buf[l] = '\0';
-						ds->static_size = atoi(buf);
-						break;
-					}
+				/* Size from the (const-folded) array TypeId — the declared `[N]T` size may be a const expression
+				 * (`[W * H]char`), so read the interned length rather than scanning for a bare NUMBER token. */
+				if (fullk == TYK_ARRAY) {
+					int len = tyid_array_len(ctx->ty_arena, full_id);
+					if (len > 0)
+						ds->static_size = len;
+				}
 				ds->static_has_init = sv_present(initv);
 				ds->static_init = initv; /* the `{…}` literal — also drives element/shape checks */
 			} else {
@@ -9069,12 +10487,18 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 		kind = DECL_PROC;
 	else if (fk == SN_FUNC_EXPR || fk == SN_POLICY_EXPR)
 		kind = DECL_FUNC; /* a policy is a func for typing/codegen; category handled at op site */
-	else if (fk == SN_SYS_EXPR)
-		kind = DECL_SYS;
+	else if (fk == SN_MAP_EXPR)
+		kind = DECL_MAP;
+	else if (fk == SN_SYSTEM_EXPR)
+		kind = DECL_SYSTEM; /* the composer: columnar; body_node holds its statements */
+	else if (fk == SN_EACH_EXPR)
+		kind = DECL_EACH; /* the per-element fan: query columns bound as scalars per row */
 	else if (fk == SN_GROUP_EXPR)
 		kind = DECL_FUNC_GROUP;
 	else if (fk == SN_ENUM_EXPR)
 		kind = DECL_ENUM;
+	else if (fk == SN_SUM_EXPR)
+		kind = DECL_SUM;
 	else if (fk == SN_QUERY_EXPR)
 		kind = DECL_QUERY; /* a column set; its SN_PARAM children populate ds->params via the generic loop */
 	else if (fk == SN_ARCH_EXPR)
@@ -9093,6 +10517,7 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	ds->name = bn.ptr ? sem_txt_dup(bn) : NULL;
 	syntax_extract_allow_slugs(dv, &ds->allow_slugs, &ds->allow_slug_count);
 	ds->is_drop = syntax_has_drop_decorator(dv);
+	ds->is_syscall = syntax_has_syscall_decorator(dv);
 	ds->drop_type = syntax_drop_type(dv);
 	if (kind == DECL_FUNC_GROUP) {
 		int nmem = 0;
@@ -9129,6 +10554,46 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 			ds->enum_variant_names[ds->enum_variant_count] = sem_txt_dup(sv_token(ev, TOK_IDENT));
 			ds->enum_variant_values[ds->enum_variant_count++] = val;
 			next = val + 1;
+		}
+		return ds;
+	}
+	if (kind == DECL_SUM) {
+		int nv = sv_count(form, SN_SUM_VARIANT);
+		ds->sum_variant_names = calloc(nv ? nv : 1, sizeof(char *));
+		ds->sum_variant_ptypes = calloc(nv ? nv : 1, sizeof(SyntaxView *));
+		ds->sum_variant_pcounts = calloc(nv ? nv : 1, sizeof(int));
+		for (int i = 0; i < nv; i++) {
+			SyntaxView vv = sv_child_at(form, SN_SUM_VARIANT, i);
+			int pc = 0;
+			for (int c = 0; c < vv.node->child_count; c++)
+				if (vv.node->children[c].tag == SE_NODE) {
+					SyntaxNodeKind kk = vv.node->children[c].as.node->kind;
+					if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC)
+						pc++;
+				}
+			SyntaxView *ptypes = calloc(pc ? pc : 1, sizeof(SyntaxView));
+			int pi = 0;
+			for (int c = 0; c < vv.node->child_count; c++)
+				if (vv.node->children[c].tag == SE_NODE) {
+					SyntaxNodeKind kk = vv.node->children[c].as.node->kind;
+					if (kk >= SN_TYPE_REF && kk <= SN_TYPE_FUNC)
+						ptypes[pi++] = (SyntaxView){vv.node->children[c].as.node, vv.src};
+				}
+			/* The variant name is the variant node's FIRST token (an IDENT, or the `run` keyword) — read it
+			 * positionally, NOT by token-kind: a payload like `[]Tree` also contains an IDENT token. */
+			char *vname = NULL;
+			for (int c = 0; c < vv.node->child_count; c++)
+				if (vv.node->children[c].tag == SE_TOKEN) {
+					int l = (int)vv.node->children[c].as.token.length;
+					vname = malloc(l + 1);
+					memcpy(vname, vv.src + vv.node->children[c].as.token.offset, l);
+					vname[l] = '\0';
+					break;
+				}
+			ds->sum_variant_names[ds->sum_variant_count] = vname;
+			ds->sum_variant_ptypes[ds->sum_variant_count] = ptypes;
+			ds->sum_variant_pcounts[ds->sum_variant_count] = pc;
+			ds->sum_variant_count++;
 		}
 		return ds;
 	}
@@ -9172,31 +10637,60 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
 	 * post-pass (sem_resolve_map_queries) once all DECL_QUERY summaries exist. A query decl itself is the
 	 * SN_QUERY_EXPR form, so its own SN_PARAM children flow through directly. */
 	SyntaxView col_src = form;
-	if (kind == DECL_SYS) {
-		SyntaxView iq = sv_child_at(form, SN_QUERY_EXPR, 0);
-		if (sv_present(iq))
-			col_src = iq;
+	int params_collected = 0;
+	if (kind == DECL_MAP || kind == DECL_SYSTEM || kind == DECL_EACH) {
+		/* map/system/each carry their columns in child SN_QUERY_EXPR node(s). A join (`system(Q1,Q2)` /
+		 * `each(Q1,Q2)`) has several — flatten every query's SN_PARAM columns into one list (a column resolves
+		 * to its archetype by name, source-agnostically). A run-once `system { body }` has no SN_QUERY_EXPR. */
+		int nq = sv_count(form, SN_QUERY_EXPR);
+		if (nq > 0) {
+			int total = 0;
+			for (int q = 0; q < nq; q++)
+				total += sv_count(sv_child_at(form, SN_QUERY_EXPR, q), SN_PARAM);
+			ds->param_count = total;
+			ds->params = calloc(total ? total : 1, sizeof(ParamSummary));
+			int idx = 0;
+			for (int q = 0; q < nq; q++) {
+				SyntaxView iq = sv_child_at(form, SN_QUERY_EXPR, q);
+				int npq = sv_count(iq, SN_PARAM);
+				for (int i = 0; i < npq; i++)
+					ds->params[idx++] = sem_param_summary_node(sv_child_at(iq, SN_PARAM, i));
+			}
+			params_collected = 1;
+		}
 	}
-	int np = sv_count(col_src, SN_PARAM);
-	ds->param_count = np;
-	ds->params = calloc(np ? np : 1, sizeof(ParamSummary));
-	for (int i = 0; i < np; i++)
-		ds->params[i] = sem_param_summary_node(sv_child_at(col_src, SN_PARAM, i));
+	if (!params_collected) {
+		int np = sv_count(col_src, SN_PARAM);
+		ds->param_count = np;
+		ds->params = calloc(np ? np : 1, sizeof(ParamSummary));
+		for (int i = 0; i < np; i++)
+			ds->params[i] = sem_param_summary_node(sv_child_at(col_src, SN_PARAM, i));
+	}
 	if (kind == DECL_PROC) {
 		ds->is_extern = !sv_has_token(form, TOK_LBRACE);
 		ds->is_variadic = sv_has_token(form, TOK_DOTDOTDOT);
-		ds->allow_pure_proc = sv_has_token(form, TOK_AT);
+		ds->allow_pure_proc = sem_decl_has_allow_pure_proc(dv);
 		int no = sv_count(form, SN_OUT_PARAM);
 		ds->out_param_count = no;
 		ds->out_params = calloc(no ? no : 1, sizeof(ParamSummary));
 		for (int i = 0; i < no; i++)
 			ds->out_params[i] = sem_param_summary_node(sv_child_at(form, SN_OUT_PARAM, i));
 	} else if (kind == DECL_FUNC) {
-		int nt = sv_type_count_sem(form);
-		ds->return_type_count = nt;
-		ds->return_type_nodes = calloc(nt ? (size_t)nt : 1, sizeof(SyntaxView));
-		for (int i = 0; i < nt; i++)
-			ds->return_type_nodes[i] = sem_type_at(form, i);
+		/* A func produces results EITHER via an out-param list (the form `proc` used to carry) OR a
+		 * single `-> T` return. Collect whichever is present. */
+		int no = sv_count(form, SN_OUT_PARAM);
+		if (no > 0) {
+			ds->out_param_count = no;
+			ds->out_params = calloc((size_t)no, sizeof(ParamSummary));
+			for (int i = 0; i < no; i++)
+				ds->out_params[i] = sem_param_summary_node(sv_child_at(form, SN_OUT_PARAM, i));
+		} else {
+			int nt = sv_type_count_sem(form);
+			ds->return_type_count = nt;
+			ds->return_type_nodes = calloc(nt ? (size_t)nt : 1, sizeof(SyntaxView));
+			for (int i = 0; i < nt; i++)
+				ds->return_type_nodes[i] = sem_type_at(form, i);
+		}
 	}
 	return ds;
 }
@@ -9205,38 +10699,72 @@ static DeclSummary *decl_summary_from_node(SemanticContext *ctx, SyntaxView dv) 
  * types against those columns. Runs after the whole table (root + inlined modules) is built, so every
  * DECL_QUERY is present. Inline `map(query {…})` maps already have params (sourced in decl_summary_from)
  * and are skipped. An unresolved name leaves the map param-less; Phase 4 diagnoses it. */
+/* Append `n` params to a map/system summary (grows the flat list). Used to fold each named selector ref's
+ * columns in, on top of any inline-query columns decl_summary already collected. */
+static void sem_append_params(DeclSummary *m, int n) {
+	ParamSummary *grow = calloc((m->param_count + n) > 0 ? (size_t)(m->param_count + n) : 1, sizeof(ParamSummary));
+	for (int k = 0; k < m->param_count; k++)
+		grow[k] = m->params[k];
+	free(m->params);
+	m->params = grow;
+}
+
 static void sem_resolve_map_queries(SemanticContext *ctx) {
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *m = ctx->decls[i];
-		if (!m || m->kind != DECL_SYS || m->param_count > 0)
+		if (!m || (m->kind != DECL_MAP && m->kind != DECL_SYSTEM && m->kind != DECL_EACH))
 			continue;
 		SyntaxView form = sem_rhs_form(m->node);
 		if (!sv_present(form))
 			continue;
-		SyntaxView ref = sv_child_at(form, SN_QUERY_REF, 0);
-		if (!sv_present(ref))
-			continue; /* not a named-query map (an inline/empty map) */
-		char *qn = sem_cv_dup(ref);
-		SyntaxView qcols = {NULL, NULL};
-		for (int j = 0; j < ctx->decl_count; j++) {
-			DeclSummary *q = ctx->decls[j];
-			if (q && q->kind == DECL_QUERY && q->name && qn && strcmp(q->name, qn) == 0) {
-				qcols = sem_rhs_form(q->node); /* the SN_QUERY_EXPR bearing the columns */
-				break;
+		/* Resolve EVERY named selector ref (a `system(Q1, Q2)` JOIN may name several), APPENDING each one's
+		 * columns to whatever inline `query{…}` columns decl_summary already collected. Queries and
+		 * archetypes are interchangeable as a ref. */
+		int nref = sv_count(form, SN_QUERY_REF);
+		for (int r = 0; r < nref; r++) {
+			SyntaxView ref = sv_child_at(form, SN_QUERY_REF, r);
+			char *qn = sem_cv_dup(ref);
+			SyntaxView qcols = {NULL, NULL};
+			for (int j = 0; j < ctx->decl_count; j++) {
+				DeclSummary *q = ctx->decls[j];
+				if (q && q->kind == DECL_QUERY && q->name && qn && strcmp(q->name, qn) == 0) {
+					qcols = sem_rhs_form(q->node); /* the SN_QUERY_EXPR bearing the columns */
+					break;
+				}
 			}
-		}
-		if (!sv_present(qcols)) {
+			if (sv_present(qcols)) {
+				int np = sv_count(qcols, SN_PARAM);
+				int base = m->param_count;
+				sem_append_params(m, np);
+				for (int k = 0; k < np; k++)
+					m->params[base + k] = sem_param_summary_node(sv_child_at(qcols, SN_PARAM, k));
+				m->param_count += np;
+				free(qn);
+				continue;
+			}
+			/* an archetype ref selects ALL its columns (interchangeable with a query) */
+			DeclSummary *arch = NULL;
+			for (int j = 0; j < ctx->decl_count; j++) {
+				DeclSummary *a = ctx->decls[j];
+				if (a && a->kind == DECL_ARCHETYPE && a->name && qn && strcmp(a->name, qn) == 0) {
+					arch = a;
+					break;
+				}
+			}
+			if (arch) {
+				int base = m->param_count;
+				sem_append_params(m, arch->field_count);
+				for (int k = 0; k < arch->field_count; k++) {
+					m->params[base + k].name = arch->fields[k].name ? strdup(arch->fields[k].name) : NULL;
+					m->params[base + k].type_id = arch->fields[k].type_id;
+				}
+				m->param_count += arch->field_count;
+				free(qn);
+				continue;
+			}
 			sem_emit_unknown_query(ctx, m->loc, m->name ? m->name : "<map>", qn ? qn : "?");
 			free(qn);
-			continue; /* unknown query — left param-less */
 		}
-		free(qn);
-		int np = sv_count(qcols, SN_PARAM);
-		m->param_count = np;
-		free(m->params);
-		m->params = calloc(np ? np : 1, sizeof(ParamSummary));
-		for (int k = 0; k < np; k++)
-			m->params[k] = sem_param_summary_node(sv_child_at(qcols, SN_PARAM, k));
 	}
 }
 
@@ -9246,28 +10774,45 @@ static void free_decl_summary(DeclSummary *ds); /* fwd */
  * bare name matching a top-level tuple-group const (a `name :: (x,y:T)` whose const_type_value is a
  * TYPE_TUPLE), replace the field type with a pooled copy of that tuple (so the column flattens to
  * `field_<member>`). Runs after the table is built + renamed. */
-static void sem_maybe_expand_tuple(SemanticContext *ctx, FieldSummary *fd) {
-	/* The field's interned type is a bare nominal naming a tuple-group const → become that tuple.
-	 * Runs AFTER sem_fill_decl_type_ids, so fd->type_id and the const's tuple id are both populated. */
-	const char *ref = tyid_nominal_name(ctx->ty_arena, fd->type_id);
+/* If `tid` is a bare nominal naming a top-level tuple-group const (`pos(x,y) :: T`), return that const's
+ * TYK_TUPLE type; else return `tid` unchanged. This is what lets a group name be used as a VALUE type — an
+ * archetype-field column shape, a func/proc param/return, a local — instead of a bare nominal with no fields.
+ * Runs AFTER sem_fill_decl_type_ids, so both `tid` and the const's tuple id are populated. */
+static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid) {
+	const char *ref = tyid_nominal_name(ctx->ty_arena, tid);
 	if (!ref)
-		return;
+		return tid;
 	for (int i = 0; i < ctx->decl_count; i++) {
 		DeclSummary *c = ctx->decls[i];
-		if (c->kind != DECL_CONST || !c->name || tyid_kind(ctx->ty_arena, c->const_type_value_id) != TYK_TUPLE)
-			continue;
-		if (strcmp(c->name, ref) != 0)
-			continue;
-		fd->type_id = c->const_type_value_id;
-		return;
+		if (c && c->kind == DECL_CONST && c->name && strcmp(c->name, ref) == 0 &&
+		    tyid_kind(ctx->ty_arena, c->const_type_value_id) == TYK_TUPLE)
+			return c->const_type_value_id;
 	}
+	return tid;
+}
+
+static void sem_maybe_expand_tuple(SemanticContext *ctx, FieldSummary *fd) {
+	fd->type_id = sem_expand_tuple_nominal(ctx, fd->type_id);
 }
 
 static void sem_expand_tuple_groups_table(SemanticContext *ctx) {
-	for (int a = 0; a < ctx->decl_count; a++)
-		if (ctx->decls[a] && ctx->decls[a]->kind == DECL_ARCHETYPE)
-			for (int f = 0; f < ctx->decls[a]->field_count; f++)
-				sem_maybe_expand_tuple(ctx, &ctx->decls[a]->fields[f]);
+	for (int a = 0; a < ctx->decl_count; a++) {
+		DeclSummary *ds = ctx->decls[a];
+		if (!ds)
+			continue;
+		if (ds->kind == DECL_ARCHETYPE)
+			for (int f = 0; f < ds->field_count; f++)
+				sem_maybe_expand_tuple(ctx, &ds->fields[f]);
+		/* A func/proc using a tuple group as a VALUE type (`func(a: pos) -> pos`): expand its param, out-param,
+		 * and return TypeIds too, so `a.x`/`a.y` resolve and the tuple flows through the signature. */
+		for (int p = 0; p < ds->param_count; p++)
+			ds->params[p].type_id = sem_expand_tuple_nominal(ctx, ds->params[p].type_id);
+		for (int p = 0; p < ds->out_param_count; p++)
+			ds->out_params[p].type_id = sem_expand_tuple_nominal(ctx, ds->out_params[p].type_id);
+		for (int r = 0; r < ds->return_type_count; r++)
+			if (ds->return_type_ids)
+				ds->return_type_ids[r] = sem_expand_tuple_nominal(ctx, ds->return_type_ids[r]);
+	}
 }
 
 /* Channel recording for ONE tree node: resolve its leftmost name (a
@@ -9377,6 +10922,7 @@ static void free_decl_summary(DeclSummary *ds) {
 		return;
 	free(ds->name);
 	free(ds->drop_type);
+	free(ds->overflow_policy);
 	for (int p = 0; p < ds->param_count; p++)
 		free(ds->params[p].name);
 	free(ds->params);
@@ -9395,6 +10941,13 @@ static void free_decl_summary(DeclSummary *ds) {
 		free(ds->enum_variant_names[e]);
 	free(ds->enum_variant_names);
 	free(ds->enum_variant_values);
+	for (int v = 0; v < ds->sum_variant_count; v++) {
+		free(ds->sum_variant_names[v]);
+		free(ds->sum_variant_ptypes[v]);
+	}
+	free(ds->sum_variant_names);
+	free(ds->sum_variant_ptypes);
+	free(ds->sum_variant_pcounts);
 	free(ds->const_value_lexeme);
 	free(ds->const_value_name);
 	free(ds->static_fields);
@@ -9522,6 +11075,7 @@ void semantic_context_free(SemanticContext *ctx) {
 
 	sem_model_free(ctx->model);
 	sem_hints_free(ctx->hints);
+	free(ctx->default_pool_policy);
 
 	for (int i = 0; i < ctx->diag_count; i++) {
 		SemDiag *d = ctx->diags[i];
@@ -9627,6 +11181,12 @@ SemModel *sem_context_model(SemanticContext *ctx) {
 	return ctx ? ctx->model : NULL;
 }
 
+const char *semantic_default_pool_policy(const SemanticContext *ctx) {
+	if (ctx && ctx->default_pool_policy)
+		return ctx->default_pool_policy; /* `@default(proc, pool, X)` */
+	return "reject";                     /* the baseline a policy-less pool resolves to */
+}
+
 TypeArena *sem_context_arena(SemanticContext *ctx) {
 	return ctx ? ctx->ty_arena : NULL;
 }
@@ -9711,6 +11271,26 @@ int semantic_is_enum_type(SemanticContext *ctx, const char *name) {
 	return enum_is_type(ctx, name);
 }
 
+/* A func whose signature touches a sum type is CTFE-only (sums are compile-time-only for now: the
+ * Schedule combinators fold at `#run`). Lowering erases it — no runtime body is emitted. */
+int semantic_func_is_ctfe_only(SemanticContext *ctx, const char *name) {
+	if (!ctx || !name)
+		return 0;
+	for (int i = 0; i < ctx->decl_count; i++) {
+		DeclSummary *d = ctx->decls[i];
+		if (!d || d->kind != DECL_FUNC || !d->name || strcmp(d->name, name) != 0)
+			continue;
+		for (int r = 0; r < d->return_type_count; r++)
+			if (tyid_kind(ctx->ty_arena, d->return_type_ids[r]) == TYK_SUM)
+				return 1;
+		for (int p = 0; p < d->param_count; p++)
+			if (tyid_kind(ctx->ty_arena, d->params[p].type_id) == TYK_SUM)
+				return 1;
+		return 0;
+	}
+	return 0;
+}
+
 int semantic_enum_variant_value(SemanticContext *ctx, const char *enum_name, const char *variant, long *out) {
 	return enum_variant_lookup(ctx, enum_name, variant, out);
 }
@@ -9758,6 +11338,25 @@ const char *semantic_get_const_value(SemanticContext *ctx, const char *const_nam
 		if (strcmp(ctx->const_names[i], const_name) == 0) {
 			return ctx->const_values[i];
 		}
+	}
+	return NULL;
+}
+
+/* Resolve a BARE member name (`CENTER_x`) to the full name of a value const registered under it — either
+ * exactly, or QUALIFIED as `…​.CENTER_x` (a device `#file` tuple const flattens to `mod.__f1.CENTER_x` but is
+ * referenced bare). NULL if none. Used by the tuple-pack when a bare member misses. */
+const char *semantic_qualified_const_name(SemanticContext *ctx, const char *bare) {
+	if (!ctx || !bare)
+		return NULL;
+	for (int i = 0; i < ctx->const_count; i++)
+		if (strcmp(ctx->const_names[i], bare) == 0)
+			return ctx->const_names[i];
+	size_t bl = strlen(bare);
+	for (int i = 0; i < ctx->const_count; i++) {
+		const char *cn = ctx->const_names[i];
+		size_t cl = strlen(cn);
+		if (cl > bl + 1 && cn[cl - bl - 1] == '.' && strcmp(cn + cl - bl, bare) == 0)
+			return cn;
 	}
 	return NULL;
 }

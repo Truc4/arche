@@ -3,14 +3,10 @@
 Idioms and anti-idioms found while building real programs in Arche. Each entry is a concrete
 "don't / do" with the reasoning, so the _shape_ of the mistake is recognizable next time.
 
-Every ```arche block below is a real, complete program that the doctest runner compiles and runs
-(`arche test docs/patterns.md`). Anti-examples — the "don't" snippets — are shown as plain text,
-because deliberately-discouraged code is not something to present as exemplary arche.
-
 ## Visibility bands: prefer bare `#module` / `#file` over `{ }` blocks
 
-A `#module` / `#file` marker is a **banner**, not a block: it narrows visibility for *the rest of
-the file*. Everything below a `#module` banner is module-private (visible across the module's files,
+A `#module` / `#file` marker is a **banner**, not a block: it narrows visibility for _the rest of
+the file_. Everything below a `#module` banner is module-private (visible across the module's files,
 invisible to importers); everything below `#file` is file-private. The default band at the top of
 the file is the exported (public) surface.
 
@@ -37,80 +33,78 @@ internal_helper :: func() -> int { return classify(21); }
 
 **Why:** the banner form is the intended idiom — one line, no extra indentation, and it matches the
 "a band narrows the rest of the file" model. Reserve the `{ }` block form for the rare case where
-you must return to a *wider* band afterward (you can't un-narrow a bare banner). Note that braces
+you must return to a _wider_ band afterward (you can't un-narrow a bare banner). Note that braces
 work for `#foreign` extern groups too, but for `#module`/`#file` they are usually the wrong default.
 
-## Declaration order: all top-level names hoist (order is free)
+## Producer / consumer: route data into a pool instead of branching on it
 
-Every top-level name — procs, funcs, archetypes, enums, pools, **and** mutable global bindings
-(`name : T[N]` buffers, `name : T` / `name := v` scalars) — is visible across the whole file
-regardless of source order. A declaration may reference one that appears later.
+A step that _might_ produce a result shouldn't gate everything after it with "if I got a result, do
+the next thing." Have the producer **write a row into a pool** (or not); a later system reads that
+pool and does the next step. A consumer `map (Q) eff` fan over an _empty_ pool runs zero times — the absence of
+the row _is_ the skipped branch.
 
-**Do** put the public API first and the helpers it uses below (e.g. behind a `#module` / `#file`
-banner) — forward references resolve regardless of source order:
-
-```arche
-entry :: func() -> int { return helper_a() + 1; }   // ok — helper_a is declared below
-
-#module
-helper_a :: func() -> int { return helper_b() * 2; }   // and helper_b is below this
-helper_b :: func() -> int { return 20; }
-```
-
-```arche
-fmt.assert(entry() == 41, "forward references should resolve\n");
-```
-
-**Why it matters:** this is what lets the visibility-band idiom (public API on top, internals behind
-a trailing banner) coexist with the helpers a public proc uses. Mutable global bindings
-(`name : T[N]` buffers, `name := v` scalars) hoist the same way. There is no "declare it first"
-constraint at top level — only locals, inside a proc/func body, are point-of-introduction (they have
-control flow and lifetime).
-
-## Returning a variable number of results without a heap
-
-There is no heap: a proc cannot allocate an array and return it, and returning a pointer into its
-own frame would dangle. So the storage for a variable-length result must be **pre-reserved by the
-caller or by the module** — a fixed, bounded slot either way.
-
-**Don't** try to hand back a freshly-made array:
+**Don't** thread the whole thing through one procedural pass, guarding each effect on the last result:
 
 ```
-resolve :: proc(path: []char)(starts: []int, lens: []int, count: int)   // no storage exists for starts/lens
-```
-
-**Do** thread an **owned slice** (`own T[]`): the caller `move`s a bounded buffer in, the func
-fills it and hands the fat pointer back, the caller rebinds it. The runtime length rides in the
-slice, so no size appears in the signature, and there is still no heap — the storage is the caller's
-buffer throughout:
-
-```arche
-fill_squares :: func(own xs: []int, n: int) -> []int {
-  i := 0;
-  for (; i < n; i += 1) {
-    xs[i] = i * i;
-  }
-  return xs;
+handle :: system eff {
+  parse(req)(method:, target:, ok:);
+  if (!ok) { respond(conn, 400); return; }       // guard
+  resolve(target)(id:);
+  if (id < 0) { respond(conn, 404); return; }     // guard
+  serve(conn, target);                            // …and so on, every step gated by the previous
 }
 ```
 
+**Do** let a producer route rows into a pool, and a consumer process whatever is there — with no
+"is there anything?" check:
+
 ```arche
-buf : [16]int;
-out := fill_squares(move buf, 4);
-fmt.assert(out[3] == 9, "fill_squares broken\n");   // .length flows back with the slice
+#import { fmt }
+
+// Incoming requests. `code` >= 0 is a well-formed request carrying a handler id; < 0 is malformed.
+Request :: arche { code :: int }
+Bad     :: arche { status :: int }  // malformed requests route here → an error response
+Routed  :: arche { handler :: int } // well-formed requests route here → dispatched
+[4]Request;
+[4]Bad;
+[4]Routed;
+
+seed :: system eff {
+  insert(Request { code: 2 })(_:, _:);
+  insert(Request { code: -1 })(_:, _:); // malformed
+  insert(Request { code: 0 })(_:, _:);
+}
+
+// PARSE = the producer: route each request into the pool for its case. The `if (!ok) respond(400)` guard
+// becomes "insert into Bad"; everything else goes to Routed. No `return`, no downstream gating.
+parse :: map (query { code }) eff {
+  if (code < 0) {
+    insert(Bad { status: 400 })(_:, _:);
+  } else {
+    insert(Routed { handler: code })(_:, _:);
+  }
+}
+
+// Two consumers, each over its OWN pool. `as r` binds the matched row's handle; after doing the n+1 step,
+// `delete(r)` CONSUMES it — removes it from the pool. Neither asks "was there an error?": an empty pool
+// runs zero times, and because each row is deleted, a later pass drains nothing (no re-processing).
+errors :: map (query { status } as r) eff {
+  fmt.printf("respond %d\n", status); // the error response …
+  delete(r)(_:);                      // … then consume the Bad row (it's handled — remove it)
+}
+dispatch :: map (query { handler } as r) eff {
+  fmt.printf("serve route %d\n", handler); // dispatch …
+  delete(r)(_:);                           // … then consume the Routed row
+}
+
+#run seq({ seed, parse, errors, dispatch })
 ```
 
-Alternatives to the owned slice: (a) write into a caller-owned, bounded buffer passed by reference
-(both in — "here's my storage" — and out — "now it's filled", the shadow of `io.fread`); or (b)
-record into module-level state and expose accessors (what `router` does — `cap_start[8]` /
-`cap_len[8]` / `cap_count[1]`, read back via `param(i)` / `param_count()`).
-
-A func may return a slice only when it traces to a buffer passed *in* — returning a slice of a
-fresh local would dangle and is rejected. (See language.md, "Arrays and slices".)
-
-**Why:** "bounded" is the load-bearing word — a compile-time-known size is what lets the slot be a
-fixed stack or static reservation instead of a heap allocation. The count is a plain `int` and
-returns normally; only the *array* part needs the reservation. Caller-buffer (reentrant, per-call)
-vs module-static (one shared slot, overwritten by the next call) is just *where* that fixed slot
-lives. Spans (offset+length into the caller's own input) keep it zero-copy: nothing is owned or
-duplicated.
+**Why:** a consumer `map (Q) eff` fan over an empty pool is a no-op — that _is_ the conditional. System 1
+produces `n` (inserts a row); system 2 consumes `n` (does the n+1 step, then **`delete`s the row** via its
+`as r` handle); the schedule orders writer-before-reader within the pass. "Branch on a result" becomes
+"route the row into the pool for that case," and an absent row is simply never read — no per-step guards,
+no intra-row effect→effect chaining. **Consuming = deleting**: a handled row leaves the pool, so it is
+never re-processed on a later pass (a drained pool re-runs to nothing). This is the shape of arche-rpg's
+`done :: map (Closed) eff`: it fires only once a `Closed` row exists, so "should we exit?" needs no boolean —
+the row's presence is the signal.

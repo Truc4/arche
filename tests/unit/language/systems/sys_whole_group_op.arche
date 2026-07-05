@@ -3,20 +3,22 @@
 // `pos_x = pos_x + vel_x; pos_y = pos_y + vel_y`). Before, a group-level op silently NO-OP'd (`pos` is not
 // a real column, so codegen wrote nothing) — the reason the demo hand-expanded each axis. Multi-row, so
 // the per-component whole-column loop is exercised across rows.
-// RUN: %arche build -o %t %s && %t | grep -qF "p0=12 24 p1=106 208"
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "p0=12 24 p1=106 208"
 #import { fmt }
 pos(x, y) :: int;
 vel(x, y) :: int;
 Mover     :: arche { pos, vel }
-[2]Mover;
-step :: map (query { pos, vel }) {
+[2]Mover ?abort;
+step :: map (query { pos, vel })(pos) {
   pos += vel; // whole-group compound:  (10,20)->(11,22) ; (100,200)->(103,204)
   pos = pos + vel; // whole-group plain add: (11,22)->(12,24) ; (103,204)->(106,208)
 }
-main :: proc() {
+seed :: system eff {
   insert(Mover { pos_x: 10, pos_y: 20, vel_x: 1, vel_y: 2 })(_:, _:);
   insert(Mover { pos_x: 100, pos_y: 200, vel_x: 3, vel_y: 4 })(_:, _:);
-  run step;
+}
+
+verify :: system eff {
   fmt.printf(
     "p0=%d %d p1=%d %d\n",
     Mover.pos.x[0],
@@ -25,3 +27,5 @@ main :: proc() {
     Mover.pos.y[1],
   );
 }
+
+#run seq({ seed, step, verify })

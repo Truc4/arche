@@ -115,7 +115,7 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ARCHETYPE_DECL";
 	case SN_PROC_DECL:
 		return "PROC_DECL";
-	case SN_SYS_DECL:
+	case SN_MAP_DECL:
 		return "SYS_DECL";
 	case SN_FUNC_DECL:
 		return "FUNC_DECL";
@@ -129,6 +129,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "DEFAULT_DECL";
 	case SN_REGION:
 		return "REGION";
+	case SN_RUN_DECL:
+		return "RUN_DECL";
 	case SN_USE_DECL:
 		return "USE_DECL";
 	case SN_PARAM_LIST:
@@ -139,6 +141,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "OUT_PARAM";
 	case SN_OUT_ARG:
 		return "OUT_ARG";
+	case SN_WRITE_PARAM:
+		return "WRITE_PARAM";
 	case SN_FIELD_DECL:
 		return "FIELD_DECL";
 	case SN_BLOCK:
@@ -207,8 +211,12 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "GROUP_EXPR";
 	case SN_ARCH_EXPR:
 		return "ARCH_EXPR";
-	case SN_SYS_EXPR:
+	case SN_MAP_EXPR:
 		return "SYS_EXPR";
+	case SN_SYSTEM_EXPR:
+		return "SYSTEM_EXPR";
+	case SN_EACH_EXPR:
+		return "EACH_EXPR";
 	case SN_QUERY_EXPR:
 		return "QUERY_EXPR";
 	case SN_ENTITY_EXPR:
@@ -219,6 +227,10 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "ENUM_EXPR";
 	case SN_ENUM_VARIANT:
 		return "ENUM_VARIANT";
+	case SN_SUM_EXPR:
+		return "SUM_EXPR";
+	case SN_SUM_VARIANT:
+		return "SUM_VARIANT";
 	case SN_MATCH_STMT:
 		return "MATCH_STMT";
 	case SN_MATCH_ARM:
@@ -233,6 +245,8 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "TYPE_TUPLE";
 	case SN_TYPE_HANDLE:
 		return "TYPE_HANDLE";
+	case SN_TYPE_EFF:
+		return "TYPE_EFF";
 	case SN_TYPE_PROC:
 		return "TYPE_PROC";
 	case SN_TYPE_FUNC:
@@ -249,6 +263,10 @@ const char *syntax_node_kind_name(SyntaxNodeKind kind) {
 		return "CALLEE_NAME";
 	case SN_QUERY_REF:
 		return "QUERY_REF";
+	case SN_QUERY_BIND:
+		return "QUERY_BIND";
+	case SN_EFF:
+		return "EFF";
 	case SN_ALLOC_TYPE:
 		return "ALLOC_TYPE";
 	case SN_NAME_REF:

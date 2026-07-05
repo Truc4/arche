@@ -35,13 +35,17 @@ typedef enum {
 	TYK_SLICE,
 	TYK_ARRAY,
 	TYK_TUPLE,
+	TYK_SUM, /* a tagged union (sum type): named variants, each with a payload type list. Nominal-by-name
+	          * (recursive payloads can't be structurally hash-consed), built two-phase (forward then complete). */
 	TYK_HANDLE,
+	TYK_EFF, /* a not-yet-run effect value (`Eff(T…)`): an extern under-applied by its out-slots. Carries the
+	          * out-slot types and, at a build site, the static extern name. Compile-time only (never stored). */
 	TYK_ARCHETYPE_CATEGORY, /* the bare `archetype` keyword (map param only) */
 	/* The callable FORMS are DISTINCT kinds — Arche's whole identity is that func (pure value), proc
 	 * (action), map (transform), and policy (failure macro) are not the same thing. They never unify. */
 	TYK_FUNC,  /* func: (params) -> return — a pure value */
 	TYK_PROC,  /* proc: (in)(out) — an action */
-	TYK_SYS,   /* map: (components) — a data transform */
+	TYK_MAP,   /* map: (components) — a data transform */
 	TYK_POLICY /* policy: (operands) — a failure-handling macro */
 } TyKind;
 
@@ -59,7 +63,26 @@ TypeId tyid_of_nominal_sub(TypeArena *a, const char *name, TypeId backing);
 TypeId tyid_of_slice(TypeArena *a, TypeId elem);
 TypeId tyid_of_array(TypeArena *a, TypeId elem, int rank);
 TypeId tyid_of_tuple(TypeArena *a, const char *const *field_names, const TypeId *field_types, int field_count);
+/* Sum type (tagged union). Nominal-by-name. TWO-PHASE so a variant payload may reference the sum itself
+ * (e.g. `seq([]Self)`): forward-declare to reserve the TypeId, build payload types against it, then
+ * complete. `tyid_sum_forward` returns the existing id if a sum of that name was already interned. */
+TypeId tyid_sum_forward(TypeArena *a, const char *name);
+void tyid_sum_complete(TypeArena *a, TypeId sum, const char *const *variant_names,
+                       const TypeId *const *variant_payloads, const int *variant_payload_counts, int variant_count);
 TypeId tyid_of_handle(TypeArena *a, const char *archetype_name);
+/* A not-yet-run effect type `Eff(out_slots…)`. `tyid_of_eff_structural` (extern_name == NULL) is the source
+ * annotation `Eff(int,int)`, matched structurally on out-slots; `tyid_of_eff_concrete` carries the static
+ * extern name a build site recovers (an extern under-applied by its out-slots). */
+TypeId tyid_of_eff_structural(TypeArena *a, const TypeId *out_slots, int out_slot_count);
+TypeId tyid_of_eff_concrete(TypeArena *a, const char *extern_name, const TypeId *out_slots, int out_slot_count);
+/* Carries an explicit interned NAME per out-slot (names[j] may be NULL). The names are intrinsic to the
+ * Eff — declared `Eff(buf: T, …)` or inferred from the constructing extern's out-params. */
+TypeId tyid_of_eff_named(TypeArena *a, const char *extern_name, const TypeId *out_slots, const char *const *names,
+                         int out_slot_count);
+const char *tyid_eff_extern_name(const TypeArena *a, TypeId t);        /* the static extern, or NULL (structural) */
+int tyid_eff_out_count(const TypeArena *a, TypeId t);                  /* out-slot count, or -1 if not a TYK_EFF */
+TypeId tyid_eff_out_at(const TypeArena *a, TypeId t, int i);           /* out-slot type at i, or UNKNOWN */
+const char *tyid_eff_out_name_at(const TypeArena *a, TypeId t, int i); /* out-slot NAME at i, or NULL */
 TypeId tyid_of_archetype_category(TypeArena *a);
 /* The three callable forms, each its own distinct kind. `returns` is a func's single return, a proc's
  * out-params, or a map's (none). Structural inequality (`proc()(int) != func()->int`) is automatic —
@@ -81,6 +104,13 @@ int tyid_array_len(const TypeArena *a, TypeId t);            /* a shaped array's
 int tyid_tuple_count(const TypeArena *a, TypeId t);
 const char *tyid_tuple_field_name(const TypeArena *a, TypeId t, int i);
 TypeId tyid_tuple_field_type(const TypeArena *a, TypeId t, int i);
+/* Sum-type inspection. */
+const char *tyid_sum_name(const TypeArena *a, TypeId t);                  /* a TYK_SUM's name, else NULL */
+int tyid_sum_variant_count(const TypeArena *a, TypeId t);                 /* variant count, else -1 */
+int tyid_sum_variant_index(const TypeArena *a, TypeId t, const char *nm); /* variant index by name, else -1 */
+const char *tyid_sum_variant_name(const TypeArena *a, TypeId t, int v);
+int tyid_sum_variant_payload_count(const TypeArena *a, TypeId t, int v);
+TypeId tyid_sum_variant_payload_at(const TypeArena *a, TypeId t, int v, int i);
 int tyid_equal(TypeId a, TypeId b); /* same interned id */
 int tyid_is_unknown(TypeId t);
 /* The backing of a tier-2 distinct subtype (else TYID_UNKNOWN). */

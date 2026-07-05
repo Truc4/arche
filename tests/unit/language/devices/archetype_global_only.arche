@@ -1,6 +1,8 @@
 // Archetypes may only be declared at global scope (for now); a nested `Local :: arche {…}` inside
 // a proc is an error. Anonymous `arche{…}` literals in expressions stay allowed (see literal_unify).
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qi "must be declared at global scope" %t.out
-main :: proc() {
+entry :: system {
   Local :: arche { a :: float };
 }
+
+#run entry

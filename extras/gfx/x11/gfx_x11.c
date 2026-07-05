@@ -88,11 +88,6 @@ void *gfx_be_open(int w, int h, char *title) {
 	return g;
 }
 
-/* The current writable framebuffer (arche slices it to w*h). */
-int *gfx_be_frame(void *handle) {
-	GfxX11 *g = handle;
-	return g ? g->buf : NULL;
-}
 int gfx_be_w(void *handle) {
 	GfxX11 *g = handle;
 	return g ? g->w : 0;
@@ -102,10 +97,17 @@ int gfx_be_h(void *handle) {
 	return g ? g->h : 0;
 }
 
-void gfx_be_present(void *handle) {
+/* Present the CALLER's framebuffer (the driver-owned `Framebuffer` pool, `px`): copy it into the XImage-backed
+ * store, then blit. `px` is in-out on the arche side (the FFI borrow rule) but read-only here. */
+void gfx_be_present(void *handle, int *px, int w, int h) {
 	GfxX11 *g = handle;
-	if (!g || !g->img)
+	if (!g || !g->img || !g->buf || !px)
 		return;
+	size_t nbytes = (size_t)w * (size_t)h * 4;
+	size_t cap = (size_t)g->w * (size_t)g->h * 4;
+	if (nbytes > cap)
+		nbytes = cap; /* window resized smaller than the fixed pool — clamp, never overrun */
+	memcpy(g->buf, px, nbytes);
 	XPutImage(g->dpy, g->win, g->gc, g->img, 0, 0, 0, 0, (unsigned)g->w, (unsigned)g->h);
 	XFlush(g->dpy);
 }

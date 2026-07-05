@@ -2,6 +2,7 @@
 #include "codegen.h"
 #include "../lexer/lexer.h"
 #include "../runtime/inspect.h" /* ArcheInspectType tags for the dev state-inspector registration */
+#include "gpu_glsl.h"           /* gpu_glsl_build_src — derive GPU-eligibility from actual emittability */
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -14,19 +15,25 @@ char *strdup(const char *s);
 
 typedef struct {
 	char *name;
-	char *llvm_name;        /* allocated SSA value name */
-	int type;               /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 6=array/slice, 7=[N]char buf */
-	char *arch_name;        /* for type==3 or 4, nullable otherwise */
-	int string_len;         /* for type==2 (string), the compile-time length (-1 if unknown) */
-	const char *field_type; /* for type==4 (column ptr), the Arche type name (e.g. "float") */
+	char *llvm_name; /* allocated SSA value name */
+	int type;        /* 0=i32, 1=i32*, 2=i8* (string), 3=arch*, 4=column ptr, 6=array/slice, 7=[N]char buf,
+	                  * 8=tuple aggregate value ({T,…}, tuple_type set) */
+	const struct HirType *tuple_type; /* type==8: the HIR_TYPE_TUPLE (field names/types), borrowed */
+	char *arch_name;                  /* for type==3 or 4, nullable otherwise */
+	int string_len;                   /* for type==2 (string), the compile-time length (-1 if unknown) */
+	const char *field_type;           /* for type==4 (column ptr), the Arche type name (e.g. "float") */
 	const char *handle_archetype; /* if field_type=="handle", the target archetype name (borrowed, like field_type) */
 	int bit_width;                /* 32 (default) or 64 for SSA values */
 	int is_slice; /* type==6: 1 = T[] fat-pointer slice (runtime len in len_ssa), 0 = bounded T[N] (len = string_len) */
-	char *len_ssa;      /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise.
-	                     * A slice is a borrowed `{ptr,len}` window — no capacity (capacity is a pool concept). */
-	char *out_aggr_ptr; /* out-ONLY unbounded `char[]`/`T[]` out-param: the `{T*,i64}*` caller slot (%outN).
-	                     * When set, assigning a slice/array to this name stores the {ptr,len} back through
-	                     * it so the caller recovers the returned view. NULL for ordinary values. */
+	char *len_ssa;        /* type==6 slice: SSA value (or literal) holding the i64 runtime length; NULL otherwise.
+	                       * A slice is a borrowed `{ptr,len}` window — no capacity (capacity is a pool concept). */
+	char *out_aggr_ptr;   /* out-ONLY unbounded `char[]`/`T[]` out-param: the `{T*,i64}*` caller slot (%outN).
+	                       * When set, assigning a slice/array to this name stores the {ptr,len} back through
+	                       * it so the caller recovers the returned view. NULL for ordinary values. */
+	const char *loop_idx; /* type==4 column bound by a fan: the row-index SSA of the fan that bound it,
+	                       * BORROWED from the bump-leaked SSA-name pool (outlives this ValueInfo — no free).
+	                       * An auto-indexed read uses THIS, not the ambient loop index, so an OUTER fan's
+	                       * column read inside a NESTED fan still indexes by the outer row. NULL = ambient. */
 } ValueInfo;
 
 typedef struct {
@@ -39,6 +46,19 @@ typedef struct {
 	char arch_name[256];
 	char versioned_name[512];
 } MapVersion;
+
+/* One column-assignment in a fused map body: `col_ptr[i] (op)= rhs` evaluated at the shared loop index.
+ * All strings are strdup'd on record (struct_ptr may be a caller stack buffer) and freed on flush. */
+#define MAP_BATCH_MAX 128
+typedef struct {
+	char *col_ptr;     /* target column base (SSA) */
+	char *count;       /* element count (SSA); shared across a batch */
+	char *scalar_type; /* "double"/"i32"/... */
+	char *arche_type;  /* "float"/"int"/... */
+	char *struct_ptr;  /* struct base for GEP hoisting (may be NULL) */
+	HirExpr *rhs;      /* RHS expression (stable HIR pointer) */
+	int op;            /* OP_NONE = store; else load+op+store */
+} MapBatchItem;
 
 struct CodegenContext {
 	HirProgram *ast;
@@ -68,9 +88,16 @@ struct CodegenContext {
 	 * pool storage — emit in every module as linkonce_odr, gated by the always-on ODR verifier in
 	 * compile.c). Default off → the whole-program path is unchanged. See the compilation plan. */
 	int per_unit;
-	int shared;         /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
-	int hot;            /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
-	int gpu;            /* --gpu: `run map @gpu` dispatches the embedded shader on the GPU (CPU fallback) */
+	int shared;             /* --shared: arche defs get external (dlsym-able) linkage; see codegen_set_shared */
+	int hot;                /* dev hot-reload (arche run): cross-unit calls route through a reload trampoline */
+	int gpu;                /* --gpu: `run map @gpu` dispatches the embedded shader on the GPU (CPU fallback) */
+	MachineProfile profile; /* per-machine cost profile driving the DERIVED CPU/GPU placement (Slice 4) */
+	/* Joint-placement decision table (cg_joint_placement): a residency-aware cluster decision per eligible
+	 * map, computed schedule-level before codegen and consulted by cg_placement_decide (above the greedy
+	 * per-map estimate). NULL/0 until the pass runs. */
+	char **joint_names;
+	int *joint_gpu;
+	int joint_count;
 	int emit_only_unit; /* -1 = emit all units (whole-program / default) */
 
 	/* For tracking allocated values */
@@ -99,13 +126,27 @@ struct CodegenContext {
 	int interned_count;
 
 	/* SIMD vectorization context */
-	int vector_lanes; /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
-	int in_map;       /* 1 when generating inside a map function body */
-	int in_func;      /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
-	                   * default is the total `clamp` policy instead of `abort`, so a func never crashes */
+	int vector_lanes;       /* 0 = scalar mode, 4 = AVX2 double (256-bit / 64-bit = 4 lanes) */
+	int in_map;             /* 1 when generating inside a map function body */
+	int in_columnar_system; /* 1 inside a no-arg `system(Q)` body: whole-column ops read the pool from its
+	                         * GLOBAL (`@Arch`), not a `%arch_<name>` parameter (maps get the pool by param) */
+	int in_nested_fan;      /* 1 inside a per-element fan nested in a columnar `system(Q)` (the self-join: system
+	                         * queries the neighbour COLUMNS, the nested map queries the self ELEMENTS as `me`).
+	                         * The ENCLOSING system's bound columns (bare names, no own fan row) are the neighbour
+	                         * fold domain — a bare-column read inside a `reduce` iterates the fold counter, while
+	                         * `me.col` (a `\x1f` self-read) stays at the fan row. Off for a top-level map/system. */
+	int in_func;            /* 1 when generating inside a `func` body — an unannotated fallible op's baseline
+	                         * default is the total `clamp` policy instead of `abort`, so a func never crashes */
 
 	/* Implicit loop context */
 	char implicit_loop_index[64]; /* SSA reg name for current implicit loop ("" = not in loop) */
+
+	/* Map-body statement fusion: when active, `emit_whole_column_loop` RECORDS its column assignment
+	 * instead of emitting a per-statement loop; `flush_map_batch` then emits ONE fused loop over all
+	 * recorded items (intermediates stay in registers — the zero-cost-abstraction fix). */
+	int map_batch_active;
+	MapBatchItem map_batch_items[MAP_BATCH_MAX];
+	int map_batch_count;
 
 	/* Loop exit label stack for break statements */
 	char **loop_exit_labels;
@@ -198,6 +239,23 @@ struct CodegenContext {
 	 * `declare` is then emitted at module end only if used, so a program with no real copy contains
 	 * no `llvm.memcpy` at all. */
 	int uses_memcpy;
+	/* Set when a `@llvm.memset` is emitted (insert's zero-padded char-column fill) — gates its declare. */
+	int uses_memset;
+	/* Set when the `sqrt` builtin emits a `@llvm.sqrt.f32`/`.v4f32` — gates its declare(s). */
+	int uses_sqrt;
+	int uses_sqrt_v4;
+	/* Active only while emitting a `reduce(op, <expr over Pool.col>)` fold (the neighbor-reduction /
+	 * self-join): a FIELD access `Pool.col` where Pool == fold_pool is loaded at fold_index (the inner fold
+	 * counter) as a scalar, instead of a whole-column pointer. Enclosing columnar bound columns (bare names)
+	 * are unaffected — they still read the outer row. NULL when no such fold is in flight. */
+	const char *fold_pool;
+	const char *fold_index;
+
+	/* Active inside a columnar `system (query {…} as Flock)` body: `qbinder_name` == "Flock", `qbinder_arch`
+	 * its resolved backing pool. `Flock.<col>` reads the whole queried column — the neighbour fold domain of a
+	 * nested `map (… as me)` — as a pool column, so `resolve_collective_query` treats the binder as a query. */
+	const char *qbinder_name;
+	const char *qbinder_arch;
 
 	/* Compile-time callback monomorphization. A proc with a proc/func-typed
 	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
@@ -640,7 +698,26 @@ static int proc_out_param_is_inout(HirProcDecl *proc, int oi);
 static int proc_out_param_is_inout_in(HirProcDecl *proc, int ii);
 static const char *extern_proc_cret(HirProcDecl *proc);
 
+/* The LLVM aggregate type for a HIR_TYPE_TUPLE value type (`pos(x,y) :: float` → `{ float, float }`), passed
+ * and returned by value — reusing the multi-return `{T,…}` aggregate ABI. `buf` receives the type string. */
+static void tuple_llvm_type(HirType *t, char *buf, size_t cap) {
+	size_t n = 0;
+	n += (size_t)snprintf(buf + n, cap - n, "{ ");
+	for (int i = 0; i < t->field_count; i++) {
+		const char *m = llvm_type_from_arche(field_base_type_name(t->fields[i].type));
+		n += (size_t)snprintf(buf + n, cap - n, "%s%s", i ? ", " : "", m);
+	}
+	snprintf(buf + n, cap - n, " }");
+}
+
 static const char *return_member_llvm(HirType *t) {
+	if (t && t->tag == HIR_TYPE_TUPLE) {
+		/* A tuple value returned by value, as the `{T,…}` aggregate. Single call per snprintf at every
+		 * consumer, so the static buffer can't be clobbered mid-format. */
+		static char tbuf[256];
+		tuple_llvm_type(t, tbuf, sizeof(tbuf));
+		return tbuf;
+	}
 	if (t && t->tag == HIR_TYPE_ARRAY) {
 		/* A `T[]` slice (any element, incl. char) is returned as a fat pointer `{T*, i64}` (the same
 		 * (ptr,len) it was threaded in as), so the caller recovers both the data pointer and the
@@ -1114,10 +1191,10 @@ static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern
 static int query_match_archs(CodegenContext *ctx, const char **cols, int ncol, const char **out, int max);
 static int query_foreign_pools(CodegenContext *ctx, const char **cols, int ncol, HirStmt **stmts, int nstmt,
                                const char **out, int max);
-static int map_query_cols(HirMapDecl *map, const char **cols, int max);
+static int map_query_cols(HirKernelDecl *map, const char **cols, int max);
 /* Archetypes covering a map's params (map ABI param list) — thin wrappers over the evaluator above. */
-static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
-static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max);
+static int collect_map_matching_archs(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max);
+static int collect_map_foreign_pools(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max);
 
 /* Is the proc/func named `name` an extern (#foreign, C-ABI)? A `@drop` destructor may be either an
  * arche proc (mangled under per-unit) or an extern (keeps its C name) — the dtor call must match. */
@@ -1170,9 +1247,67 @@ static void add_value(CodegenContext *ctx, const char *name, const char *llvm_na
 	val->string_len = -1;
 	val->field_type = NULL;
 	val->bit_width = 32;
+	val->loop_idx = NULL;
 
 	scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 	scope->values[scope->value_count++] = val;
+}
+
+/* Bind `name` to a tuple aggregate SSA value (`{T,…}`), carrying its HIR_TYPE_TUPLE so field access
+ * (extractvalue) and per-lane arithmetic can recover the members. */
+static void add_tuple_value(CodegenContext *ctx, const char *name, const char *llvm_name, const HirType *tt) {
+	add_value(ctx, name, llvm_name, 8);
+	if (ctx->scope_count > 0) {
+		ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+		if (scope->value_count > 0)
+			scope->values[scope->value_count - 1]->tuple_type = tt;
+	}
+}
+
+/* The index of tuple member `field` within tuple type `tt` (−1 if absent). */
+static int tuple_field_index(const HirType *tt, const char *field) {
+	if (!tt || tt->tag != HIR_TYPE_TUPLE)
+		return -1;
+	for (int i = 0; i < tt->field_count; i++)
+		if (tt->fields[i].name && field && strcmp(tt->fields[i].name, field) == 0)
+			return i;
+	return -1;
+}
+
+static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name);
+static char *cg_strdup(const char *s);
+
+/* If `e` evaluates to a tuple VALUE, return its HIR_TYPE_TUPLE (else NULL): a name bound to a type-8 tuple
+ * aggregate, any expr whose resolved type is a tuple (a tuple literal, a `.field` of a nested tuple), or a
+ * call to a func whose single return is a tuple. Drives tuple-aware field access, arithmetic, and binds. */
+static const HirType *codegen_tuple_type_of(CodegenContext *ctx, HirExpr *e) {
+	if (!e)
+		return NULL;
+	if (e->kind == HIR_EXPR_NAME) {
+		/* A bound value's ACTUAL kind wins over a (possibly stale) resolved tag: a tuple local is type-8; a
+		 * flattened scalar column (`pos_x`, from a whole-group expansion that kept the group's tuple tag) is a
+		 * real scalar, NOT a tuple. Only an UNBOUND group-column name falls through to the resolved-tag check. */
+		ValueInfo *v = find_value(ctx, e->data.name.name);
+		if (v)
+			return (v->type == 8 && v->tuple_type) ? v->tuple_type : NULL;
+	}
+	if (e->resolved.tag == HIR_TYPE_TUPLE)
+		return &e->resolved;
+	/* tuple arithmetic (`v * s`, `a - b`) yields a tuple iff an operand is a tuple — recurse either side. */
+	if (e->kind == HIR_EXPR_BINARY && e->data.binary.op >= OP_ADD && e->data.binary.op <= OP_DIV) {
+		const HirType *l = codegen_tuple_type_of(ctx, e->data.binary.left);
+		return l ? l : codegen_tuple_type_of(ctx, e->data.binary.right);
+	}
+	if (e->kind == HIR_EXPR_CALL && e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME) {
+		const char *cn = e->data.call.callee->data.name.name;
+		/* `reduce(op, <tuple summand>)` / `scan(...)` folds each lane → the result is the summand's tuple type. */
+		if ((strcmp(cn, "reduce") == 0 || strcmp(cn, "scan") == 0) && e->data.call.arg_count == 2)
+			return codegen_tuple_type_of(ctx, e->data.call.args[1]);
+		HirFuncDecl *f = find_func_decl(ctx, cn);
+		if (f && f->return_type_count == 1 && f->return_types[0] && f->return_types[0]->tag == HIR_TYPE_TUPLE)
+			return f->return_types[0];
+	}
+	return NULL;
 }
 
 static void add_arch_value(CodegenContext *ctx, const char *name, const char *llvm_name, const char *arch_name) {
@@ -1300,6 +1435,36 @@ static int get_arch_static_capacity(CodegenContext *ctx, const char *arch_name) 
 	return 0;
 }
 
+/* 1 if the archetype's pool was declared `@resident` (GPU-resident columns) OR the coherence pass derived
+ * residency for it (cg_arch_set_resident). Read at the dispatch site to keep the pool on-device across maps. */
+static int cg_arch_is_resident(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
+			continue;
+		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->is_requirement || s->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0)
+			return s->is_resident;
+	}
+	return 0;
+}
+
+/* DERIVE residency: mark the pool's static decl `@resident` from the coherence pass. `is_resident` is the
+ * union of the user's `@resident` annotation (set in lowering) and this — the annotation is a manual override,
+ * never cleared. Idempotent; sets every static decl of the (canonical) shape. */
+static void cg_arch_set_resident(CodegenContext *ctx, const char *arch_name) {
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		if (ctx->ast->decls[i]->kind != HIR_DECL_STATIC)
+			continue;
+		HirStaticDecl *s = ctx->ast->decls[i]->data.static_decl;
+		if (s->is_requirement || s->kind != HIR_STATIC_ARCHETYPE)
+			continue;
+		if (strcmp(canonical_arch_name(ctx, s->archetype.archetype_name), canonical_arch_name(ctx, arch_name)) == 0)
+			s->is_resident = 1;
+	}
+}
+
 /* The program `@default` policy for a (effect_kind 0=proc/1=func, category 1/2/3) cell, or NULL. */
 static const char *cg_program_default(CodegenContext *ctx, int effect_kind, int category);
 
@@ -1329,14 +1494,238 @@ static const char *cg_insert_handler(CodegenContext *ctx, HirExpr *rhs, const ch
 	return prog ? prog : "reject";
 }
 
-static HirMapDecl *find_map_decl(CodegenContext *ctx, const char *name) {
+/* ===== Derived placement: arithmetic-intensity estimate + cost model (Slice 4) ===== */
+
+/* Coarse per-element arithmetic-op count of an expression (binary/unary ops; a call is weighted, callees
+ * not inlined — a v1 estimate). A pure map body is straight-line/branchless, so this captures its compute
+ * density. */
+static double cg_expr_flops(const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_BINARY:
+		return 1.0 + cg_expr_flops(e->data.binary.left) + cg_expr_flops(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return 1.0 + cg_expr_flops(e->data.unary.operand);
+	case HIR_EXPR_CALL: {
+		double f = 8.0; /* math builtin / func call — a coarse weight (transcendentals are pricey) */
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			f += cg_expr_flops(e->data.call.args[i]);
+		return f;
+	}
+	case HIR_EXPR_FIELD:
+		return cg_expr_flops(e->data.field.base);
+	case HIR_EXPR_INDEX: {
+		double f = cg_expr_flops(e->data.index.base);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			f += cg_expr_flops(e->data.index.indices[i]);
+		return f;
+	}
+	default:
+		return 0;
+	}
+}
+
+/* Per-element flop estimate of a kernel body (assignment / bind RHSs). */
+static double cg_kernel_flops_per_elem(const HirKernelDecl *k) {
+	double f = 0;
+	for (int i = 0; i < k->stmt_count; i++) {
+		const HirStmt *s = k->stmts[i];
+		if (!s)
+			continue;
+		if (s->kind == HIR_STMT_ASSIGN)
+			f += cg_expr_flops(s->data.assign_stmt.value);
+		else if (s->kind == HIR_STMT_BIND)
+			f += cg_expr_flops(s->data.bind_stmt.value);
+	}
+	return f;
+}
+
+/* GPU wall-time (seconds) for a SINGLE non-resident dispatch of an eligible map: launch + one transfer
+ * round-trip (the fixed `gpu_xfer_us` + a size-dependent PCIe term, if the profile carries one) + compute.
+ * Joint placement reuses the pieces (launch/xfer/compute) to cost a resident cluster with transfer once. */
+static double cg_gpu_map_seconds(const MachineProfile *p, double flops_per_elem, int ncol, long rows) {
+	double total_flops = flops_per_elem * (double)rows;
+	double bytes = (double)ncol * 4.0 * (double)rows; /* one column set, float */
+	double up = (p->pcie_up_gbps > 0) ? bytes / (p->pcie_up_gbps * 1e9) : 1e30;
+	double down = (p->pcie_down_gbps > 0) ? bytes / (p->pcie_down_gbps * 1e9) : 1e30;
+	return (p->gpu_launch_us + p->gpu_xfer_us) * 1e-6 + up + down + total_flops / (p->gpu_gflops * 1e9);
+}
+static double cg_cpu_map_seconds(const MachineProfile *p, double flops_per_elem, long rows) {
+	return (flops_per_elem * (double)rows) / (p->cpu_gflops * 1e9);
+}
+
+/* The cost model: predict whether running this eligible map on the GPU (non-resident, greedy) beats the CPU,
+ * given the per-machine profile, per-element flops, float-column count (4 bytes each), and static row count.
+ * GPU pays launch + a transfer round-trip; CPU pays only compute. A fully build-time decision (frozen). The
+ * joint-placement pass supersedes this per-map view with a residency-aware cluster cost. Returns 1 ⇒ GPU. */
+static int cg_placement_prefer_gpu(const MachineProfile *p, double flops_per_elem, int ncol, long rows) {
+	if (!p->gpu_present || p->gpu_gflops <= 0 || p->cpu_gflops <= 0 || rows <= 0)
+		return 0;
+	return cg_gpu_map_seconds(p, flops_per_elem, ncol, rows) < cg_cpu_map_seconds(p, flops_per_elem, rows);
+}
+
+/* A per-map MEASURED placement decision, read from <ARCHE_CACHE_DIR>/placement.decisions if present (one
+ * "name gpu|cpu" line per map) — the build-time measurement's frozen result, which BEATS the estimate.
+ * Returns 1 (gpu), 0 (cpu), or -1 (no measured decision). */
+static int cg_placement_measured(const char *name) {
+	const char *cdir = getenv("ARCHE_CACHE_DIR");
+	if (!cdir || !name)
+		return -1;
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/placement.decisions", cdir);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return -1;
+	char ln[512];
+	int r = -1;
+	while (fgets(ln, sizeof(ln), f)) {
+		char nm[256], dec[16];
+		if (sscanf(ln, "%255s %15s", nm, dec) == 2 && strcmp(nm, name) == 0)
+			r = (strcmp(dec, "gpu") == 0) ? 1 : 0;
+	}
+	fclose(f);
+	return r;
+}
+
+/* The joint-placement pass's decision for `name`, or -1 if it has none. */
+static int cg_joint_decision(CodegenContext *ctx, const char *name) {
+	if (!name)
+		return -1;
+	for (int i = 0; i < ctx->joint_count; i++)
+		if (strcmp(ctx->joint_names[i], name) == 0)
+			return ctx->joint_gpu[i];
+	return -1;
+}
+
+/* Placement for an eligible pure map. Priority: `@gpu` force > `ARCHE_FORCE_PLACE` (a measurement build pins
+ * everything one way) > the MEASURED decision (the real, build-time-timed answer) > the JOINT residency-aware
+ * cluster decision > the greedy per-map estimate (fallback for maps the joint pass didn't see). */
+static int cg_placement_decide(CodegenContext *ctx, HirKernelDecl *map, long rows) {
+	if (map->is_gpu)
+		return 1;
+	const char *force = getenv("ARCHE_FORCE_PLACE");
+	if (force && *force)
+		return strcmp(force, "gpu") == 0;
+	/* measurement build: pin ONLY the named map to GPU (everything else CPU), so a per-map run isolates its
+	 * cost. */
+	const char *only = getenv("ARCHE_FORCE_PLACE_ONLY");
+	if (only && *only)
+		return map->name && strcmp(only, map->name) == 0;
+	int m = cg_placement_measured(map->name);
+	if (m >= 0)
+		return m;
+	int j = cg_joint_decision(ctx, map->name);
+	if (j >= 0)
+		return j;
+	return cg_placement_prefer_gpu(&ctx->profile, cg_kernel_flops_per_elem(map), map->param_count, rows);
+}
+
+static HirKernelDecl *find_map_decl(CodegenContext *ctx, const char *name) {
+	const char *rdot = strrchr(name, '.');
+	const char *rtail = rdot ? rdot + 1 : name;
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *decl = ctx->ast->decls[i];
-		if (decl->kind == HIR_DECL_MAP && strcmp(decl->data.map->name, name) == 0) {
-			return decl->data.map;
-		}
+		/* the scheduled PURE map (HIR_STMT_RUN target); the effectful fan + system run via `call void`. */
+		if (decl->kind != HIR_DECL_KERNEL || decl->data.kernel->kind != HIR_KERNEL_MAP || decl->data.kernel->eff)
+			continue;
+		const char *n = decl->data.kernel->name;
+		const char *ndot = strrchr(n, '.');
+		const char *ntail = ndot ? ndot + 1 : n;
+		if (strcmp(n, name) == 0 || strcmp(ntail, rtail) == 0)
+			return decl->data.kernel;
 	}
 	return NULL;
+}
+
+/* A GPU-emittable column type → its LLVM element type ("float" or "i32"), else NULL. Mirrors the shader
+ * emitter's `glsl_scalar_type` (gpu_glsl.c): 32-bit float or int only (both 4 bytes, so dispatch elem_size
+ * stays 4). i32 covers signed and unsigned — the bitcast is sign-agnostic. Keeps the eligibility gate, the
+ * column-pointer bitcast, and the shader's SSBO type consistent by construction. */
+static const char *cg_gpu_col_llty(const HirType *t) {
+	if (!t)
+		return NULL;
+	if (t->tag == HIR_TYPE_FLOAT)
+		return "float";
+	if (t->tag == HIR_TYPE_INT && (t->int_width == 0 || t->int_width == 32))
+		return "i32";
+	return NULL;
+}
+
+/* 1 iff the pure map `k` is GPU-ELIGIBLE (a single matching static all-float/i32 pool whose touched columns
+ * are all 32-bit-emittable) — the codegen gate WITHOUT the profitability decision. Fills *out_pool (canonical)
+ * with that pool. This is the structural half shared by cg_map_placed_gpu and the joint-placement pass. */
+static int cg_map_gpu_eligible(CodegenContext *ctx, HirKernelDecl *k, const char **out_pool) {
+	if (!ctx->gpu || !k || k->kind != HIR_KERNEL_MAP || k->eff)
+		return 0;
+	if (k->param_count <= 0 || k->param_count > 64)
+		return 0;
+	const char *cols[256];
+	int nc = map_query_cols(k, cols, 256);
+	const char *comp[256];
+	int cc = query_match_archs(ctx, cols, nc, comp, 256);
+	const char *an = NULL;
+	int nmatch = 0;
+	for (int i = 0; i < cc; i++) {
+		const char *cn = canonical_arch_name(ctx, comp[i]);
+		if (get_arch_static_capacity(ctx, cn) <= 0)
+			continue;
+		int seen = 0;
+		for (int m = 0; m < i; m++)
+			if (strcmp(canonical_arch_name(ctx, comp[m]), cn) == 0) {
+				seen = 1;
+				break;
+			}
+		if (seen)
+			continue;
+		if (nmatch == 0)
+			an = cn;
+		nmatch++;
+	}
+	if (nmatch != 1 || !an)
+		return 0;
+	HirArchetypeDecl *ga = find_archetype_decl(ctx, an);
+	if (!ga)
+		return 0;
+	for (int p = 0; p < k->param_count; p++) {
+		const char *pn = k->params[p] ? k->params[p]->name : NULL;
+		int fi = -1;
+		for (int f = 0; pn && f < ga->field_count; f++)
+			if (ga->fields[f]->kind == FIELD_COLUMN && strcmp(ga->fields[f]->name, pn) == 0) {
+				if (cg_gpu_col_llty(ga->fields[f]->type))
+					fi = f; /* 32-bit float/int column → GPU-able */
+				break;
+			}
+		if (fi < 0)
+			return 0; /* a non-emittable / missing column → no GPU form */
+	}
+	/* Derived eligibility: the BODY must actually be GLSL-emittable — not merely structurally typed. A body
+	 * the emitter can't lower (a loop, a `reduce`, an unhandled call, or mixed column types) is NOT
+	 * GPU-eligible, so placement keeps it on the CPU rather than choosing GPU and finding no embedded shader
+	 * at dispatch (the silent "placement picked GPU, win never materializes"). Build-time probe;
+	 * gpu_glsl_build_src is side-effect-free. */
+	char *probe = gpu_glsl_build_src(ctx->ast, k, ga);
+	if (!probe)
+		return 0;
+	free(probe);
+	if (out_pool)
+		*out_pool = an;
+	return 1;
+}
+
+/* 1 iff the pure map `k` is placed on the GPU under the current profile — GPU-eligible AND profitable (the
+ * SAME gate + decision the HIR_STMT_RUN emit site uses). Fills *out_pool (canonical) when eligible. Read-only
+ * (no side effects, unlike the emit site which also sets is_gpu); used by the coherence pass, which runs
+ * before emit. The profitability decision itself lives in cg_placement_decide. */
+static int cg_map_placed_gpu(CodegenContext *ctx, HirKernelDecl *k, const char **out_pool) {
+	const char *an = NULL;
+	if (!cg_map_gpu_eligible(ctx, k, &an))
+		return 0;
+	if (!cg_placement_decide(ctx, k, get_arch_static_capacity(ctx, an)))
+		return 0;
+	if (out_pool)
+		*out_pool = an;
+	return 1;
 }
 
 static HirProcDecl *find_proc_decl(CodegenContext *ctx, const char *name) {
@@ -1357,6 +1746,249 @@ static HirFuncDecl *find_func_decl(CodegenContext *ctx, const char *name) {
 			return decl->data.func; /* skip policies — they're inlined, not called (find_policy_decl) */
 	}
 	return NULL;
+}
+
+/* Substitute fn's params into ONE builder-body arg `ea`, yielding the expr to emit in the CALLER's scope.
+ * A bare param NAME maps to its whole actual arg (carrying any move/copy). A `param.field` — the
+ * implicit-length idiom `buf.length` that builders use to pass a slice's length to the primitive —
+ * rebuilds the FIELD over the SUBSTITUTED base, so it reads the ACTUAL buffer's length, not the vanished
+ * param. Other shapes pass through unchanged. The rebuilt FIELD is bounded build-time scratch (its base +
+ * field_name are SHARED); it is not tracked for free (run-once compiler, leak is bounded). */
+static HirExpr *eff_subst_arg(HirFuncDecl *fn, HirExpr **actual_args, int actual_argc, HirExpr *ea) {
+	HirExpr *eu = ea;
+	while (eu && eu->kind == HIR_EXPR_UNARY && (eu->data.unary.op == UNARY_MOVE || eu->data.unary.op == UNARY_COPY))
+		eu = eu->data.unary.operand;
+	if (eu && eu->kind == HIR_EXPR_NAME && eu->data.name.name) {
+		for (int p = 0; p < fn->param_count; p++)
+			if (fn->params[p]->name && strcmp(fn->params[p]->name, eu->data.name.name) == 0)
+				return (p < actual_argc) ? actual_args[p] : ea; /* SHARED whole actual arg */
+		return ea;
+	}
+	if (eu && eu->kind == HIR_EXPR_FIELD && eu->data.field.base && eu->data.field.base->kind == HIR_EXPR_NAME &&
+	    eu->data.field.base->data.name.name) {
+		for (int p = 0; p < fn->param_count; p++)
+			if (fn->params[p]->name && strcmp(fn->params[p]->name, eu->data.field.base->data.name.name) == 0 &&
+			    p < actual_argc) {
+				HirExpr *nf = hir_expr_create(HIR_EXPR_FIELD);
+				nf->loc = eu->loc;
+				nf->resolved = eu->resolved;
+				nf->data.field.base = actual_args[p];                  /* SHARED substituted base */
+				nf->data.field.field_name = eu->data.field.field_name; /* SHARED */
+				return nf;
+			}
+	}
+	/* A param wrapped in a call/conversion (e.g. `i64(f)`, where `i64(...)` is a CALL): substitute inside
+	 * the args so the param still reaches the terminal extern (`io.fread(f,…)` → `sys_read(i64(f),…)`). New
+	 * node; callee + each substituted arg are shared. */
+	if (eu && eu->kind == HIR_EXPR_CALL && eu->data.call.callee && eu->data.call.arg_count > 0) {
+		HirExpr *nc = hir_expr_create(HIR_EXPR_CALL);
+		nc->loc = eu->loc;
+		nc->resolved = eu->resolved;
+		nc->data.call.callee = eu->data.call.callee; /* SHARED */
+		nc->data.call.arg_count = eu->data.call.arg_count;
+		nc->data.call.args = malloc(sizeof(HirExpr *) * (size_t)eu->data.call.arg_count);
+		for (int i = 0; i < eu->data.call.arg_count; i++)
+			nc->data.call.args[i] = eff_subst_arg(fn, actual_args, actual_argc, eu->data.call.args[i]);
+		return nc;
+	}
+	/* A param inside a BINARY (e.g. `condition == 0` handed to an `ifS`/`whenS` cond): substitute both
+	 * operands so the param reaches the run-site. New node; operands substituted, op + policy preserved. */
+	if (eu && eu->kind == HIR_EXPR_BINARY) {
+		HirExpr *nb = hir_expr_create(HIR_EXPR_BINARY);
+		nb->loc = eu->loc;
+		nb->resolved = eu->resolved;
+		nb->data.binary.op = eu->data.binary.op;
+		nb->data.binary.policy = eu->data.binary.policy;
+		nb->data.binary.left = eff_subst_arg(fn, actual_args, actual_argc, eu->data.binary.left);
+		nb->data.binary.right = eff_subst_arg(fn, actual_args, actual_argc, eu->data.binary.right);
+		return nb;
+	}
+	return ea;
+}
+
+/* Inline an Eff-building call `ec` from a builder body down to its terminal extern call. The base case is
+ * a direct under-applied extern (only an extern is inert under-applied). The RECURSIVE case is the
+ * applicative composition: when `ec` calls ANOTHER func->Eff builder `g`, substitute fn's params into ec's
+ * args to get g's actual args, then recurse into g's body — so `io.read -> fread -> syscall` collapses to
+ * one flat extern call, still depth-1. A single `|> fin` encountered anywhere in the chain accumulates in
+ * *io_fin (chaining two finalizers across builders is unsupported and errors). Returns a freshly-allocated
+ * HIR_EXPR_CALL (caller frees its `.args` array + the node; callee NAME + arg elements are SHARED) and sets
+ * *out_proc to the terminal extern, or NULL if it doesn't bottom out at an extern (the E0222 case). */
+static HirExpr *eff_subst_call(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **actual_args, int actual_argc,
+                               HirExpr *ec, HirProcDecl **out_proc, HirFuncDecl **io_fin) {
+	*out_proc = NULL;
+	while (ec && ec->kind == HIR_EXPR_UNARY && (ec->data.unary.op == UNARY_MOVE || ec->data.unary.op == UNARY_COPY))
+		ec = ec->data.unary.operand;
+	if (!ec || ec->kind != HIR_EXPR_CALL || !ec->data.call.callee || ec->data.call.callee->kind != HIR_EXPR_NAME)
+		return NULL;
+	const char *ename = ec->data.call.callee->data.name.name;
+	int n = ec->data.call.arg_count;
+	HirProcDecl *ep = ename ? find_proc_decl(ctx, ename) : NULL;
+	if (ep && ep->is_extern) {
+		/* BASE CASE: build the substituted extern call. */
+		HirExpr *call = hir_expr_create(HIR_EXPR_CALL);
+		call->data.call.callee = ec->data.call.callee; /* SHARED NAME(extern) */
+		call->data.call.args = malloc((size_t)(n ? n : 1) * sizeof(HirExpr *));
+		call->data.call.arg_count = n;
+		for (int i = 0; i < n; i++)
+			call->data.call.args[i] = eff_subst_arg(fn, actual_args, actual_argc, ec->data.call.args[i]);
+		*out_proc = ep;
+		return call;
+	}
+	/* RECURSIVE CASE: `ec` calls another func->Eff builder — inline through it. */
+	HirFuncDecl *g = ename ? find_func_decl(ctx, ename) : NULL;
+	if (g && g->return_type_count > 0 && g->return_types[0] && g->return_types[0]->tag == HIR_TYPE_EFF) {
+		HirExpr **g_args = malloc((size_t)(n ? n : 1) * sizeof(HirExpr *));
+		for (int i = 0; i < n; i++)
+			g_args[i] = eff_subst_arg(fn, actual_args, actual_argc, ec->data.call.args[i]);
+		/* g's builder body is a single `return <expr>`; strip a `|> fin` into the chain's finalizer. */
+		HirExpr *g_bcall = NULL;
+		for (int j = 0; j < g->stmt_count; j++)
+			if (g->stmts[j] && g->stmts[j]->kind == HIR_STMT_RETURN && g->stmts[j]->data.return_stmt.count == 1) {
+				g_bcall = g->stmts[j]->data.return_stmt.values[0];
+				break;
+			}
+		if (g_bcall && g_bcall->kind == HIR_EXPR_BINARY && g_bcall->data.binary.op == OP_FMAP) {
+			HirExpr *fnm = g_bcall->data.binary.right;
+			HirFuncDecl *gfin = (fnm && fnm->kind == HIR_EXPR_NAME && fnm->data.name.name)
+			                        ? find_func_decl(ctx, fnm->data.name.name)
+			                        : NULL;
+			if (gfin) {
+				if (*io_fin) {
+					fprintf(stderr, "Error: chained Eff finalizers across builders are not supported\n");
+					ctx->had_error = 1;
+				} else
+					*io_fin = gfin;
+			}
+			g_bcall = g_bcall->data.binary.left;
+		}
+		HirExpr *res = eff_subst_call(ctx, g, g_args, n, g_bcall, out_proc, io_fin);
+		free(g_args); /* the ARRAY only; its elements are SHARED / live in the returned call */
+		return res;
+	}
+	return NULL;
+}
+
+/* Eff FUSION (the compile-time keystone). A func-returning-Eff is a builder whose body is a single `return
+ * <eff>` where <eff> is an under-applied extern, optionally `|> fin` (a pure result-map) and/or
+ * `seq(<eff_a>, <eff_b>)` (run a then b, yield b). Given a call `fn(actual…)`, recover the underlying
+ * extern call(s) INLINED with fn's params substituted by the actual args. Returns the MAIN (result-bearing,
+ * = last) extern call + sets *out_proc; *out_finalizer is the `|>` finalizer (or NULL); *out_prefix is a
+ * leading effect to run first for `seq` (or NULL) with *out_prefix_proc its extern. Returns NULL if not a
+ * static-extern builder (the E0222 case). Mirrors fold_sched's combinator inlining but keeps SSA args live. */
+static HirExpr *eff_inline_build(CodegenContext *ctx, HirFuncDecl *fn, HirExpr **actual_args, int actual_argc,
+                                 HirProcDecl **out_proc, HirFuncDecl **out_finalizer, HirExpr **out_prefix,
+                                 HirProcDecl **out_prefix_proc, HirExpr **out_zip_calls, HirProcDecl **out_zip_procs,
+                                 int *out_zip_count, HirExpr **out_select_cond) {
+	*out_proc = NULL;
+	*out_finalizer = NULL;
+	*out_prefix = NULL;
+	*out_prefix_proc = NULL;
+	if (out_zip_count)
+		*out_zip_count = 0;
+	if (out_select_cond)
+		*out_select_cond = NULL;
+	if (!fn)
+		return NULL;
+	/* the builder body is a single `return <expr>` (allow other no-op stmts before it defensively) */
+	HirExpr *bcall = NULL;
+	for (int i = 0; i < fn->stmt_count; i++) {
+		HirStmt *st = fn->stmts[i];
+		if (st && st->kind == HIR_STMT_RETURN && st->data.return_stmt.count == 1) {
+			bcall = st->data.return_stmt.values[0];
+			break;
+		}
+	}
+	/* `… |> fin` — recover the pure FINALIZER; the Eff being mapped is the left operand. */
+	if (bcall && bcall->kind == HIR_EXPR_BINARY && bcall->data.binary.op == OP_FMAP) {
+		HirExpr *fnm = bcall->data.binary.right;
+		if (fnm && fnm->kind == HIR_EXPR_NAME && fnm->data.name.name)
+			*out_finalizer = find_func_decl(ctx, fnm->data.name.name);
+		bcall = bcall->data.binary.left;
+	}
+	while (bcall && bcall->kind == HIR_EXPR_UNARY &&
+	       (bcall->data.unary.op == UNARY_MOVE || bcall->data.unary.op == UNARY_COPY))
+		bcall = bcall->data.unary.operand;
+	/* `ifS(cond, then, else)` — the SELECTIVE. GUARD form (else = `pure()`): set *out_select_cond to the
+	 * substituted condition and fold the THEN arm through the normal machinery (recursing if it's a builder
+	 * like `fail`, whose own `seq` body must fold), so the run-site wraps the emission in `if (cond) { … }`.
+	 * A non-`pure()` else (value-producing ifS) is deferred. */
+	const char *sel_nm = (out_select_cond && bcall && bcall->kind == HIR_EXPR_CALL && bcall->data.call.callee &&
+	                      bcall->data.call.callee->kind == HIR_EXPR_NAME)
+	                         ? bcall->data.call.callee->data.name.name
+	                         : NULL;
+	if (sel_nm && ((strcmp(sel_nm, "ifS") == 0 && bcall->data.call.arg_count == 3) ||
+	               (strcmp(sel_nm, "whenS") == 0 && bcall->data.call.arg_count == 2))) {
+		if (strcmp(sel_nm, "ifS") == 0) {
+			/* ifS: the else arm must be `pure()` for the GUARD form (value-producing ifS is deferred). */
+			HirExpr *else_arm = bcall->data.call.args[2];
+			while (else_arm && else_arm->kind == HIR_EXPR_UNARY &&
+			       (else_arm->data.unary.op == UNARY_MOVE || else_arm->data.unary.op == UNARY_COPY))
+				else_arm = else_arm->data.unary.operand;
+			int else_pure =
+			    (else_arm && else_arm->kind == HIR_EXPR_CALL && else_arm->data.call.callee &&
+			     else_arm->data.call.callee->kind == HIR_EXPR_NAME && else_arm->data.call.callee->data.name.name &&
+			     strcmp(else_arm->data.call.callee->data.name.name, "pure") == 0);
+			if (!else_pure) {
+				fprintf(stderr, "Error: value-producing `ifS` (non-`pure()` else arm) is not yet supported\n");
+				ctx->had_error = 1;
+				return NULL;
+			}
+		}
+		HirExpr *cond = eff_subst_arg(fn, actual_args, actual_argc, bcall->data.call.args[0]);
+		HirExpr *then_call = eff_subst_arg(fn, actual_args, actual_argc, bcall->data.call.args[1]);
+		while (then_call && then_call->kind == HIR_EXPR_UNARY &&
+		       (then_call->data.unary.op == UNARY_MOVE || then_call->data.unary.op == UNARY_COPY))
+			then_call = then_call->data.unary.operand;
+		HirFuncDecl *tf = (then_call && then_call->kind == HIR_EXPR_CALL && then_call->data.call.callee &&
+		                   then_call->data.call.callee->kind == HIR_EXPR_NAME)
+		                      ? find_func_decl(ctx, then_call->data.call.callee->data.name.name)
+		                      : NULL;
+		if (tf) {
+			/* THEN is a builder (e.g. `fail` = `seq(write, exit)`): recurse so its seq body folds. */
+			HirExpr *r = eff_inline_build(ctx, tf, then_call->data.call.args, then_call->data.call.arg_count, out_proc,
+			                              out_finalizer, out_prefix, out_prefix_proc, out_zip_calls, out_zip_procs,
+			                              out_zip_count, out_select_cond);
+			*out_select_cond = cond; /* set AFTER recursion so the recursive prologue doesn't reset it */
+			return r;
+		}
+		/* THEN is a direct extern: fold it through the normal seq/zip/extern path below. */
+		*out_select_cond = cond;
+		bcall = then_call;
+	}
+	/* `seq(a, b)` — run `a` for effect first (the prefix), then `b` is the result-bearing main. Each side may
+	 * itself be a func->Eff builder (eff_subst_call recurses); the prefix's own result is discarded, so any
+	 * finalizer on it is moot (accepted into a throwaway). */
+	if (bcall && bcall->kind == HIR_EXPR_CALL && bcall->data.call.callee &&
+	    bcall->data.call.callee->kind == HIR_EXPR_NAME && bcall->data.call.callee->data.name.name &&
+	    strcmp(bcall->data.call.callee->data.name.name, "seq") == 0 && bcall->data.call.arg_count == 2) {
+		HirFuncDecl *prefix_fin = NULL;
+		*out_prefix =
+		    eff_subst_call(ctx, fn, actual_args, actual_argc, bcall->data.call.args[0], out_prefix_proc, &prefix_fin);
+		bcall = bcall->data.call.args[1];
+	}
+	/* `zip(e1, …, eN)` — the applicative PRODUCT: recover each arg as its own (proc, substituted call). The
+	 * run-site emits all N effects and binds their out-slots positionally, or folds ALL of them through
+	 * *out_finalizer (a `zip(…) |> fin`). Returns a non-NULL sentinel; the run-site keys off *out_zip_count. */
+	if (out_zip_count && bcall && bcall->kind == HIR_EXPR_CALL && bcall->data.call.callee &&
+	    bcall->data.call.callee->kind == HIR_EXPR_NAME && bcall->data.call.callee->data.name.name &&
+	    strcmp(bcall->data.call.callee->data.name.name, "zip") == 0 && bcall->data.call.arg_count >= 2) {
+		int zc = 0;
+		for (int i = 0; i < bcall->data.call.arg_count && zc < 16; i++) {
+			HirProcDecl *zp = NULL;
+			HirFuncDecl *zfin = NULL; /* a per-arg `|> fin` inside a zip arg is not supported (product only) */
+			HirExpr *zcall = eff_subst_call(ctx, fn, actual_args, actual_argc, bcall->data.call.args[i], &zp, &zfin);
+			if (!zcall || !zp)
+				return NULL; /* a zip arg didn't resolve to a static extern → E0222 */
+			out_zip_calls[zc] = zcall;
+			out_zip_procs[zc] = zp;
+			zc++;
+		}
+		*out_zip_count = zc;
+		return bcall;
+	}
+	/* Thread *out_finalizer as the chain accumulator so a nested builder's `|> fin` merges with an outer one. */
+	return eff_subst_call(ctx, fn, actual_args, actual_argc, bcall, out_proc, out_finalizer);
 }
 
 /* A failure-policy decl by name AND op category (1=bounds, 3=divide) — the `!name` namespace. Separate
@@ -1525,7 +2157,13 @@ static void monomorph_mangle(const char *proc_name, const char *arch_name, char 
  * `internal`-everything workaround. Externs keep their C-ABI name; `main`/`main_user` stay bare (the
  * entry). Inert (returns `name` unchanged) when per_unit is off, so the whole-program path is unaffected. */
 static const char *cg_fnsym(CodegenContext *ctx, const char *name, int is_extern, char *buf, size_t n) {
-	if (!ctx->per_unit || !name || is_extern || strcmp(name, "main") == 0 || strcmp(name, "main_user") == 0)
+	/* A USER decl named `main` (proc/func/system/each/map) is renamed to `main_user` so its symbol never
+	 * collides with the synthesized C entry `@main`. `main` is otherwise an ORDINARY name — never the
+	 * program's entry point (that is `#run` → `@arche_run`). This is a mechanical ABI rename, not a special
+	 * role: a decl named `main` is scheduled/called exactly like any other name. */
+	if (name && !is_extern && strcmp(name, "main") == 0)
+		name = "main_user";
+	if (!ctx->per_unit || !name || is_extern || strcmp(name, "main_user") == 0)
 		return name;
 	snprintf(buf, n, "arche.%s", name);
 	return buf;
@@ -1903,6 +2541,8 @@ static const char *get_shaped_field_info(CodegenContext *ctx, HirExpr *field_exp
 /* Forward declarations */
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf);
 static void codegen_statement(CodegenContext *ctx, HirStmt *stmt);
+static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts, int stmt_count,
+                             const char *row_var);
 static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *idx_expr, const char **out_arch_name,
                               const char **out_arch_ptr, int *out_count_idx, int *out_idx_is_i64);
 /* Failure-policy MACRO inliner: bind a policy's params to the op's operand SSAs as mutable locals,
@@ -1987,6 +2627,27 @@ static int codegen_slice(CodegenContext *ctx, HirExpr *e, char *ptr_out, char *l
 		                  bv->string_len, bv->llvm_name);
 		strcpy(base_ptr, ep);
 		snprintf(base_len, sizeof(base_len), "%d", bv->string_len);
+	} else if (bv->type == 4 && bv->arch_name) {
+		/* An ARRAY column read in an `each`/`system` (`raw[lo:hi]`, `raw :: [N]char`): each row owns a
+		 * `[N]T`, so the sub-slice views THIS row. `codegen_expression` on the bare column name already
+		 * yields the current row's element-0 pointer (it folds in `loop_idx * N`), and the base length is
+		 * the per-row width N. Without this, a query column fell through to `return 0` → a `null` arg. */
+		HirArchetypeDecl *ca = find_archetype_decl(ctx, bv->arch_name);
+		HirField *cf = NULL;
+		if (ca)
+			for (int fi = 0; fi < ca->field_count; fi++)
+				if (ca->fields[fi]->kind == FIELD_COLUMN && ca->fields[fi]->name &&
+				    strcmp(ca->fields[fi]->name, base->data.name.name) == 0) {
+					cf = ca->fields[fi];
+					break;
+				}
+		int coln = (cf && cf->type) ? field_total_elements(cf->type) : 1;
+		if (!cf || coln <= 1)
+			return 0;
+		elem_base = field_base_type_name(cf->type);
+		elem_llvm = llvm_type_from_arche(elem_base);
+		codegen_expression(ctx, base, base_ptr); /* current row's element-0 pointer */
+		snprintf(base_len, sizeof(base_len), "%d", coln);
 	} else {
 		return 0;
 	}
@@ -2264,6 +2925,11 @@ static HirQueryDecl *find_query_decl(CodegenContext *ctx, const char *name) {
  * printed for >1). The caller emits the matched pool's pointer directly when this returns 1. */
 static int resolve_collective_query(CodegenContext *ctx, const char *name, const char **out) {
 	*out = name;
+	/* A `system (query {…} as Flock)` binder resolves to its backing pool: `Flock.col` is a pool column. */
+	if (ctx->qbinder_name && ctx->qbinder_arch && strcmp(name, ctx->qbinder_name) == 0) {
+		*out = ctx->qbinder_arch;
+		return 1;
+	}
 	HirQueryDecl *q = find_query_decl(ctx, name);
 	if (!q)
 		return 0;
@@ -2301,6 +2967,37 @@ static int resolve_collective_query(CodegenContext *ctx, const char *name, const
 		return 1;
 	}
 	return -1; /* a query that matches no allocated shape */
+}
+
+/* Resolve the arche element-type name of an indexed archetype-column base `Arch.col[i]` — including a
+ * flattened tuple sub-column (`P.pos.x` lowers to the column `pos_x`). Returns the base type name (e.g.
+ * "float"/"i32") or NULL if the base isn't a pool column. Shared by the indexed READ and STORE paths so a
+ * FLOAT column isn't mis-defaulted to i32 (G4/G5): the store path previously only consulted `find_value`,
+ * missing a directly-named global pool the way the read path already handled. */
+static const char *indexed_col_arche_type(CodegenContext *ctx, HirExpr *base_expr) {
+	if (!base_expr || base_expr->kind != HIR_EXPR_FIELD || !base_expr->data.field.base ||
+	    base_expr->data.field.base->kind != HIR_EXPR_NAME)
+		return NULL;
+	const char *bn = base_expr->data.field.base->data.name.name;
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, bn);
+	if (!ad) {
+		ValueInfo *iv = find_value(ctx, bn);
+		if (iv && iv->arch_name)
+			ad = find_archetype_decl(ctx, iv->arch_name);
+	}
+	if (!ad) {
+		/* `Query.col[i]` — resolve the query to its single matched pool for the column's type. */
+		const char *resolved = bn;
+		if (resolve_collective_query(ctx, bn, &resolved) == 1)
+			ad = find_archetype_decl(ctx, resolved);
+	}
+	if (!ad)
+		return NULL;
+	const char *fn = base_expr->data.field.field_name;
+	for (int i = 0; i < ad->field_count; i++)
+		if (ad->fields[i]->kind == FIELD_COLUMN && strcmp(ad->fields[i]->name, fn) == 0)
+			return field_base_type_name(ad->fields[i]->type);
+	return NULL;
 }
 
 /* Emit the matched pool's struct pointer into `base_buf` for a query-resolved collective base (the query
@@ -2491,6 +3188,235 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 	} else {
 		char *final = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, ty, ty, acc);
+		strcpy(result_buf, final);
+	}
+}
+
+/* A tuple-GROUP column `group` (`pos(x,y)`) is stored FLATTENED as sub-columns `group_<suffix>` (`pos_x`,
+ * `pos_y`) — there is no single `group` field. Fill `idxs`/`types` with each flattened lane's struct field
+ * index and LLVM element type, in declaration order; return the lane count (0 ⇒ `group` is not a tuple group
+ * in this arch). Used to fold / read a whole tuple column (`Flock.pos`) as a packed `{T,…}` value. */
+static int arch_tuple_group_lanes(HirArchetypeDecl *ad, const char *group, int *idxs, const char **types, int max) {
+	int n = 0;
+	size_t glen = strlen(group);
+	for (int i = 0; i < ad->field_count && n < max; i++) {
+		const char *fn = ad->fields[i]->name;
+		if (ad->fields[i]->kind == FIELD_COLUMN && strncmp(fn, group, glen) == 0 && fn[glen] == '_') {
+			idxs[n] = i;
+			types[n] = llvm_type_from_arche(field_base_type_name(ad->fields[i]->type));
+			n++;
+		}
+	}
+	return n;
+}
+
+/* True if `e` is a `Pool.col` field access on a pool archetype (a column), resolving a query alias. Sets
+ * *arch_out (if non-NULL) to the resolved archetype name. Used to find the pool a reduce-EXPRESSION folds
+ * over, and to recognize that pool's column refs during the fold. A tuple-GROUP column (`Flock.pos`, flattened
+ * to `pos_x`/`pos_y`) counts too — it is a valid whole-tuple fold domain. */
+static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_out) {
+	if (!e || e->kind != HIR_EXPR_FIELD || !e->data.field.base || e->data.field.base->kind != HIR_EXPR_NAME)
+		return 0;
+	const char *name = e->data.field.base->data.name.name;
+	const char *arch = name;
+	if (!find_archetype_decl(ctx, name) && resolve_collective_query(ctx, name, &arch) != 1)
+		return 0;
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch);
+	if (!ad)
+		return 0;
+	for (int i = 0; i < ad->field_count; i++)
+		if (strcmp(ad->fields[i]->name, e->data.field.field_name) == 0 && ad->fields[i]->kind == FIELD_COLUMN) {
+			if (arch_out)
+				*arch_out = arch;
+			return 1;
+		}
+	int lidx[8];
+	const char *lty[8];
+	if (arch_tuple_group_lanes(ad, e->data.field.field_name, lidx, lty, 8) > 0) {
+		if (arch_out)
+			*arch_out = arch;
+		return 1;
+	}
+	return 0;
+}
+
+/* Find the pool a reduce-expression folds over: the first `Pool.col` field access in the summand. Recurses
+ * over its arithmetic / call structure. Returns that field node (for the pool + count) or NULL. */
+/* A BARE bound column (`pos` from an enclosing `system(query{pos})`) usable as a fold domain: a type-4 column
+ * ValueInfo, NOT a `\x1f` self-read marker (that stays pinned to the fan row). Sets *arch to its pool. */
+static int is_foldable_bare_col(CodegenContext *ctx, HirExpr *e, const char **arch_out) {
+	if (!ctx->in_nested_fan) /* only a fan nested in a columnar system has a neighbour fold domain */
+		return 0;
+	if (!e || e->kind != HIR_EXPR_NAME || !e->data.name.name || e->data.name.name[0] == '\x1f')
+		return 0; /* a `\x1f` self-read (`me.col`) is the SELF, never the fold domain */
+	/* The ENCLOSING system's bound column has no own fan row (loop_idx NULL); the current fan's own per-element
+	 * column has loop_idx = its fan row and is SELF (`me.col`), not the fold domain. */
+	ValueInfo *v = find_value(ctx, e->data.name.name);
+	if (v && v->type == 4 && v->arch_name && !(v->loop_idx && v->loop_idx[0])) {
+		if (arch_out)
+			*arch_out = v->arch_name;
+		return 1;
+	}
+	/* A bare TUPLE-group column (`pos`, flattened to `pos_x`/`pos_y` — no single value binding): resolve its
+	 * pool via a flattened subcolumn, so a vector neighbour scan `reduce(+, pos * …)` folds over it. */
+	if (!v && e->resolved.tag == HIR_TYPE_TUPLE && e->resolved.field_count > 0 && e->resolved.fields[0].name) {
+		char sub[160];
+		snprintf(sub, sizeof(sub), "%s_%s", e->data.name.name, e->resolved.fields[0].name);
+		ValueInfo *sv = find_value(ctx, sub);
+		if (sv && sv->type == 4 && sv->arch_name && !(sv->loop_idx && sv->loop_idx[0])) {
+			if (arch_out)
+				*arch_out = sv->arch_name;
+			return 1;
+		}
+	}
+	return 0;
+}
+
+/* Emit the live row count of pool `arch_name` into `out` (the struct field after all columns). */
+static void emit_pool_live_count(CodegenContext *ctx, const char *arch_name, char *out, size_t cap) {
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch_name);
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	char base[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base, sizeof(base));
+	char *cgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
+	                  arch_name, base, ad ? ad->field_count : 0);
+	char *cnt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt, cgep);
+	snprintf(out, cap, "%s", cnt);
+}
+
+static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
+	if (!e)
+		return NULL;
+	if (is_pool_col_field(ctx, e, NULL) || is_foldable_bare_col(ctx, e, NULL))
+		return e;
+	switch (e->kind) {
+	case HIR_EXPR_BINARY: {
+		HirExpr *l = find_fold_pool_field(ctx, e->data.binary.left);
+		return l ? l : find_fold_pool_field(ctx, e->data.binary.right);
+	}
+	case HIR_EXPR_UNARY:
+		return find_fold_pool_field(ctx, e->data.unary.operand);
+	case HIR_EXPR_CALL: {
+		for (int i = 0; i < e->data.call.arg_count; i++) {
+			HirExpr *a = find_fold_pool_field(ctx, e->data.call.args[i]);
+			if (a)
+				return a;
+		}
+		return NULL;
+	}
+	default:
+		return NULL;
+	}
+}
+
+/* `reduce(op, <expr over Pool.col + enclosing self scalars>)` — the neighbor-reduction / self-join: fold a
+ * per-pool-row EXPRESSION to a scalar. Unlike emit_fold (a whole column), the summand is re-evaluated per
+ * row `i`, with the folded pool's `Pool.col` accesses indexed by `i` (ctx->fold_pool/fold_index) while any
+ * enclosing columnar bound columns (bare names) keep reading the outer row. CPU scalar only (an arbitrary
+ * summand can't be lane-blended cheaply); O(N) per outer element — the boids neighbor scan. */
+static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op, char *result_buf) {
+	HirExpr *poolfield = find_fold_pool_field(ctx, sumexpr);
+	const char *arch = NULL;
+	char count[256];
+	int is_float = (sumexpr->resolved.tag == HIR_TYPE_FLOAT);
+	if (poolfield && is_pool_col_field(ctx, poolfield, &arch)) {
+		/* Explicit `Pool.col` fold domain — reuse the collective column resolver for its count + element type. A
+		 * tuple-GROUP column (`Flock.pos`) has no single field, so emit_collective_column declines: fall back to
+		 * the pool's live row count (the summand's per-lane float-ness comes from its tuple type below). */
+		char colptr[256];
+		const char *cty;
+		int cisf;
+		if (emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf))
+			is_float = is_float || cisf;
+		else
+			emit_pool_live_count(ctx, arch, count, sizeof(count));
+	} else if (poolfield && is_foldable_bare_col(ctx, poolfield, &arch)) {
+		/* An enclosing system's BOUND column (`pos`) is the fold domain — derive count from its pool and the
+		 * float-ness from the column's element type (so the accumulator identity is `0.0`, not the i32 `0`). */
+		ValueInfo *v = find_value(ctx, poolfield->data.name.name);
+		if (v && v->field_type && (strcmp(v->field_type, "float") == 0 || strcmp(v->field_type, "double") == 0))
+			is_float = 1;
+		emit_pool_live_count(ctx, arch, count, sizeof(count));
+	} else {
+		strcpy(result_buf, "0");
+		return;
+	}
+	/* A TUPLE-valued summand (`reduce(+, pos * near(…))` → the cohesion/separation vectors) folds each lane
+	 * independently into its own accumulator; a scalar summand is the single-lane case. */
+	const HirType *tt = codegen_tuple_type_of(ctx, sumexpr);
+	int nlane = tt ? tt->field_count : 1;
+	if (nlane > 8)
+		nlane = 8;
+	char aggty[256] = "";
+	if (tt)
+		tuple_llvm_type((HirType *)tt, aggty, sizeof(aggty));
+	char accs[8][64];
+	const char *lty[8];
+	int lf[8];
+	for (int l = 0; l < nlane; l++) {
+		lty[l] = tt ? llvm_type_from_arche(field_base_type_name(tt->fields[l].type)) : (is_float ? "float" : "i32");
+		lf[l] = (strcmp(lty[l], "float") == 0 || strcmp(lty[l], "double") == 0);
+		char *acc = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca %s\n", acc, lty[l]);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], monoid_identity(op, lf[l]), lty[l], acc);
+		snprintf(accs[l], sizeof(accs[l]), "%s", acc);
+	}
+	char *iv = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", iv);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv);
+
+	const char *saved_pool = ctx->fold_pool, *saved_idx = ctx->fold_index;
+	ctx->fold_pool = arch;
+
+	char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", cond + 1);
+	char *i = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
+	char *lt = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
+	buffer_append_fmt(ctx, "%s:\n", body + 1);
+	ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
+	char elem[256];
+	codegen_expression(ctx, sumexpr, elem);
+	for (int l = 0; l < nlane; l++) {
+		const char *ev = elem;
+		char evb[64];
+		if (tt) { /* extract this lane from the summand's aggregate value */
+			char *e = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, elem, l);
+			snprintf(evb, sizeof(evb), "%s", e);
+			ev = evb;
+		}
+		char *a = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, lty[l], lty[l], accs[l]);
+		char *r = emit_monoid_combine(ctx, op, lf[l], lty[l], a, ev);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], r, lty[l], accs[l]);
+	}
+	char *ni = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
+	buffer_append_fmt(ctx, "  br label %s\n", cond);
+	buffer_append_fmt(ctx, "%s:\n", end + 1);
+	ctx->fold_pool = saved_pool;
+	ctx->fold_index = saved_idx;
+	if (tt) { /* pack the per-lane accumulators back into a `{T,…}` aggregate */
+		char cur[256];
+		strcpy(cur, "undef");
+		for (int l = 0; l < nlane; l++) {
+			char *ld = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", ld, lty[l], lty[l], accs[l]);
+			char *ni2 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni2, aggty, cur, lty[l], ld, l);
+			strcpy(cur, ni2);
+		}
+		strcpy(result_buf, cur);
+	} else {
+		char *final = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", final, lty[0], lty[0], accs[0]);
 		strcpy(result_buf, final);
 	}
 }
@@ -3244,6 +4170,118 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 
 /* ========== EXPRESSION CODEGEN ========== */
 
+/* Coerce one syscall argument to an i64 for the raw `syscall` asm: a buffer/string/array decays to its
+ * data pointer via `ptrtoint` (never `sext` — it is a pointer); a narrower int is sext/zext'd to 64;
+ * opaque/handle is already pointer-width. Shared by the generic `@intrinsic syscall` and the typed
+ * `@syscall(N)` paths. `allow_buffer` is 0 for the generic scalar syscall: passing a buffer there is
+ * rejected (a buffer must go through a typed `@syscall(N)` extern that declares it in/in-out, so the
+ * kernel can't write a read-only borrow); 1 for a typed `@syscall(N)`, where the contract is declared. */
+static void coerce_syscall_arg(CodegenContext *ctx, HirExpr *arg, char *out, int allow_buffer) {
+	char ab[256];
+	codegen_expression(ctx, arg, ab);
+	HirType *rt = &arg->resolved;
+	HirExpr *arg_u = arg;
+	while (arg_u->kind == HIR_EXPR_UNARY && (arg_u->data.unary.op == UNARY_MOVE || arg_u->data.unary.op == UNARY_COPY))
+		arg_u = arg_u->data.unary.operand;
+	ValueInfo *avi = (arg_u->kind == HIR_EXPR_NAME) ? find_value(ctx, arg_u->data.name.name) : NULL;
+	if (avi && (avi->type == 7 || avi->type == 2 || avi->type == 6)) {
+		if (!allow_buffer) {
+			fprintf(stderr, "Error: a buffer cannot be passed to the generic `syscall` — declare a typed "
+			                "`@syscall(N)` extern with the buffer as a param (in-out if the kernel writes "
+			                "it), so it cannot scribble through a read-only borrow\n");
+			ctx->had_error = 1;
+		}
+		char dptr[256];
+		if (avi->type == 7) {
+			char *b = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", b, avi->string_len, ab);
+			strcpy(dptr, b);
+		} else if (avi->type == 6 && avi->field_type && strcmp(avi->field_type, "char") != 0 &&
+		           strcmp(avi->field_type, "i8") != 0) {
+			/* a NON-char element pointer (e.g. a `[]i64` timespec buffer) is `<elem>*`, not `i8*` — bitcast
+			 * to i8* first, else `ptrtoint i8* %<elemptr>` is ill-typed. */
+			const char *lt = llvm_type_from_arche(avi->field_type);
+			char *b = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", b, lt, ab);
+			strcpy(dptr, b);
+		} else {
+			strcpy(dptr, ab); /* type 2/6 char: already i8* */
+		}
+		char *pi = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = ptrtoint i8* %s to i64\n", pi, dptr);
+		strcpy(out, pi);
+		return;
+	}
+	if (arg_u->kind == HIR_EXPR_STRING || arg_u->kind == HIR_EXPR_SLICE || rt->tag == HIR_TYPE_CHAR_ARRAY ||
+	    rt->tag == HIR_TYPE_ARRAY || rt->tag == HIR_TYPE_SHAPED_ARRAY) {
+		if (!allow_buffer) {
+			fprintf(stderr, "Error: a buffer cannot be passed to the generic `syscall` — declare a typed "
+			                "`@syscall(N)` extern with the buffer as a param (in-out if the kernel writes "
+			                "it), so it cannot scribble through a read-only borrow\n");
+			ctx->had_error = 1;
+		}
+		char *pi = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = ptrtoint i8* %s to i64\n", pi, ab);
+		strcpy(out, pi);
+	} else if (rt->tag == HIR_TYPE_INT && rt->int_width == 64) {
+		strcpy(out, ab);
+	} else if (rt->tag == HIR_TYPE_INT) {
+		emit_int_convert(ctx, ab, rt, 64, out);
+	} else if (rt->tag == HIR_TYPE_OPAQUE || rt->tag == HIR_TYPE_HANDLE) {
+		strcpy(out, ab); /* opaque cell / handle is already pointer-width i64 */
+	} else {
+		HirType t32 = {0};
+		t32.tag = HIR_TYPE_INT;
+		t32.int_width = 32;
+		t32.int_signed = 1;
+		emit_int_convert(ctx, ab, &t32, 64, out);
+	}
+}
+
+/* Emit the raw Linux/x86-64 `syscall` instruction: number + up to 6 args in i64 regs, result in rax;
+ * rcx/r11/memory clobbered. `a[0..6]` are pre-coerced i64 operands (a[0] = number). Returns the SSA
+ * name of the result into `res_out`. */
+static void emit_syscall_asm(CodegenContext *ctx, char a[7][256], char *res_out) {
+	char *res = gen_value_name(ctx);
+	buffer_append_fmt(ctx,
+	                  "  %s = call i64 asm sideeffect \"syscall\", "
+	                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
+	                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+	                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+	strcpy(res_out, res);
+}
+
+/* Allocate a sized-array OUT buffer for a multi-bind out-target `tgt: [N]T` (`:` = allocate): emit
+ * `alloca [N x T]`, GEP element 0, and bind `tgt->name` as a type-6 element pointer (so `buf[i]` reads it).
+ * Pushes the ValueInfo into the top scope and returns it (NULL if no scope / `_` / not a NAME target).
+ * Used both as a pure out-param (out-only path) and — pre-emission — for a caller-allocated in-out OUT
+ * buffer whose syscall/extern in-slot is the `_` shadow (so the `_`→name rewrite resolves to it). */
+static ValueInfo *cg_alloc_shaped_out_buf(CodegenContext *ctx, HirBindingTarget *tgt, HirType *ot) {
+	if (!tgt || !tgt->name || strcmp(tgt->name, "_") == 0 || !ot || ot->tag != HIR_TYPE_SHAPED_ARRAY ||
+	    ctx->scope_count <= 0)
+		return NULL;
+	const char *etn = field_base_type_name(ot);
+	const char *lt = llvm_type_from_arche(etn);
+	int n = ot->rank;
+	char *arr = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca [%d x %s]\n", arr, n, lt);
+	char *ptr = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", ptr, n, lt, n, lt, arr);
+	ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+	vi->name = malloc(strlen(tgt->name) + 1);
+	strcpy(vi->name, tgt->name);
+	vi->llvm_name = malloc(strlen(ptr) + 1);
+	strcpy(vi->llvm_name, ptr);
+	vi->type = 6;
+	vi->string_len = n;
+	vi->field_type = etn;
+	vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
+	ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+	sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+	sc->values[sc->value_count++] = vi;
+	return vi;
+}
+
 static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	if (!expr) {
 		strcpy(result_buf, "0");
@@ -3296,6 +4334,87 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	case HIR_EXPR_NAME: {
 		const char *name = expr->data.name.name;
 
+		/* A `\x1e`-marked ROW-ID intrinsic (`me.id`): the current fan row index, truncated to the i32 the
+		 * accessor yields. `me.id` never folds (it is self, like a `\x1f` self-read), so a `reduce` fold counter
+		 * is ignored — the id is the fan's own row. Valid only inside a fan (implicit_loop_index set). */
+		if (name[0] == '\x1e') {
+			const char *row = ctx->implicit_loop_index; /* the fan's OWN row (self), never a reduce fold counter */
+			if (!row || !row[0]) {
+				strcpy(result_buf, "0"); /* not in a fan — a static single element */
+				expr->resolved.tag = HIR_TYPE_INT;
+				return;
+			}
+			char *idv = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", idv, row);
+			strcpy(result_buf, idv);
+			expr->resolved.tag = HIR_TYPE_INT;
+			return;
+		}
+
+		/* A `\x1f`-marked SELF-READ (`me.col` inside a nested-fan reduce, from the self-binder desugar): read
+		 * `col` at THIS element's row — the fan's own index — immune to any active `reduce` fold counter. So
+		 * `me.pos` stays pinned to this boid while a same-named neighbour `pos` folds. Clear fold_index so the
+		 * bare-column read below auto-indexes at the fan row. */
+		if (name[0] == '\x1f') {
+			const char *saved_fold = ctx->fold_index;
+			ctx->fold_index = NULL;
+			HirExpr nm = *expr;
+			nm.data.name.name = (char *)(name + 1);
+			codegen_expression(ctx, &nm, result_buf);
+			ctx->fold_index = saved_fold;
+			expr->resolved = nm.resolved;
+			return;
+		}
+
+		/* A bare tuple-group COLUMN read as a VALUE (`pos` where `pos(x,y)::float`, tagged HIR_TYPE_TUPLE by
+		 * lowering) with no direct value binding: pack its flattened per-lane columns (`pos_x`, `pos_y`) —
+		 * each read at the current row (folding / self-marker / auto-index all handled by the per-lane read) —
+		 * into a `{T,…}` aggregate value, so `.x`/`.y` and tuple arithmetic work on it. */
+		/* A flattened tuple-const MEMBER (`C_x` from `C(x,y) :: (320,240)`) can be mis-tagged HIR_TYPE_TUPLE
+		 * because its group `C` is a tuple group — but it is a SCALAR value const, so read it directly rather
+		 * than packing (which would look up nonexistent `C_x_x`/`C_x_y` and yield 0). Distinguish it from the
+		 * GROUP const `C` (which DOES pack) by whether a sub-member const exists: `C` has `C_x`; `C_x` has no
+		 * `C_x_x`. */
+		int scalar_const_member = 0;
+		if (expr->resolved.tag == HIR_TYPE_TUPLE && ctx->sem_ctx && expr->resolved.field_count > 0 &&
+		    semantic_get_const_value(ctx->sem_ctx, name)) {
+			char probe[256];
+			snprintf(probe, sizeof(probe), "%s_%s", name, expr->resolved.fields[0].name);
+			scalar_const_member = semantic_get_const_value(ctx->sem_ctx, probe) == NULL;
+		}
+		if (expr->resolved.tag == HIR_TYPE_TUPLE && !find_value(ctx, name) && expr->resolved.field_count > 0 &&
+		    !scalar_const_member) {
+			char aggty[256];
+			tuple_llvm_type(&expr->resolved, aggty, sizeof(aggty));
+			char cur[256];
+			strcpy(cur, "undef");
+			for (int i = 0; i < expr->resolved.field_count; i++) {
+				char sub[160];
+				snprintf(sub, sizeof(sub), "%s_%s", name, expr->resolved.fields[i].name);
+				/* A flattened tuple-const member from a device `#file` const is registered under its
+				 * QUALIFIED name (`mod.__f1.CENTER_x`) but the reference here is bare (`CENTER`, un-renamed
+				 * because the tuple const yields no fileset HirDecl). If the bare member misses, resolve to the
+				 * qualified const name so the read below finds its value instead of yielding 0. */
+				if (ctx->sem_ctx && !find_value(ctx, sub) && !semantic_get_const_value(ctx->sem_ctx, sub)) {
+					const char *q = semantic_qualified_const_name(ctx->sem_ctx, sub);
+					if (q)
+						snprintf(sub, sizeof(sub), "%s", q);
+				}
+				HirExpr nm = {0};
+				nm.kind = HIR_EXPR_NAME;
+				nm.data.name.name = sub;
+				nm.resolved = *expr->resolved.fields[i].type;
+				char sb[256];
+				codegen_expression(ctx, &nm, sb);
+				const char *mt = llvm_type_from_arche(field_base_type_name(expr->resolved.fields[i].type));
+				char *ni = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, mt, sb, i);
+				strcpy(cur, ni);
+			}
+			strcpy(result_buf, cur);
+			return;
+		}
+
 		/* An entity binding (`e := B{…}`) is virtual — it has no runtime value. Using it as anything but
 		 * `insert(e)` (which resolves the literal directly) is unsupported; report it cleanly instead of
 		 * emitting invalid IR. */
@@ -3341,12 +4460,56 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (val) {
 			/* If inside implicit loop and this is a type-4 column param, auto-index */
 			if (ctx->implicit_loop_index[0] && val->type == 4) {
+				/* Index by the fan that BOUND this column (`loop_idx`), so an outer-fan column read inside
+				 * a nested fan still uses the outer row — not the ambient (inner) index. But inside a `reduce`
+				 * that folds THIS column's pool (`fold_pool`), it is the neighbour domain — index at the fold
+				 * counter so the reduce scans every row (the self-join: `me.pos` stays at the fan row via its
+				 * `\x1f` marker, the bare `pos` here iterates). */
+				const char *idx = (val->loop_idx && val->loop_idx[0]) ? val->loop_idx : ctx->implicit_loop_index;
+				if (ctx->in_nested_fan && ctx->fold_index && ctx->fold_pool && val->arch_name &&
+				    !(val->loop_idx && val->loop_idx[0]) && strcmp(val->arch_name, ctx->fold_pool) == 0)
+					idx = ctx->fold_index;
+				/* A `[1]` SINGLETON column (a shared buffer bound by an enclosing system, e.g. a framebuffer) has
+				 * ONE row — it reads at index 0, NEVER the ambient fan's row. `framebuffer[i]` then indexes INTO
+				 * that one buffer rather than a per-fan-row copy. */
+				if (val->arch_name && get_arch_static_capacity(ctx, val->arch_name) == 1)
+					idx = "0";
+				/* An ARRAY column (`[N]T`, e.g. `msg :: [64]char`) reads per-row as a pointer/slice over
+				 * that row's storage (stride N) — NOT a scalar load of one element. The column is stored
+				 * flat (`[count*N x T]`) and `val->llvm_name` is its element-0 pointer, so the row's start
+				 * is `+ row*N`. Yield that pointer so a `[]T` consumer (printf `%s` on a char column, a
+				 * sub-slice, …) gets a real view, mirroring the single-index `Pool.col[i]` shaped read. */
+				HirArchetypeDecl *acol = val->arch_name ? find_archetype_decl(ctx, val->arch_name) : NULL;
+				HirField *colf = NULL;
+				if (acol)
+					for (int fi = 0; fi < acol->field_count; fi++)
+						if (acol->fields[fi]->kind == FIELD_COLUMN && acol->fields[fi]->name &&
+						    strcmp(acol->fields[fi]->name, name) == 0) {
+							colf = acol->fields[fi];
+							break;
+						}
+				int coln = (colf && colf->type) ? field_total_elements(colf->type) : 1;
+				if (coln > 1) {
+					const char *abase = field_base_type_name(colf->type);
+					const char *allt = llvm_type_from_arche(abase);
+					char *roff = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", roff, idx, coln);
+					char *rptr = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", rptr, allt, allt,
+					                  val->llvm_name, roff);
+					strcpy(result_buf, rptr);
+					/* Tag the result as a char[] view so a consumer (printf `%s`, a sub-slice, an extern
+					 * char-buffer arg) passes the bare `i8*` pointer rather than coercing it to a scalar. */
+					if (strcmp(abase, "char") == 0)
+						expr->resolved.tag = HIR_TYPE_CHAR_ARRAY;
+					return;
+				}
 				const char *arche_type = val->field_type ? val->field_type : "float";
 				const char *scalar_type = llvm_type_from_arche(arche_type);
 				const char *load_type = elem_llvm_type(ctx, arche_type);
 				char *idx_gep = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", idx_gep, scalar_type, scalar_type,
-				                  val->llvm_name, ctx->implicit_loop_index);
+				                  val->llvm_name, idx);
 				char *elem = gen_value_name(ctx);
 				int align = ctx->vector_lanes > 0 ? 8 : 4;
 
@@ -3422,6 +4585,67 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 	case HIR_EXPR_BINARY: {
 		char left_buf[256], right_buf[256];
+
+		/* Tuple arithmetic: `a + b` / `a - b` (tuple ∘ tuple) is ELEMENT-WISE; `v * s` / `v / s` (tuple ∘ SCALAR)
+		 * scales every lane by the scalar broadcast across lanes. Result = a new `{T,…}` aggregate (extract each
+		 * lane, combine, insert). At least one side is a tuple; a non-tuple side is the broadcast scalar. */
+		if (expr->data.binary.op >= OP_ADD && expr->data.binary.op <= OP_DIV) {
+			const HirType *lt = codegen_tuple_type_of(ctx, expr->data.binary.left);
+			const HirType *rt = codegen_tuple_type_of(ctx, expr->data.binary.right);
+			const HirType *tt = lt ? lt : rt;
+			if (tt && (!lt || !rt || lt->field_count == rt->field_count) && tt->field_count > 0) {
+				char lb[256], rb[256], aggty[256];
+				int saved_lanes = ctx->vector_lanes;
+				ctx->vector_lanes = 0;
+				codegen_expression(ctx, expr->data.binary.left, lb);
+				codegen_expression(ctx, expr->data.binary.right, rb);
+				ctx->vector_lanes = saved_lanes;
+				tuple_llvm_type((HirType *)tt, aggty, sizeof(aggty));
+				char cur[256];
+				strcpy(cur, "undef");
+				for (int i = 0; i < tt->field_count; i++) {
+					const char *mt = llvm_type_from_arche(field_base_type_name(tt->fields[i].type));
+					int mf = (strcmp(mt, "float") == 0 || strcmp(mt, "double") == 0);
+					const char *opi;
+					switch (expr->data.binary.op) {
+					case OP_ADD:
+						opi = mf ? "fadd" : "add";
+						break;
+					case OP_SUB:
+						opi = mf ? "fsub" : "sub";
+						break;
+					case OP_MUL:
+						opi = mf ? "fmul" : "mul";
+						break;
+					default:
+						opi = mf ? "fdiv" : "sdiv";
+						break;
+					}
+					/* a tuple side yields lane i via extractvalue; a scalar side broadcasts (same value each lane). */
+					char le[256], re[256];
+					if (lt) {
+						char *e = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, lb, i);
+						snprintf(le, sizeof(le), "%s", e);
+					} else
+						snprintf(le, sizeof(le), "%s", lb);
+					if (rt) {
+						char *e = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, rb, i);
+						snprintf(re, sizeof(re), "%s", e);
+					} else
+						snprintf(re, sizeof(re), "%s", rb);
+					char *ce = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", ce, opi, mt, le, re);
+					char *ni = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, mt, ce, i);
+					strcpy(cur, ni);
+				}
+				strcpy(result_buf, cur);
+				expr->resolved = *tt;
+				break;
+			}
+		}
 
 		/* Logical `&&` / `||` MUST short-circuit. With failure policies an operand can abort (`_exit`) or
 		 * mutate state, so the RHS may run ONLY when the LHS doesn't already decide the result — eager
@@ -3839,6 +5063,111 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	case HIR_EXPR_FIELD: {
+		/* `t.x` on a tuple VALUE (`pos(x,y)::float` used as a value): the base is a `{T,…}` aggregate SSA and
+		 * `.x` is member extraction (`extractvalue`). Handle a NAME base bound to a type-8 tuple value, or any
+		 * base whose resolved type is a tuple (e.g. a call result), before the archetype-column path below. */
+		if (expr->data.field.base) {
+			const HirType *tt = codegen_tuple_type_of(ctx, expr->data.field.base);
+			if (tt) {
+				int idx = tuple_field_index(tt, expr->data.field.field_name);
+				if (idx >= 0) {
+					char agg[256], aggty[256];
+					codegen_expression(ctx, expr->data.field.base, agg);
+					tuple_llvm_type((HirType *)tt, aggty, sizeof(aggty));
+					char *ev = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", ev, aggty, agg, idx);
+					strcpy(result_buf, ev);
+					expr->resolved = *tt->fields[idx].type;
+					return;
+				}
+			}
+		}
+		/* `CENTER.X` on a named-vector CONSTANT (`CENTER(X,Y) :: (320,240)`): resolve to the flattened member
+		 * value const `CENTER_X`. (The tuple-group param rewrite only fires for query params, so a top-level
+		 * const used in a body reaches here unrewritten.) Emit the member const and carry its float/int type. */
+		if (expr->data.field.base && expr->data.field.base->kind == HIR_EXPR_NAME && expr->data.field.field_name) {
+			char comb[256];
+			snprintf(comb, sizeof(comb), "%s_%s", expr->data.field.base->data.name.name, expr->data.field.field_name);
+			const char *cv = semantic_get_const_value(ctx->sem_ctx, comb);
+			if (cv) {
+				HirExpr nm = {0};
+				nm.kind = HIR_EXPR_NAME;
+				nm.data.name.name = comb;
+				codegen_expression(ctx, &nm, result_buf);
+				expr->resolved.tag = (strchr(cv, '.') != NULL) ? HIR_TYPE_FLOAT : HIR_TYPE_INT;
+				return;
+			}
+		}
+		/* Inside a `reduce(op, <expr over Pool.col>)` fold, a `Pool.col` on the folded pool is a SCALAR load
+		 * at the inner fold counter, not a whole-column pointer. Enclosing self columns are bare NAMEs, so
+		 * they never reach here — they keep reading the outer row. */
+		if (ctx->fold_pool && ctx->fold_index) {
+			const char *farch = NULL;
+			if (is_pool_col_field(ctx, expr, &farch) && strcmp(farch, ctx->fold_pool) == 0) {
+				/* A tuple-GROUP neighbour column (`Flock.pos`): pack each flattened sub-column (`pos_x`,`pos_y`)
+				 * loaded at the fold counter into a `{T,…}` value — the map's own `pos_x` binding shadows the
+				 * system's, so the neighbour MUST come from the pool at this counter, not from scope. */
+				HirArchetypeDecl *ad = find_archetype_decl(ctx, farch);
+				int lidx[8];
+				const char *lty[8];
+				int nlane = ad ? arch_tuple_group_lanes(ad, expr->data.field.field_name, lidx, lty, 8) : 0;
+				if (nlane > 0) {
+					int is_static = get_arch_static_capacity(ctx, farch) > 0;
+					char base[256];
+					emit_query_pool_ptr(ctx, farch, is_static, base, sizeof(base));
+					char aggty[256] = "{ ";
+					for (int l = 0; l < nlane; l++) {
+						size_t al = strlen(aggty);
+						snprintf(aggty + al, sizeof(aggty) - al, "%s%s", l ? ", " : "", lty[l]);
+					}
+					size_t al = strlen(aggty);
+					snprintf(aggty + al, sizeof(aggty) - al, " }");
+					char cur[256];
+					strcpy(cur, "undef");
+					for (int l = 0; l < nlane; l++) {
+						char *ep = gen_value_name(ctx);
+						if (is_static) {
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 %s\n", ep,
+							    farch, farch, base, lidx[l], ctx->fold_index);
+						} else {
+							char *gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  gep, farch, farch, base, lidx[l]);
+							char *colp = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", colp, lty[l], lty[l], gep);
+							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, lty[l], lty[l],
+							                  colp, ctx->fold_index);
+						}
+						char *lv = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", lv, lty[l], lty[l], ep);
+						char *ni = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, lty[l], lv, l);
+						strcpy(cur, ni);
+					}
+					strcpy(result_buf, cur);
+					break;
+				}
+				const char *sp = ctx->fold_pool, *si = ctx->fold_index;
+				ctx->fold_pool = NULL; /* resolve the column base without re-entering this hook */
+				ctx->fold_index = NULL;
+				char fcolptr[256], fcount[256];
+				const char *fty;
+				int ffl;
+				int ok = emit_collective_column(ctx, expr, fcolptr, fcount, &fty, &ffl);
+				ctx->fold_pool = sp;
+				ctx->fold_index = si;
+				if (ok) {
+					char *ep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, fty, fty, fcolptr, si);
+					char *v = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", v, fty, fty, ep);
+					strcpy(result_buf, v);
+					break;
+				}
+			}
+		}
+
 		/* Compile-time scalars from a monomorphized archetype-parametric proc.
 		 * Short-circuit before the normal field-access path. */
 		if (expr->data.field.base->kind == HIR_EXPR_NAME && expr->data.field.field_name) {
@@ -3990,6 +5319,23 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		 * (after a write) is `strlen()`. */
 		if (base_val && base_val->type == 7 && is_len_field) {
 			snprintf(result_buf, 256, "%d", base_val->string_len);
+			break;
+		}
+
+		/* Type-4 array column (`[N]T` query column, e.g. a `[64]char` `path`): `.length` is the column
+		 * width N — the declared per-row size, the same bound its indexing is checked against. */
+		if (base_val && base_val->type == 4 && is_len_field && expr->data.field.base->kind == HIR_EXPR_NAME) {
+			HirArchetypeDecl *la = base_val->arch_name ? find_archetype_decl(ctx, base_val->arch_name) : NULL;
+			const char *bn = expr->data.field.base->data.name.name;
+			int wn = 1;
+			if (la)
+				for (int fi = 0; fi < la->field_count; fi++)
+					if (la->fields[fi]->kind == FIELD_COLUMN && la->fields[fi]->name &&
+					    strcmp(la->fields[fi]->name, bn) == 0) {
+						wn = field_total_elements(la->fields[fi]->type);
+						break;
+					}
+			snprintf(result_buf, 256, "%d", wn);
 			break;
 		}
 
@@ -4321,38 +5667,18 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		} else if (shaped_elem) {
 			arche_type = shaped_elem;
 			scalar_type = llvm_type_from_arche(shaped_elem);
-		} else if (expr->data.index.base->kind == HIR_EXPR_FIELD &&
-		           expr->data.index.base->data.field.base->kind == HIR_EXPR_NAME) {
-			/* Archetype-column read `Arch.col[i]` (e.g. a singleton `Config.center_x[0]`): take the element
-			 * type straight from the archetype field decl. Without this `scalar_type` stays the i32 default,
-			 * so a FLOAT column was loaded as i32 (`%v = i32` fed into an `fsub float` → verifier error). */
-			const char *bn = expr->data.index.base->data.field.base->data.name.name;
-			HirArchetypeDecl *ad = find_archetype_decl(ctx, bn);
-			if (!ad) {
-				ValueInfo *iv = find_value(ctx, bn);
-				if (iv && iv->arch_name)
-					ad = find_archetype_decl(ctx, iv->arch_name);
-			}
-			if (!ad) {
-				/* `Query.col[i]` — resolve the query to its single matched pool for the column's type. */
-				const char *resolved = bn;
-				if (resolve_collective_query(ctx, bn, &resolved) == 1)
-					ad = find_archetype_decl(ctx, resolved);
-			}
-			const char *fn = expr->data.index.base->data.field.field_name;
-			if (ad) {
-				for (int i = 0; i < ad->field_count; i++) {
-					if (ad->fields[i]->kind == FIELD_COLUMN && strcmp(ad->fields[i]->name, fn) == 0) {
-						arche_type = field_base_type_name(ad->fields[i]->type);
-						scalar_type = llvm_type_from_arche(arche_type);
-						break;
-					}
-				}
-			}
-			if (!arche_type && expr->resolved.tag != HIR_TYPE_UNKNOWN) {
-				arche_type = hir_resolved_type_name(expr);
-				scalar_type = llvm_type_from_arche(arche_type);
-			}
+		} else if (indexed_col_arche_type(ctx, expr->data.index.base)) {
+			/* Archetype-column read `Arch.col[i]` (a singleton `Config.center_x[0]`, or a flattened tuple
+			 * sub-column `P.pos.x`→`pos_x`): take the element type straight from the archetype field decl.
+			 * Without this `scalar_type` stays the i32 default, so a FLOAT column was loaded as i32
+			 * (`%v = i32` fed into an `fsub float` → verifier error), and a bare `P.pos.x[i]` handed to
+			 * `printf("%f", …)` was passed as i32 rather than fpext'd to double. Stamp the expr's resolved
+			 * type so those downstream type-driven paths (vararg promotion, arithmetic) agree. */
+			arche_type = indexed_col_arche_type(ctx, expr->data.index.base);
+			scalar_type = llvm_type_from_arche(arche_type);
+			if (expr->resolved.tag == HIR_TYPE_UNKNOWN &&
+			    (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0))
+				expr->resolved.tag = HIR_TYPE_FLOAT;
 		} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 			arche_type = hir_resolved_type_name(expr);
 			scalar_type = llvm_type_from_arche(arche_type);
@@ -4382,6 +5708,34 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		emit_index_policy(ctx, expr->data.index.base, expr->data.index.indices[0],
 		                  expr->data.index.index_count > 0 && !shaped_elem, expr->data.index.policy_elided, type6_bound,
 		                  slice_len, expr->data.index.policy, final_idx_buf, &final_idx);
+
+		/* An ARRAY column `col[i]` (each row is `[N]T`) selects WITHIN the current row: the explicit index
+		 * is the within-row offset, but evaluating the base above SUPPRESSED the loop index to get the flat
+		 * column base (row 0). Re-add the binding fan's row offset (loop_idx * N) so each row reads its own
+		 * array — preferring the column's OWN binding-fan row (`loop_idx`, e.g. an outer-each column read
+		 * inside an inner fan) over the ambient loop. Scalar columns (`i` IS the row) skip this. */
+		if (!nested_slice_base && !shaped_elem && expr->data.index.base->kind == HIR_EXPR_NAME) {
+			ValueInfo *bvi = find_value(ctx, expr->data.index.base->data.name.name);
+			if (bvi && bvi->type == 4 && bvi->arch_name) {
+				HirArchetypeDecl *ba = find_archetype_decl(ctx, bvi->arch_name);
+				int wn = 0;
+				if (ba)
+					for (int fi = 0; fi < ba->field_count; fi++)
+						if (ba->fields[fi]->kind == FIELD_COLUMN && ba->fields[fi]->name &&
+						    strcmp(ba->fields[fi]->name, expr->data.index.base->data.name.name) == 0) {
+							wn = field_total_elements(ba->fields[fi]->type);
+							break;
+						}
+				const char *ridx = (bvi->loop_idx && bvi->loop_idx[0]) ? bvi->loop_idx : ctx->implicit_loop_index;
+				if (wn > 1 && ridx && ridx[0]) {
+					char *roff = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", roff, ridx, wn);
+					char *fidx = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = add i64 %s, %s\n", fidx, roff, final_idx);
+					final_idx = fidx;
+				}
+			}
+		}
 
 		char *res_name = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", res_name, scalar_type, scalar_type,
@@ -4474,6 +5828,23 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
+		/* `sqrt(x)` — float square root → LLVM's hardware sqrt intrinsic (one instruction), scalar or a
+		 * 4-lane vector blend in a vectorized map loop. Float in, float out. */
+		if (func_name && strcmp(func_name, "sqrt") == 0 && expr->data.call.arg_count == 1) {
+			char xb[256];
+			codegen_expression(ctx, expr->data.call.args[0], xb);
+			char *r = gen_value_name(ctx);
+			if (ctx->vector_lanes > 0) {
+				ctx->uses_sqrt_v4 = 1;
+				buffer_append_fmt(ctx, "  %s = call <4 x float> @llvm.sqrt.v4f32(<4 x float> %s)\n", r, xb);
+			} else {
+				ctx->uses_sqrt = 1;
+				buffer_append_fmt(ctx, "  %s = call float @llvm.sqrt.f32(float %s)\n", r, xb);
+			}
+			strcpy(result_buf, r);
+			break;
+		}
+
 		/* Collectives — whole-column ops over a monoid. `reduce` folds to a scalar (returned),
 		 * `scan` prefix-folds in place, `sort` sorts the pool by a key column. */
 		/* Each collective lowers to a ParOp and is emitted by the active backend (one uniform path,
@@ -4481,6 +5852,35 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		if (func_name && (strcmp(func_name, "reduce") == 0 || strcmp(func_name, "scan") == 0) &&
 		    expr->data.call.arg_count == 2) {
 			int is_scan = (func_name[0] == 's');
+			HirExpr *colarg = expr->data.call.args[1];
+			/* G8 — fold an enclosing columnar `system(Q)`'s bound column: `reduce(+, v)` where `v` is a bare
+			 * name bound to that system's queried column (a type-4 whole-column pointer). The bound name IS the
+			 * archetype's column name, so redirect to the equivalent `Pool.col` field and reuse the whole-column
+			 * fold below. Without this the bare name isn't a `Pool.col` field and falls to the expression-fold,
+			 * which finds no pool to fold over and yields the bare identity. */
+			HirExpr synth_base, synth_field;
+			if (colarg->kind == HIR_EXPR_NAME) {
+				ValueInfo *cv = find_value(ctx, colarg->data.name.name);
+				if (cv && cv->type == 4 && cv->arch_name) {
+					synth_base = (HirExpr){0};
+					synth_base.kind = HIR_EXPR_NAME;
+					synth_base.data.name.name = cv->arch_name;
+					synth_field = (HirExpr){0};
+					synth_field.kind = HIR_EXPR_FIELD;
+					synth_field.data.field.base = &synth_base;
+					synth_field.data.field.field_name = colarg->data.name.name;
+					synth_field.resolved = colarg->resolved;
+					if (is_pool_col_field(ctx, &synth_field, NULL))
+						colarg = &synth_field;
+				}
+			}
+			/* `reduce(op, <expr>)` where the 2nd arg is not a bare `Pool.col` column is the neighbor-reduction
+			 * / self-join: fold a per-pool-row expression to a scalar (CPU). A plain column keeps the existing
+			 * whole-column (SIMD) path below. */
+			if (!is_scan && !is_pool_col_field(ctx, colarg, NULL)) {
+				emit_fold_expr(ctx, colarg, collective_op_text(expr->data.call.args[0]), result_buf);
+				break;
+			}
 			ParOp pop = {0};
 			pop.kind = is_scan ? PAR_SCAN : PAR_REDUCE;
 			/* Backend = AUTO (CPU scalar/SIMD) by default. `ARCHE_REDUCE_CORES` is an EXPERIMENTAL toggle
@@ -4489,7 +5889,7 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			 * not faster than the single-thread SIMD reduce (the win needs compute-bound/fused kernels).
 			 * A per-op `@cores`/`@gpu` surface is the eventual replacement for this toggle. */
 			pop.target = (!is_scan && getenv("ARCHE_REDUCE_CORES")) ? SCHED_CORES : SCHED_AUTO;
-			pop.col = expr->data.call.args[1];
+			pop.col = colarg;
 			pop.monoid.op = collective_op_text(expr->data.call.args[0]);
 			pop.monoid.associative = pop.monoid.commutative = 1;
 			const Backend *be = select_backend(pop.target);
@@ -4568,6 +5968,27 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			}
 		}
 
+		/* `@intrinsic` pure FFI primitive `mem.bound(p: rawptr, n) -> []char`: the single audited door from a
+		 * foreign address to memory. Emit `inttoptr` on the i64 address + build a checked `{ i8*, i64 }` slice
+		 * aggregate (same shape any slice-returning func yields), so all downstream binding/finalizer paths
+		 * treat it like an ordinary slice call. Recognized by the resolved callee's `@intrinsic` flag. */
+		HirFuncDecl *intrinsic_fn = func_name ? find_func_decl(ctx, func_name) : NULL;
+		if (intrinsic_fn && intrinsic_fn->is_intrinsic && expr->data.call.arg_count == 2) {
+			char addr_raw[256], len_raw[256], addr64[256], len64[256];
+			codegen_expression(ctx, expr->data.call.args[0], addr_raw); /* i64 address (rawptr) */
+			codegen_expression(ctx, expr->data.call.args[1], len_raw);  /* i64 length */
+			emit_index_i64(ctx, addr_raw, expr->data.call.args[0], addr64);
+			emit_index_i64(ctx, len_raw, expr->data.call.args[1], len64);
+			char *p = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = inttoptr i64 %s to i8*\n", p, addr64);
+			char *a1 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = insertvalue { i8*, i64 } undef, i8* %s, 0\n", a1, p);
+			char *a2 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = insertvalue { i8*, i64 } %s, i64 %s, 1\n", a2, a1, len64);
+			strcpy(result_buf, a2);
+			break;
+		}
+
 		/* Raw Linux/x86-64 syscall intrinsic: syscall(n, a0..a5) -> i64.
 		 * Emits the `syscall` instruction directly (no libc, no C shim): number in
 		 * rax, args in rdi/rsi/rdx/r10/r8/r9, result in rax; rcx/r11/memory clobbered.
@@ -4577,52 +5998,36 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		HirProcDecl *intrinsic_decl =
 		    (func_name && expr->data.call.arg_count == 7) ? find_proc_decl(ctx, func_name) : NULL;
 		if (intrinsic_decl && intrinsic_decl->is_intrinsic) {
+			/* Generic `@intrinsic syscall(n, a0..a5)`: arg 0 is the number, args 1..6 the operands. A buffer
+			 * arg decays to a `ptrtoint`'d data pointer (handles a func→Eff fused with a move/literal/slice
+			 * buffer). NOTE: this generic form takes buffers as opaque i64s — a syscall that WRITES a buffer
+			 * should instead be a typed `@syscall(N)` extern declaring that buffer in-out (handled below). */
 			char a[7][256];
-			for (int i = 0; i < 7; i++) {
-				char ab[256];
-				codegen_expression(ctx, expr->data.call.args[i], ab);
-				HirType *rt = &expr->data.call.args[i]->resolved;
-				/* A buffer arg decays to its data pointer (like C): extract the i8* and `ptrtoint`
-				 * it to i64 so a buffer can be handed to a raw syscall. The arg's LLVM repr is
-				 * known from its ValueInfo type: 7 = [N x i8]* (local char buffer), 2 = i8*
-				 * (string), 6 = i8* (char[] param, data ptr pre-extracted at entry). */
-				ValueInfo *avi = (expr->data.call.args[i]->kind == HIR_EXPR_NAME)
-				                     ? find_value(ctx, expr->data.call.args[i]->data.name.name)
-				                     : NULL;
-				if (avi && (avi->type == 7 || avi->type == 2 || avi->type == 6)) {
-					char dptr[256];
-					if (avi->type == 7) {
-						char *b = gen_value_name(ctx);
-						buffer_append_fmt(ctx, "  %s = bitcast [%d x i8]* %s to i8*\n", b, avi->string_len, ab);
-						strcpy(dptr, b);
-					} else {
-						strcpy(dptr, ab); /* type 2: already i8* */
-					}
-					char *pi = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = ptrtoint i8* %s to i64\n", pi, dptr);
-					strcpy(a[i], pi);
-					continue;
-				}
-				if (rt->tag == HIR_TYPE_INT && rt->int_width == 64) {
-					strcpy(a[i], ab);
-				} else if (rt->tag == HIR_TYPE_INT) {
-					emit_int_convert(ctx, ab, rt, 64, a[i]);
-				} else if (rt->tag == HIR_TYPE_OPAQUE || rt->tag == HIR_TYPE_HANDLE) {
-					strcpy(a[i], ab); /* opaque cell / handle is already pointer-width i64 */
-				} else {
-					HirType t32 = {0};
-					t32.tag = HIR_TYPE_INT;
-					t32.int_width = 32;
-					t32.int_signed = 1;
-					emit_int_convert(ctx, ab, &t32, 64, a[i]);
-				}
+			for (int i = 0; i < 7; i++)
+				coerce_syscall_arg(ctx, expr->data.call.args[i], a[i], 0 /* scalars only */);
+			char res[256];
+			emit_syscall_asm(ctx, a, res);
+			strcpy(result_buf, res);
+			break;
+		}
+
+		/* Typed direct syscall `@syscall(N)`: emit the syscall asm with N as the number and the call's
+		 * in-args as a0.. (buffers `ptrtoint`'d, same coercion). The result is the scalar return; a buffer
+		 * the kernel writes is an in-out out-param, surfaced at the run-site by the 0c aliasing (so the
+		 * write is honest — declared, not scribbled through a read-only borrow). */
+		HirProcDecl *sys_decl = func_name ? find_proc_decl(ctx, func_name) : NULL;
+		if (sys_decl && sys_decl->syscall_num >= 0) {
+			char a[7][256];
+			snprintf(a[0], sizeof(a[0]), "%d", sys_decl->syscall_num);
+			int na = expr->data.call.arg_count;
+			for (int i = 0; i < 6; i++) {
+				if (i < na)
+					coerce_syscall_arg(ctx, expr->data.call.args[i], a[i + 1], 1 /* typed: buffers OK */);
+				else
+					strcpy(a[i + 1], "0"); /* unused syscall arg regs are zero */
 			}
-			char *res = gen_value_name(ctx);
-			buffer_append_fmt(ctx,
-			                  "  %s = call i64 asm sideeffect \"syscall\", "
-			                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
-			                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
-			                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+			char res[256];
+			emit_syscall_asm(ctx, a, res);
 			strcpy(result_buf, res);
 			break;
 		}
@@ -4880,6 +6285,31 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 					continue;
 				}
 			}
+			/* A call returning a `[]T` slice used directly as an arg (e.g. `%s` on `mime_by_ext(p)`):
+			 * unpack its (ptr, len) so it passes the element pointer, not the whole `{ptr,i64}` struct
+			 * (which lands as a wrong-typed vararg → a `{ptr,i64}` value in an i32 slot). */
+			if (inner->kind == HIR_EXPR_CALL) {
+				char sp[256], sl[256];
+				const char *se = NULL;
+				if (codegen_eval_slice(ctx, inner, sp, sl, &se)) {
+					const char *el = llvm_type_from_arche(se ? se : "char");
+					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+					vi->name = strdup("");
+					vi->llvm_name = strdup(sp);
+					vi->type = 6;
+					vi->is_slice = 1;
+					vi->len_ssa = strdup(sl);
+					vi->field_type = se;
+					vi->string_len = -1;
+					vi->bit_width = strcmp(el, "double") == 0 ? 64
+					                : strcmp(el, "i8") == 0   ? 8
+					                : strcmp(el, "i64") == 0  ? 64
+					                                          : 32;
+					arg_slice_vi[i] = vi;
+					strcpy(arg_bufs[i], sp);
+					continue;
+				}
+			}
 			codegen_expression(ctx, expr->data.call.args[i], arg_bufs[i]);
 		}
 
@@ -4998,6 +6428,85 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			int callee_wants_slice = callee_pt && callee_pt->tag == HIR_TYPE_ARRAY && !callee_is_extern;
 			if (callee_pt && callee_pt->tag == HIR_TYPE_SHAPED_ARRAY)
 				callee_wants_shaped_arr = 1;
+			/* An EXTERN (C ABI) `[]T` param takes a BARE element pointer (no fat-pointer len). An array pool
+			 * column (`framebuffer :: [W*H]int` passed to `gfx_be_present(px: []int)`) must decay to that
+			 * pointer with the element-typed `T*` — same as a shaped/slice arg, but without the trailing len. */
+			int callee_wants_extern_ptr = callee_is_extern && callee_pt &&
+			                              (callee_pt->tag == HIR_TYPE_ARRAY || callee_pt->tag == HIR_TYPE_SHAPED_ARRAY);
+
+			/* A tuple-typed param (`func(a: pos)`): pass a `{T,…}` aggregate by value. If the arg is already a
+			 * tuple VALUE (a name/literal/call result), `arg_bufs[i]` is the aggregate SSA. If it is a tuple
+			 * GROUP COLUMN name (`pos`, flattened to `pos_x`/`pos_y` and never bound as one value), pack the
+			 * per-member column reads at the current row into the aggregate here. */
+			if (callee_pt && callee_pt->tag == HIR_TYPE_TUPLE) {
+				char aggty[256];
+				tuple_llvm_type(callee_pt, aggty, sizeof(aggty));
+				call_arg_types[i] = cg_strdup(aggty);
+				if (codegen_tuple_type_of(ctx, expr->data.call.args[i])) {
+					strcpy(call_arg_vals[i], arg_bufs[i]); /* arg already a tuple aggregate */
+				} else if (expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
+					const char *gname = expr->data.call.args[i]->data.name.name;
+					char cur[256];
+					strcpy(cur, "undef");
+					for (int f = 0; f < callee_pt->field_count; f++) {
+						char sub[160];
+						snprintf(sub, sizeof(sub), "%s_%s", gname, callee_pt->fields[f].name);
+						HirExpr nm = {0};
+						nm.kind = HIR_EXPR_NAME;
+						nm.data.name.name = sub;
+						char sb[256];
+						codegen_expression(ctx, &nm, sb);
+						const char *mt = llvm_type_from_arche(field_base_type_name(callee_pt->fields[f].type));
+						char *ni = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, mt, sb, f);
+						strcpy(cur, ni);
+					}
+					strcpy(call_arg_vals[i], cur);
+				} else {
+					strcpy(call_arg_vals[i], arg_bufs[i]);
+				}
+				continue;
+			}
+
+			/* An ARRAY column (`[N]T`) passed to a callee param: `arg_bufs[i]` already holds the row's
+			 * element pointer (the auto-indexed array-column read). A non-extern `T[]` param is a (ptr,len)
+			 * slice — pass the column width N as the length (so e.g. `str.strlen(s)` sees the whole row, not
+			 * a ptr with a zero length); a shaped/extern param takes the bare pointer. */
+			if ((callee_wants_slice || callee_wants_shaped_arr || callee_wants_extern_ptr) &&
+			    expr->data.call.args[i]->kind == HIR_EXPR_NAME) {
+				ValueInfo *avi = find_value(ctx, expr->data.call.args[i]->data.name.name);
+				if (avi && avi->type == 4 && avi->arch_name) {
+					HirArchetypeDecl *aa = find_archetype_decl(ctx, avi->arch_name);
+					const char *cn = expr->data.call.args[i]->data.name.name;
+					int wn = 0;
+					const char *eb = "char";
+					if (aa)
+						for (int fi = 0; fi < aa->field_count; fi++)
+							if (aa->fields[fi]->kind == FIELD_COLUMN && aa->fields[fi]->name &&
+							    strcmp(aa->fields[fi]->name, cn) == 0) {
+								wn = field_total_elements(aa->fields[fi]->type);
+								eb = field_base_type_name(aa->fields[fi]->type);
+								break;
+							}
+					if (wn > 1) {
+						const char *llt = llvm_type_from_arche(eb);
+						strcpy(call_arg_vals[i], arg_bufs[i]);
+						if (strcmp(llt, "i32") == 0)
+							call_arg_types[i] = "i32*";
+						else if (strcmp(llt, "i64") == 0)
+							call_arg_types[i] = "i64*";
+						else if (strcmp(llt, "float") == 0)
+							call_arg_types[i] = "float*";
+						else
+							call_arg_types[i] = "i8*";
+						if (callee_wants_slice) {
+							call_arg_len[i] = malloc(32);
+							snprintf(call_arg_len[i], 32, "%d", wn);
+						}
+						continue;
+					}
+				}
+			}
 
 			/* A matrix-const ROW `M[i]` decays to a slice: arg_bufs[i] already holds the row
 			 * element-pointer (`@M + i*stride`); the row width (stride) is the carried length. This
@@ -5741,7 +7250,11 @@ static int resolve_index_arch(CodegenContext *ctx, HirExpr *base_expr, HirExpr *
 			if (arch) {
 				static char arch_ptr_buf[256];
 				*out_arch_name = vi->arch_name;
-				snprintf(arch_ptr_buf, 256, "%%arch_%s", vi->arch_name);
+				/* Resolve to the pool's GLOBAL: a static pool's `@<name>` is the same storage a `map`
+				 * gets as its `%arch_<name>` parameter, and an `each`/fan only has the global — so the
+				 * global is correct in both. (The old `%arch_<name>` was an undefined value inside a fan.) */
+				emit_query_pool_ptr(ctx, vi->arch_name, get_arch_static_capacity(ctx, vi->arch_name) > 0, arch_ptr_buf,
+				                    sizeof(arch_ptr_buf));
 				*out_arch_ptr = arch_ptr_buf;
 				*out_count_idx = arch->field_count;
 			}
@@ -5872,9 +7385,29 @@ static void emit_index_policy(CodegenContext *ctx, HirExpr *base, HirExpr *idx_e
 		return; /* `elided` = the bounds prover proved this in-bounds (SemModel verdict) → no policy */
 	/* The base length as an i32 (`int`, matching the policy signature). One of: a fixed `T[N]`'s N, a
 	 * pool column's live count, or a slice's runtime .len. */
+	/* An ARRAY column (`[N]T`) indexed `col[i]` is the CURRENT ROW's i-th element — its bound is the
+	 * column width N, NOT the pool row count (which bounds a SCALAR column's row index). */
+	int arr_w = 0;
+	if (base->kind == HIR_EXPR_NAME) {
+		ValueInfo *bvi = find_value(ctx, base->data.name.name);
+		if (bvi && bvi->type == 4 && bvi->arch_name) {
+			HirArchetypeDecl *ba = find_archetype_decl(ctx, bvi->arch_name);
+			if (ba)
+				for (int fi = 0; fi < ba->field_count; fi++)
+					if (ba->fields[fi]->kind == FIELD_COLUMN && ba->fields[fi]->name &&
+					    strcmp(ba->fields[fi]->name, base->data.name.name) == 0) {
+						int w = field_total_elements(ba->fields[fi]->type);
+						if (w > 1)
+							arr_w = w;
+						break;
+					}
+		}
+	}
 	char len_i32[256] = "";
 	if (type6_bound > 0) {
 		snprintf(len_i32, sizeof len_i32, "%d", type6_bound);
+	} else if (arr_w > 0) {
+		snprintf(len_i32, sizeof len_i32, "%d", arr_w);
 	} else {
 		const char *an = NULL, *ap = NULL;
 		int ci = -1, ii = 0;
@@ -6021,6 +7554,230 @@ static const char *float_promote_operand(CodegenContext *ctx, const HirExpr *rhs
 	return buf;
 }
 
+/* strdup without relying on POSIX `strdup` under -std=c99 -Werror. */
+static char *cg_strdup(const char *s) {
+	if (!s)
+		return NULL;
+	size_t n = strlen(s) + 1;
+	char *d = malloc(n);
+	if (d)
+		memcpy(d, s, n);
+	return d;
+}
+
+/* Emit ONE column assignment `col_ptr[idx] (op)= rhs` at the current implicit loop index. The caller has
+ * already set ctx->implicit_loop_index = idx and ctx->vector_lanes (0 = scalar, 4 = AVX). Shared by the
+ * fused multi-statement loop (flush_map_batch); mirrors the per-statement body of emit_whole_column_loop. */
+static void emit_column_assign_body(CodegenContext *ctx, const char *col_ptr, const char *scalar_type,
+                                    const char *arche_type, HirExpr *rhs, int op, const char *idx) {
+	int col_is_float = strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0;
+	int col_unsigned = arche_type[0] == 'u';
+	int vec = ctx->vector_lanes > 0;
+
+	char rhs_buf[256];
+	codegen_expression(ctx, rhs, rhs_buf);
+
+	char compute_result[256];
+	strcpy(compute_result, rhs_buf);
+	if (op != OP_NONE) {
+		char *loaded = gen_value_name(ctx);
+		char *gep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, scalar_type, scalar_type, col_ptr,
+		                  idx);
+		const char *load_type = vec ? elem_llvm_type(ctx, arche_type) : scalar_type;
+		const char *load_src = gep;
+		if (vec) {
+			char *vec_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, gep, load_type);
+			load_src = vec_ptr;
+		}
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, load_type, load_src,
+		                  vec ? 8 : 4);
+		const char *op_str;
+		switch (op) {
+		case OP_ADD:
+			op_str = col_is_float ? "fadd" : "add";
+			break;
+		case OP_SUB:
+			op_str = col_is_float ? "fsub" : "sub";
+			break;
+		case OP_MUL:
+			op_str = col_is_float ? "fmul" : "mul";
+			break;
+		case OP_DIV:
+			op_str = col_is_float ? "fdiv" : (col_unsigned ? "udiv" : "sdiv");
+			break;
+		case OP_MOD:
+			op_str = col_is_float ? "frem" : (col_unsigned ? "urem" : "srem");
+			break;
+		default:
+			op_str = col_is_float ? "fadd" : "add";
+			break;
+		}
+		char *op_result = gen_value_name(ctx);
+		char rhs_promo[256];
+		const char *rhs_op =
+		    col_is_float ? float_promote_operand(ctx, rhs, rhs_buf, rhs_promo, sizeof(rhs_promo)) : rhs_buf;
+		if (!col_is_float && (op == OP_DIV || op == OP_MOD))
+			emit_int_divmod(ctx, op_str, load_type, loaded, rhs_buf, NULL, op_result);
+		else
+			buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", op_result, op_str, load_type, loaded, rhs_op);
+		strcpy(compute_result, op_result);
+	}
+
+	char *target_gep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", target_gep, scalar_type, scalar_type, col_ptr,
+	                  idx);
+	if (op == OP_NONE && scalar_type[0] == 'i') {
+		char coerced[256];
+		emit_int_convert(ctx, compute_result, &rhs->resolved, atoi(scalar_type + 1), coerced);
+		strcpy(compute_result, coerced);
+	}
+	if (vec) {
+		const char *vec_type = elem_llvm_type(ctx, arche_type);
+		char *vec_ptr = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = bitcast %s* %s to %s*\n", vec_ptr, scalar_type, target_gep, vec_type);
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 8\n", vec_type, compute_result, vec_type, vec_ptr);
+	} else {
+		buffer_append_fmt(ctx, "  store %s %s, %s* %s, align 4\n", scalar_type, compute_result, scalar_type,
+		                  target_gep);
+	}
+}
+
+/* Emit ONE fused loop running every recorded column assignment per element (intermediates stay in
+ * registers) — the zero-cost-abstraction fix: a multi-statement map/whole-column body compiles to a
+ * single pass over the rows instead of one full-column sweep per statement. */
+static void flush_map_batch(CodegenContext *ctx) {
+	int n = ctx->map_batch_count;
+	if (n <= 0) {
+		ctx->map_batch_count = 0;
+		return;
+	}
+	MapBatchItem *items = ctx->map_batch_items;
+	const char *count = items[0].count; /* same archetype ⇒ same count for every item */
+
+	/* Vectorize the whole group only if EVERY item is a float column with no scalar-forcing RHS. */
+	int vectorize = 1;
+	for (int i = 0; i < n; i++) {
+		const char *at = items[i].arche_type;
+		int is_f = strcmp(at, "float") == 0 || strcmp(at, "double") == 0;
+		if (!is_f || rhs_forces_scalar(ctx, items[i].rhs)) {
+			vectorize = 0;
+			break;
+		}
+	}
+
+	for (int i = 0; i < n; i++)
+		if (items[i].struct_ptr)
+			hoist_column_geps(ctx, items[i].rhs, items[i].struct_ptr);
+
+	char *count_aligned = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = and i64 %s, -4\n", count_aligned, count);
+
+	char *v_ctr_alloca = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", v_ctr_alloca);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", v_ctr_alloca);
+
+	char vloop[40], vbody[40], ssetup[40], scheck[40], sbody[40], done[40];
+	snprintf(vloop, sizeof(vloop), "fmap_vloop_%d", ctx->value_counter++);
+	snprintf(vbody, sizeof(vbody), "fmap_vbody_%d", ctx->value_counter++);
+	snprintf(ssetup, sizeof(ssetup), "fmap_ssetup_%d", ctx->value_counter++);
+	snprintf(scheck, sizeof(scheck), "fmap_scheck_%d", ctx->value_counter++);
+	snprintf(sbody, sizeof(sbody), "fmap_sbody_%d", ctx->value_counter++);
+	snprintf(done, sizeof(done), "fmap_done_%d", ctx->value_counter++);
+
+	/* Vector (or unit-stride scalar) loop over the aligned prefix. */
+	buffer_append_fmt(ctx, "  br label %%%s\n\n%s:\n", vloop, vloop);
+	char *vi = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", vi, v_ctr_alloca);
+	char *vcond = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", vcond, vi, count_aligned);
+	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n%s:\n", vcond, vbody, ssetup, vbody);
+	ctx->vector_lanes = vectorize ? 4 : 0;
+	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", vi);
+	for (int i = 0; i < n; i++)
+		emit_column_assign_body(ctx, items[i].col_ptr, items[i].scalar_type, items[i].arche_type, items[i].rhs,
+		                        items[i].op, vi);
+	char *vi_new = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, %d\n", vi_new, vi, vectorize ? 4 : 1);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", vi_new, v_ctr_alloca);
+	buffer_append_fmt(ctx, "  br label %%%s\n\n", vloop);
+
+	/* Scalar tail over the remaining `count & 3` elements. */
+	buffer_append_fmt(ctx, "%s:\n", ssetup);
+	char *s_ctr_alloca = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", s_ctr_alloca);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", count_aligned, s_ctr_alloca);
+	buffer_append_fmt(ctx, "  br label %%%s\n\n%s:\n", scheck, scheck);
+	char *si = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", si, s_ctr_alloca);
+	char *scond = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", scond, si, count);
+	buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n\n%s:\n", scond, sbody, done, sbody);
+	ctx->vector_lanes = 0;
+	snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", si);
+	for (int i = 0; i < n; i++)
+		emit_column_assign_body(ctx, items[i].col_ptr, items[i].scalar_type, items[i].arche_type, items[i].rhs,
+		                        items[i].op, si);
+	char *si_new = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", si_new, si);
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", si_new, s_ctr_alloca);
+	buffer_append_fmt(ctx, "  br label %%%s\n\n%s:\n", scheck, done);
+
+	ctx->implicit_loop_index[0] = '\0';
+	ctx->vector_lanes = 0;
+	for (int i = 0; i < n; i++) {
+		free(items[i].col_ptr);
+		free(items[i].count);
+		free(items[i].scalar_type);
+		free(items[i].arche_type);
+		free(items[i].struct_ptr);
+	}
+	ctx->map_batch_count = 0;
+}
+
+/* True if a body statement is a whole-column assignment (Path A field-column or Path B map-param column) —
+ * the statements that funnel through emit_whole_column_loop and are therefore fusable. */
+static int stmt_targets_column(CodegenContext *ctx, HirStmt *stmt) {
+	if (stmt->kind != HIR_STMT_ASSIGN)
+		return 0;
+	HirExpr *t = stmt->data.assign_stmt.target;
+	if (t->kind == HIR_EXPR_FIELD)
+		return 1;
+	if (t->kind == HIR_EXPR_NAME) {
+		ValueInfo *v = find_value(ctx, t->data.name.name);
+		return v && v->type == 4; /* type 4 = column pointer (map parameter) */
+	}
+	return 0;
+}
+
+/* Walk a map/system body, fusing consecutive top-level whole-column assignments into ONE loop while
+ * emitting everything else (effects, control flow) normally. Batching is suspended around non-column
+ * statements so a column op nested in a for/if still emits its own loop in place. Enabled only when there
+ * is no active implicit index (whole-column multi-row context — never a `[1]` singleton driver, which
+ * assigns at a fixed index 0 rather than through the loop emitter). */
+static void codegen_body_fused(CodegenContext *ctx, HirStmt **stmts, int n) {
+	int can_batch = (ctx->implicit_loop_index[0] == '\0');
+	if (can_batch) {
+		ctx->map_batch_active = 1;
+		ctx->map_batch_count = 0;
+	}
+	for (int s = 0; s < n; s++) {
+		if (can_batch && !stmt_targets_column(ctx, stmts[s])) {
+			flush_map_batch(ctx); /* preserve order: emit pending fused loop before this statement */
+			ctx->map_batch_active = 0;
+			codegen_statement(ctx, stmts[s]);
+			ctx->map_batch_active = 1;
+		} else {
+			codegen_statement(ctx, stmts[s]);
+		}
+	}
+	if (can_batch) {
+		flush_map_batch(ctx);
+		ctx->map_batch_active = 0;
+	}
+}
+
 static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* SSA reg: scalar* column data */
                                    const char *count,                        /* SSA reg: i64 element count */
                                    const char *scalar_type,                  /* "double" or "i32" */
@@ -6029,6 +7786,22 @@ static void emit_whole_column_loop(CodegenContext *ctx, const char *col_ptr, /* 
                                    int op,                     /* OP_NONE = store, others = load+op+store */
                                    const char *struct_ptr_val) /* struct pointer for hoisting */
 {
+	/* Fusion: inside a map/whole-column body, RECORD this assignment instead of emitting its own loop;
+	 * flush_map_batch later emits ONE loop for the whole run. */
+	if (ctx->map_batch_active) {
+		if (ctx->map_batch_count >= MAP_BATCH_MAX)
+			flush_map_batch(ctx);
+		MapBatchItem *it = &ctx->map_batch_items[ctx->map_batch_count++];
+		it->col_ptr = cg_strdup(col_ptr);
+		it->count = cg_strdup(count);
+		it->scalar_type = cg_strdup(scalar_type);
+		it->arche_type = cg_strdup(arche_type);
+		it->struct_ptr = cg_strdup(struct_ptr_val);
+		it->rhs = rhs;
+		it->op = op;
+		return;
+	}
+
 	/* Hoist column base GEPs before loop to avoid recalculating them */
 	if (struct_ptr_val) {
 		hoist_column_geps(ctx, rhs, struct_ptr_val);
@@ -6541,6 +8314,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		const char *var_name = stmt->data.bind_stmt.names[0];
 		char value_buf[256];
 
+		/* `s := <tuple-valued expr>` — bind `s` as a type-8 `{T,…}` aggregate SSA (not an alloca'd scalar), so a
+		 * later `s.x` extracts the member. Covers a call returning a tuple, a tuple literal, or tuple arithmetic. */
+		if (stmt->data.bind_stmt.value) {
+			const HirType *btt = codegen_tuple_type_of(ctx, stmt->data.bind_stmt.value);
+			if (btt) {
+				codegen_expression(ctx, stmt->data.bind_stmt.value, value_buf);
+				add_tuple_value(ctx, var_name, value_buf, btt);
+				break;
+			}
+		}
+
 		/* `e := B{…}` — an entity binding is virtual (no runtime value); record name→entity so a later
 		 * `insert(e)` resolves to the same literal. Emit no code. */
 		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_ENTITY_LIT) {
@@ -6548,6 +8332,56 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				ctx->entity_binds[ctx->entity_bind_count].name = var_name;
 				ctx->entity_binds[ctx->entity_bind_count].entity = stmt->data.bind_stmt.value;
 				ctx->entity_bind_count++;
+			}
+			break;
+		}
+
+		/* `b: [N]T = {e0, e1, …}` — a typed sized-array bind with an array-literal init (non-char T):
+		 * allocate `[N x T]`, scatter each element with the DECLARED element type, bind a type-6 element
+		 * pointer. Without this the literal is misclassified as a char string (`is_string` below) and built
+		 * as a `[N x i8]` global — truncating/garbling a non-char `[N]i64`. Char arrays keep the string path.
+		 * Mirrors the no-init shaped-array decl + the local sized-array scatter in HIR_STMT_ASSIGN. */
+		if (stmt->data.bind_stmt.type && stmt->data.bind_stmt.value &&
+		    stmt->data.bind_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL &&
+		    stmt->data.bind_stmt.type->tag == HIR_TYPE_SHAPED_ARRAY &&
+		    strcmp(field_base_type_name(stmt->data.bind_stmt.type), "char") != 0) {
+			HirType *aty = stmt->data.bind_stmt.type;
+			int rank = aty->rank;
+			const char *en = field_base_type_name(aty);
+			const char *lt = llvm_type_from_arche(en);
+			int col_is_float = strcmp(en, "float") == 0 || strcmp(en, "double") == 0;
+			char *alloca_name = gen_value_name(ctx);
+			emit_alloca(ctx, "  %s = alloca [%d x %s]\n", alloca_name, rank, lt);
+			char *elem0 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr [%d x %s], [%d x %s]* %s, i64 0, i64 0\n", elem0, rank, lt,
+			                  rank, lt, alloca_name);
+			HirExpr **elems = stmt->data.bind_stmt.value->data.array_literal.elements;
+			int n = stmt->data.bind_stmt.value->data.array_literal.element_count;
+			if (n > rank)
+				n = rank;
+			for (int i = 0; i < n; i++) {
+				char ebuf[256];
+				codegen_expression(ctx, elems[i], ebuf);
+				char promo[256];
+				const char *ev = col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+				char *gep = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, lt, lt, elem0, i);
+				buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lt, ev, lt, gep);
+			}
+			ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+			vi->name = malloc(strlen(var_name) + 1);
+			strcpy(vi->name, var_name);
+			vi->llvm_name = malloc(strlen(elem0) + 1);
+			strcpy(vi->llvm_name, elem0);
+			vi->type = 6;
+			vi->arch_name = NULL;
+			vi->string_len = rank;
+			vi->field_type = en;
+			vi->bit_width = strcmp(lt, "double") == 0 ? 64 : (strcmp(lt, "i8") == 0 ? 8 : 32);
+			if (ctx->scope_count > 0) {
+				ValueScope *scope = &ctx->scopes[ctx->scope_count - 1];
+				scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
+				scope->values[scope->value_count++] = vi;
 			}
 			break;
 		}
@@ -6671,13 +8505,19 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				is_multidim_slice = 1;
 		}
 
-		/* `ys := buf[lo:hi]` — bind a read-only slice view: register a type-6 slice (ptr + runtime
-		 * length) so `ys[i]` / `ys.length` work; no copy. */
-		if (stmt->data.bind_stmt.value && stmt->data.bind_stmt.value->kind == HIR_EXPR_SLICE) {
+		/* `ys := buf[lo:hi]` — bind a slice view (type-6 ptr + runtime length) so `ys[i]` / `ys.length` work;
+		 * no copy. `ys := move buf[lo:hi]` is the SAME binding — `move` transfers ownership (the source is
+		 * consumed, tracked in semantic), but the value is still a slice, so look THROUGH the `move` wrapper.
+		 * (The bug: a `move`-wrapped slice fell to the scalar path, storing the ptr as an `i32`.) */
+		HirExpr *slice_val = stmt->data.bind_stmt.value;
+		if (slice_val && slice_val->kind == HIR_EXPR_UNARY && slice_val->data.unary.op == UNARY_MOVE &&
+		    slice_val->data.unary.operand && slice_val->data.unary.operand->kind == HIR_EXPR_SLICE)
+			slice_val = slice_val->data.unary.operand;
+		if (slice_val && slice_val->kind == HIR_EXPR_SLICE) {
 			char sp[256], sl[256];
 			const char *se;
 			int sw;
-			if (codegen_slice(ctx, stmt->data.bind_stmt.value, sp, sl, &se, &sw)) {
+			if (codegen_slice(ctx, slice_val, sp, sl, &se, &sw)) {
 				ValueInfo *vi = calloc(1, sizeof(ValueInfo));
 				vi->name = malloc(strlen(var_name) + 1);
 				strcpy(vi->name, var_name);
@@ -7111,6 +8951,338 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		HirFuncDecl *callee_func = fn ? find_func_decl(ctx, fn) : NULL;
 		HirProcDecl *callee_proc = (!callee_func && fn) ? find_proc_decl(ctx, fn) : NULL;
 
+		/* Eff FUSION (the keystone): a func-returning-Eff callee with out-args is an effect RUN. Inline the
+		 * builder to recover the underlying extern + args, then let the extern out-param path below emit it
+		 * directly — `wb(1,s)(n:)` fuses to `fwr(1,s)(n:)`, the build func never called. (A direct
+		 * under-applied extern `fwr(1,s)(n:)` needs no fusion — it is already an extern call.) */
+		HirExpr *eff_inlined = NULL;
+		HirExpr *eff_prefix = NULL;  /* a leading `seq` effect to run before the main one, or NULL */
+		HirFuncDecl *eff_fin = NULL; /* the `|>` finalizer applied to the extern's raw out-slot, or NULL */
+		if (callee_func && callee_func->return_type_count > 0 && callee_func->return_types[0] &&
+		    callee_func->return_types[0]->tag == HIR_TYPE_EFF && rhs && rhs->kind == HIR_EXPR_CALL) {
+			HirProcDecl *eff_ext = NULL, *eff_prefix_proc = NULL;
+			HirExpr *zip_calls[16];
+			HirProcDecl *zip_procs[16];
+			int zip_count = 0;
+			HirExpr *select_cond = NULL;
+			eff_inlined =
+			    eff_inline_build(ctx, callee_func, rhs->data.call.args, rhs->data.call.arg_count, &eff_ext, &eff_fin,
+			                     &eff_prefix, &eff_prefix_proc, zip_calls, zip_procs, &zip_count, &select_cond);
+			/* Emit the builder's input-build PRELUDE. A func→Eff builder may construct a caller-built INPUT
+			 * buffer the extern READS (e.g. `os.sleep_ms`'s `req` timespec: `req[0] = …; req[1] = …`) via
+			 * statements BEFORE the terminal `return <eff>`. The fusion recovers only the return's extern, so
+			 * those statements — which build the locals the fused extern references by name — must be emitted
+			 * here, with the builder's params bound to the actual args, or the extern reads an uninitialized
+			 * buffer (a NULL/garbage timespec → a no-op sleep). A builder that is only `return <eff>` has no
+			 * prelude (ret_idx == 0) and this is a no-op. (flat-effect-model §4 case 3.) */
+			if (eff_inlined && callee_func) {
+				int ret_idx = -1;
+				for (int si = 0; si < callee_func->stmt_count; si++)
+					if (callee_func->stmts[si] && callee_func->stmts[si]->kind == HIR_STMT_RETURN) {
+						ret_idx = si;
+						break;
+					}
+				if (ret_idx > 0) {
+					for (int pi = 0; pi < callee_func->param_count && pi < rhs->data.call.arg_count; pi++) {
+						char av[256];
+						codegen_expression(ctx, rhs->data.call.args[pi], av);
+						HirType *pt = callee_func->params[pi]->type;
+						/* Coerce the actual arg to the param's scalar width — the call-boundary coercion the
+						 * fusion otherwise skips (e.g. `sleep_ms(DT - work)`: an i64 arg into an `int` param). */
+						if (!pt || pt->tag == HIR_TYPE_INT) {
+							int pw = (pt && pt->tag == HIR_TYPE_INT && pt->int_width) ? pt->int_width : 32;
+							char cav[256];
+							emit_int_convert(ctx, av, &rhs->data.call.args[pi]->resolved, pw, cav);
+							add_value(ctx, callee_func->params[pi]->name, cav, 0);
+						} else {
+							add_value(ctx, callee_func->params[pi]->name, av, 0);
+						}
+					}
+					for (int si = 0; si < ret_idx; si++)
+						codegen_statement(ctx, callee_func->stmts[si]);
+				}
+			}
+			if (eff_inlined && select_cond) {
+				/* `ifS` GUARD form: `if (cond) { <then effect> }`. The THEN arm folded into eff_prefix +
+				 * eff_inlined (main); emit it inside the taken branch. Eff() result → nothing to bind. */
+				if (zip_count > 0) {
+					fprintf(stderr, "Error: `ifS` with a `zip` THEN arm is not yet supported\n");
+					ctx->had_error = 1;
+					break;
+				}
+				char cbuf[256];
+				codegen_expression(ctx, select_cond, cbuf);
+				int sid = ctx->value_counter++;
+				char then_lbl[48], cont_lbl[48];
+				snprintf(then_lbl, sizeof(then_lbl), "sel_then_%d", sid);
+				snprintf(cont_lbl, sizeof(cont_lbl), "sel_cont_%d", sid);
+				char *cbool = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", cbool, cbuf);
+				buffer_append_fmt(ctx, "  br i1 %s, label %%%s, label %%%s\n%s:\n", cbool, then_lbl, cont_lbl,
+				                  then_lbl);
+				ctx->block_terminated = 0;
+				if (eff_prefix) {
+					char pres[256];
+					codegen_expression(ctx, eff_prefix, pres);
+				}
+				char mres[256];
+				codegen_expression(ctx, eff_inlined, mres);
+				if (!ctx->block_terminated)
+					buffer_append_fmt(ctx, "  br label %%%s\n", cont_lbl);
+				buffer_append_fmt(ctx, "%s:\n", cont_lbl);
+				ctx->block_terminated = 0;
+				break;
+			}
+			if (eff_inlined && zip_count > 0) {
+				/* `zip(e1, …, eN)` — the applicative PRODUCT: run each effect, COLLECT all their out-slot
+				 * values, then either fold them through a `|> fin` (one bound result) or bind each positionally
+				 * to its target. Each zip arg is a single-C-return extern, so `codegen_expression` yields its
+				 * value directly (a scalar, or the element pointer of an array return). */
+				char zval[16][256];
+				HirType *ztype[16];
+				int zn = 0;
+				for (int zi = 0; zi < zip_count; zi++) {
+					char zres[256];
+					codegen_expression(ctx, zip_calls[zi], zres); /* emit `%zres = call <cret> @ext(args)` */
+					HirProcDecl *zp = zip_procs[zi];
+					for (int oi = 0; oi < zp->out_param_count && zn < 16; oi++) {
+						if (proc_out_param_is_inout(zp, oi))
+							continue; /* in-out buffer arg: deferred general case (gfx/argv don't use it) */
+						snprintf(zval[zn], sizeof(zval[zn]), "%s", zres);
+						ztype[zn] = zp->out_params[oi]->type;
+						zn++;
+					}
+				}
+				if (eff_fin) {
+					/* `@intrinsic` finalizer (`mem.bound`): the single audited FFI pointer→slice door. An
+					 * `@intrinsic` func is never an LLVM function, so emit the built-in INLINE rather than
+					 * call it: `inttoptr` the address out-slot + form a checked `{ptr,len}` slice from the two
+					 * scalar zip out-slots (address, length), bound to the target as a type-6 slice. This is
+					 * how `os.argv`/`io.file_map` become pure funcs — `zip(addr, len) |> mem.bound`. */
+					if (eff_fin->is_intrinsic && zn == 2) {
+						char *ptr = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = inttoptr i64 %s to i8*\n", ptr, zval[0]);
+						if (target_count >= 1 && targets[0].name && strcmp(targets[0].name, "_") != 0 &&
+						    ctx->scope_count > 0) {
+							ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+							vi->name = strdup(targets[0].name);
+							vi->llvm_name = strdup(ptr);
+							vi->type = 6;
+							vi->string_len = -1;
+							vi->field_type = "char";
+							vi->bit_width = 8;
+							vi->is_slice = 1;
+							vi->len_ssa = strdup(zval[1]);
+							ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+							sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+							sc->values[sc->value_count++] = vi;
+						}
+						break;
+					}
+					/* generalized `|>`: pass ALL out-slots to the finalizer as args, then bind its scalar
+					 * result. SCALAR slots are supported — the applicative combine `zip(a, b) |> f`. Slice/
+					 * buffer slots in a `|> fin`, and slice RETURNS, are the DEFERRED case: a bare-pointer +
+					 * length recombine (os.argv: `raw[0:n]`) fights arche's checked-slice safety — there is no
+					 * sound length to hand the cook's `raw` param — so os.argv stays a proc for now. */
+					char args[2048];
+					int p = 0;
+					int all_scalar = 1;
+					for (int s = 0; s < zn; s++) {
+						HirType *ot = ztype[s];
+						if (ot && (ot->tag == HIR_TYPE_ARRAY || ot->tag == HIR_TYPE_SHAPED_ARRAY))
+							all_scalar = 0;
+						if (s)
+							p += snprintf(args + p, sizeof(args) - p, ", ");
+						p += snprintf(args + p, sizeof(args) - p, "%s %s", return_member_llvm(ot), zval[s]);
+					}
+					HirType *frt = (eff_fin->return_type_count > 0) ? eff_fin->return_types[0] : NULL;
+					int frt_scalar = frt && frt->tag != HIR_TYPE_ARRAY && frt->tag != HIR_TYPE_SHAPED_ARRAY;
+					if (!all_scalar || !frt_scalar) {
+						fprintf(stderr, "Error: `zip(…) |> fin` with a slice/buffer slot or slice return is not "
+						                "supported yet (the bare-pointer + length recombine fights checked-slice "
+						                "safety); keep it a proc\n");
+						ctx->had_error = 1;
+						break;
+					}
+					char fret[256], fsym_buf[512];
+					func_llvm_return_type(eff_fin, fret, sizeof(fret));
+					const char *fsym = cg_fnsym(ctx, eff_fin->name, 0, fsym_buf, sizeof(fsym_buf));
+					char *fres = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = call %s @%s(%s)\n", fres, fret, fsym, args);
+					if (target_count >= 1 && targets[0].name && strcmp(targets[0].name, "_") != 0 &&
+					    ctx->scope_count > 0) {
+						char *slot = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %s\n", slot, fret);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", fret, fres, fret, slot);
+						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+						vi->name = strdup(targets[0].name);
+						vi->llvm_name = strdup(slot);
+						vi->type = 1;
+						vi->string_len = -1;
+						vi->field_type = field_base_type_name(frt);
+						vi->bit_width = (frt && frt->tag == HIR_TYPE_FLOAT) ? 64
+						                : (frt && frt->tag == HIR_TYPE_INT) ? frt->int_width
+						                                                    : 64;
+						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+						sc->values[sc->value_count++] = vi;
+					}
+					break;
+				}
+				/* no finalizer: bind each out-slot positionally to its target */
+				for (int s = 0; s < zn && s < target_count; s++) {
+					HirBindingTarget *tgt = &targets[s];
+					HirType *ot = ztype[s];
+					int is_arr = ot && (ot->tag == HIR_TYPE_ARRAY || ot->tag == HIR_TYPE_SHAPED_ARRAY);
+					if (!tgt->name || strcmp(tgt->name, "_") == 0 || ctx->scope_count <= 0)
+						continue;
+					ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+					vi->name = strdup(tgt->name);
+					vi->field_type = field_base_type_name(ot);
+					if (is_arr) {
+						/* array C-return is the element pointer — value IS the ptr (type-6). */
+						vi->llvm_name = strdup(zval[s]);
+						vi->type = 6;
+						vi->string_len = -1;
+						const char *el = llvm_type_from_arche(vi->field_type);
+						vi->bit_width = strcmp(el, "double") == 0 ? 64
+						                : strcmp(el, "i8") == 0   ? 8
+						                : strcmp(el, "i16") == 0  ? 16
+						                : strcmp(el, "i64") == 0  ? 64
+						                                          : 32;
+					} else {
+						const char *elem = return_member_llvm(ot);
+						char *slot = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %s\n", slot, elem);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, zval[s], elem, slot);
+						vi->llvm_name = strdup(slot);
+						vi->type = 1;
+						vi->string_len = -1;
+						vi->bit_width = (ot && ot->tag == HIR_TYPE_FLOAT) ? 64
+						                : (ot && ot->tag == HIR_TYPE_INT) ? ot->int_width
+						                                                  : 64;
+						vi->handle_archetype = (ot && ot->tag == HIR_TYPE_HANDLE) ? ot->name : NULL;
+					}
+					ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+					sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+					sc->values[sc->value_count++] = vi;
+				}
+				break;
+			}
+			if (eff_inlined) {
+				/* `seq`: run the prefix effect first (for its side effect; its result is discarded). */
+				if (eff_prefix) {
+					char pres[256];
+					codegen_expression(ctx, eff_prefix, pres);
+				}
+				rhs = eff_inlined;
+				callee_proc = eff_ext;
+				callee_func = NULL;
+				fn = eff_ext->name;
+			} else {
+				/* the builder is not a single `return <extern>(…)` — its extern is not statically one extern */
+				fprintf(stderr, "Error: cannot run this Eff — its extern is not statically known (E0222)\n");
+				ctx->had_error = 1;
+			}
+		}
+
+		/* fmap-over-buffer (the applicative buffer fold): `clock() |> ms_of` where the extern's out-slot is a
+		 * kernel-written BUFFER and the finalizer consumes THAT buffer (its first param is a slice/array), not
+		 * the scalar return. The buffer is run-internal scratch — the caller binds only the finalizer's RESULT
+		 * (`now_ms()(t:)`, not the timespec). Allocate the scratch, thread the `_` in-slot to it, run the
+		 * extern, then fold `t = fin(scratch.ptr, scratch.len)` and bind that. (A scalar finalizer like
+		 * `sys_open |> fd_of` has a non-array first param and falls through to the normal scalar-fold below.) */
+		if (eff_fin && callee_proc && callee_proc->is_extern && rhs && rhs->kind == HIR_EXPR_CALL &&
+		    target_count == 1 && eff_fin->param_count >= 1 && eff_fin->params[0]->type &&
+		    (eff_fin->params[0]->type->tag == HIR_TYPE_ARRAY ||
+		     eff_fin->params[0]->type->tag == HIR_TYPE_SHAPED_ARRAY)) {
+			int buf_oi = -1;
+			for (int oi = 0; oi < callee_proc->out_param_count; oi++)
+				if (proc_out_param_is_inout(callee_proc, oi) && callee_proc->out_params[oi]->type &&
+				    callee_proc->out_params[oi]->type->tag == HIR_TYPE_SHAPED_ARRAY) {
+					buf_oi = oi;
+					break;
+				}
+			if (buf_oi >= 0) {
+				HirBindingTarget fb = {0};
+				fb.name = (char *)"__eff_finbuf";
+				fb.is_new = 1;
+				ValueInfo *fbvi = cg_alloc_shaped_out_buf(ctx, &fb, callee_proc->out_params[buf_oi]->type);
+				/* thread the `_` in-slot (the in-out shadow of the buffer) to the scratch */
+				const char *bn = callee_proc->out_params[buf_oi]->name;
+				char *saved = NULL;
+				HirExpr *saved_arg = NULL;
+				for (int j = 0; j < callee_proc->param_count && j < rhs->data.call.arg_count; j++) {
+					if (callee_proc->params[j]->name && bn && strcmp(callee_proc->params[j]->name, bn) == 0) {
+						HirExpr *a = rhs->data.call.args[j];
+						if (a && a->kind == HIR_EXPR_NAME && a->data.name.name) {
+							saved = a->data.name.name;
+							saved_arg = a;
+							a->data.name.name = fb.name;
+						}
+						break;
+					}
+				}
+				char res[256];
+				codegen_expression(ctx, rhs, res); /* runs the extern, writing the scratch buffer in place */
+				if (saved_arg)
+					saved_arg->data.name.name = saved; /* restore `_` */
+				if (fbvi && ctx->scope_count > 0) {
+					char fret[256], fsym_buf[512];
+					func_llvm_return_type(eff_fin, fret, sizeof(fret));
+					const char *fsym = cg_fnsym(ctx, eff_fin->name, 0, fsym_buf, sizeof(fsym_buf));
+					const char *elem = llvm_type_from_arche(fbvi->field_type ? fbvi->field_type : "i64");
+					char *fres = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = call %s @%s(%s* %s, i64 %d)\n", fres, fret, fsym, elem,
+					                  fbvi->llvm_name, fbvi->string_len);
+					HirBindingTarget *tgt = &targets[0];
+					if (tgt->is_new && tgt->name && strcmp(tgt->name, "_") != 0) {
+						char *slot = gen_value_name(ctx);
+						emit_alloca(ctx, "  %s = alloca %s\n", slot, fret);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", fret, fres, fret, slot);
+						HirType *frt = (eff_fin->return_type_count > 0) ? eff_fin->return_types[0] : NULL;
+						ValueInfo *vi = calloc(1, sizeof(ValueInfo));
+						vi->name = strdup(tgt->name);
+						vi->llvm_name = strdup(slot);
+						vi->type = 1;
+						vi->string_len = -1;
+						vi->field_type = frt ? field_base_type_name(frt) : "i64";
+						vi->bit_width = (frt && frt->tag == HIR_TYPE_FLOAT) ? 64
+						                : (frt && frt->tag == HIR_TYPE_INT) ? frt->int_width
+						                                                    : 64;
+						ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+						sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+						sc->values[sc->value_count++] = vi;
+					}
+				}
+				break;
+			}
+		}
+
+		/* Caller-allocated in-out OUT buffer: an in-out out-param bound with `:` and a sized type
+		 * (`read(fd, n)(buf: [256]char, r:)`) is the kernel-written OUTPUT — the caller owns the storage.
+		 * Allocate it HERE, before the call emits, so the `_`-shadow rename below resolves to it and the
+		 * call passes it by reference; otherwise the `_` slot would find no value and emit `0`. A NOT-new
+		 * target (`(buf, r:)`, no `:`) writes an existing variable/column already in scope — no alloc. (The
+		 * legacy form that passes the buffer as an in-arg still aliases below; this is additive.) */
+		if (callee_proc && rhs && rhs->kind == HIR_EXPR_CALL) {
+			for (int oi = 0; oi < target_count && oi < callee_proc->out_param_count; oi++) {
+				if (!proc_out_param_is_inout(callee_proc, oi))
+					continue;
+				HirBindingTarget *tgt = &targets[oi];
+				if (!tgt->name || strcmp(tgt->name, "_") == 0 || !tgt->is_new)
+					continue; /* discarded, or an existing buffer/column (no `:`) */
+				/* Size the OUT buffer from the call-site binding (`buf: [256]char`) if given, else INFER it
+				 * from the extern's out-param type (a fixed-size effect like `sys_clock(…)(ts: [2]i64, …)`
+				 * carries the size, so `ts:` needs no spelled-out type). Only a sized array allocates here;
+				 * the unsized `[]char` of a variable-size read needs the size at the call (no fallback), and
+				 * the legacy `(filled:)` in-arg form falls to the alias path below. */
+				HirType *ot = tgt->type ? tgt->type : callee_proc->out_params[oi]->type;
+				if (ot && ot->tag == HIR_TYPE_SHAPED_ARRAY)
+					cg_alloc_shaped_out_buf(ctx, tgt, ot);
+			}
+		}
+
 		/* `_` placeholder in an in-out in-slot: it names no value. The buffer lives in the out-list,
 		 * named by the positionally-matching out-target. Rewrite each such `_` arg's NAME to that
 		 * out-target buffer in place for the duration of this call's emission, so the existing
@@ -7176,11 +9348,35 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				saved_uscore_args[ui]->data.name.name = saved_uscore_names[ui]; /* restore `_` */
 			for (int ui = 0; ui < saved_copy_count; ui++)
 				*saved_copy_slots[ui] = saved_copy_vals[ui]; /* restore elided `copy` node */
+			/* `|>` fmap: apply the pure finalizer to the extern's RAW out-slot, in place — `ext(a)(r:)`
+			 * with `… |> fin` emits `%r = call @fin(%raw)`. The finalized value replaces `res` so the
+			 * binding below stores it. (Single raw out-slot → single finalizer arg; the keystone shape.) */
+			if (eff_fin) {
+				char fret[256], fsym_buf[512];
+				func_llvm_return_type(eff_fin, fret, sizeof(fret));
+				const char *fsym = cg_fnsym(ctx, eff_fin->name, 0, fsym_buf, sizeof(fsym_buf));
+				const char *pty = eff_fin->param_count > 0 ? return_member_llvm(eff_fin->params[0]->type) : "i32";
+				char *fres = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = call %s @%s(%s %s)\n", fres, fret, fsym, pty, res);
+				snprintf(res, sizeof(res), "%s", fres);
+			}
 			for (int i = 0; i < target_count && i < callee_proc->out_param_count; i++) {
-				if (proc_out_param_is_inout(callee_proc, i))
+				if (proc_out_param_is_inout(callee_proc, i)) {
+					/* In-out out-param (the kernel-written buffer): the caller owns the storage and it was
+					 * already bound BEFORE the call — either EDIT 2 pre-allocated it (`buf: [N]T`, the `:`
+					 * form) or it is an existing variable/column the `_`-shadow rename passed by reference
+					 * (`(buf, r:)`, no `:`). Either way the extern wrote it IN PLACE through that pointer, so
+					 * there is nothing to bind here. (The legacy form that passed the buffer as a real in-arg
+					 * and aliased the out-target to it is gone — every call site uses the OUT-param form.) */
 					continue;
+				}
 				HirBindingTarget *tgt = &targets[i];
-				HirType *ot = callee_proc->out_params[i]->type;
+				/* With a `|> fin` finalizer the result was reshaped to the finalizer's RETURN type (e.g.
+				 * `syscall(2,…) |> to_fd` maps the raw i64 to an `fd`), so bind THAT, not the extern's raw
+				 * out-param type, else the i32/i64 store mismatches. (Single raw out-slot -> single return.) */
+				HirType *ot = (eff_fin && eff_fin->return_type_count > 0 && eff_fin->return_types[0])
+				                  ? eff_fin->return_types[0]
+				                  : callee_proc->out_params[i]->type;
 				int is_arr = ot && (ot->tag == HIR_TYPE_ARRAY || ot->tag == HIR_TYPE_SHAPED_ARRAY);
 				const char *elem = return_member_llvm(ot);
 				if (tgt->is_new) {
@@ -7193,8 +9389,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 						strcpy(vi->llvm_name, res);
 						vi->type = 6;
 						vi->string_len = -1;
-						vi->field_type = "char";
-						vi->bit_width = 8;
+						/* The extern returns the ELEMENT pointer (`declare <elem>* @ext`, e.g. i32* for `[]int`,
+						 * i8* for `[]char`), so bind the element type — `px[i]` then GEPs at the right stride.
+						 * (This used to hardcode char/i8, byte-striding every non-char out-slice: a `[]int`
+						 * framebuffer got written one byte per pixel.) */
+						vi->field_type = field_base_type_name(ot);
+						const char *out_el = llvm_type_from_arche(vi->field_type);
+						vi->bit_width = strcmp(out_el, "double") == 0 ? 64
+						                : strcmp(out_el, "i8") == 0   ? 8
+						                : strcmp(out_el, "i16") == 0  ? 16
+						                : strcmp(out_el, "i64") == 0  ? 64
+						                                              : 32;
 						if (ctx->scope_count > 0) {
 							ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
 							sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
@@ -7233,6 +9438,17 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					ValueInfo *e = find_value(ctx, tgt->name);
 					if (e && e->type == 1)
 						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, res, elem, e->llvm_name);
+					else if (e && e->type == 4 && ctx->implicit_loop_index[0] && !ctx->in_map) {
+						/* Existing scalar COLUMN out-target (`fmt.sprintf(…)(buf, body_len)`, `body_len` a
+						 * query column): store the extern's result into THIS row's slot, mirroring a
+						 * `body_len = x` assign. Without this the result was silently DROPPED — the buffer
+						 * out-param wrote in place but the length column kept its old value. */
+						const char *row = (e->loop_idx && e->loop_idx[0]) ? e->loop_idx : ctx->implicit_loop_index;
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, elem, elem,
+						                  e->llvm_name, row);
+						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", elem, res, elem, gep);
+					}
 				}
 			}
 			break;
@@ -7472,10 +9688,31 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				}
 			}
 		}
+		/* free the Eff-fusion scaffolding: each node + its args ARRAY only (callee NAME and arg elements are
+		 * shared with the builder body / actual-arg HIR, owned elsewhere). */
+		if (eff_inlined) {
+			free(eff_inlined->data.call.args);
+			free(eff_inlined);
+		}
+		if (eff_prefix) {
+			free(eff_prefix->data.call.args);
+			free(eff_prefix);
+		}
 		break;
 	}
 
 	case HIR_STMT_ASSIGN: {
+		/* Assigning an opaque-with-@drop `NAME` into any place MOVES it (opaque is move-only) — consume the
+		 * source so its `@drop` doesn't fire at scope exit and free the handle the target now owns (e.g.
+		 * `win = w` storing a `window` into a driver global). A no-op for non-droppable sources. */
+		{
+			HirExpr *av = stmt->data.assign_stmt.value;
+			while (av && av->kind == HIR_EXPR_UNARY &&
+			       (av->data.unary.op == UNARY_MOVE || av->data.unary.op == UNARY_COPY))
+				av = av->data.unary.operand;
+			if (av && av->kind == HIR_EXPR_NAME)
+				drop_mark_consumed(ctx, av->data.name.name);
+		}
 		/* Bulk column seed: `Player.pos.x = {80, 560, …}` scatters element i → column row i — a DOD batch
 		 * init of distinct per-row values, the columnar alternative to N row-at-a-time `insert`s. The
 		 * literal's length fills rows 0..n-1; the pool's live count (from `[N]Arch(M)`) is unchanged. Only a
@@ -7538,18 +9775,59 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					HirExpr **elems = stmt->data.assign_stmt.value->data.array_literal.elements;
 					int n = stmt->data.assign_stmt.value->data.array_literal.element_count;
 					for (int i = 0; i < n; i++) {
+						/* A value stored into a pool column is MOVED into storage the pool now owns — so its
+						 * source local is consumed (an explicit `move` is optional). Without this an
+						 * opaque-with-@drop local (e.g. a `window` handle) is still dropped at scope exit,
+						 * closing the handle the column just took ownership of. Mirrors the entity-insert
+						 * consume; a no-op for non-droppable element names. */
+						HirExpr *src = elems[i];
+						if (src && src->kind == HIR_EXPR_UNARY &&
+						    (src->data.unary.op == UNARY_MOVE || src->data.unary.op == UNARY_COPY))
+							src = src->data.unary.operand;
 						char ebuf[256];
-						codegen_expression(ctx, elems[i], ebuf);
+						codegen_expression(ctx, src, ebuf);
 						char promo[256];
 						const char *ev =
-						    col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+						    col_is_float ? float_promote_operand(ctx, src, ebuf, promo, sizeof(promo)) : ebuf;
 						char *gep = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, llvm_type, llvm_type,
 						                  col_ptr, i);
 						buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", llvm_type, ev, llvm_type, gep);
+						if (src && src->kind == HIR_EXPR_NAME)
+							drop_mark_consumed(ctx, src->data.name.name);
 					}
 					break;
 				}
+			}
+		}
+		/* Local sized-array seed: `a: [2]i64; a = {1000, 2}` scatters element i → `a[i]`, storing each with
+		 * the array's DECLARED element type. Without this the array literal falls to the generic expression
+		 * path, which builds a `[N x i8]` constant global and copies it byte-wise into a non-char array —
+		 * truncating/garbling every element (`1000` → an i8). Mirrors the column scatter above; char arrays
+		 * keep the i8-global path (string-style literals). */
+		if (stmt->data.assign_stmt.op == OP_NONE && stmt->data.assign_stmt.value &&
+		    stmt->data.assign_stmt.value->kind == HIR_EXPR_ARRAY_LITERAL &&
+		    stmt->data.assign_stmt.target->kind == HIR_EXPR_NAME) {
+			ValueInfo *tgt = find_value(ctx, stmt->data.assign_stmt.target->data.name.name);
+			if (tgt && tgt->type == 6 && tgt->string_len > 0 && tgt->field_type &&
+			    strcmp(tgt->field_type, "char") != 0) {
+				const char *lt = llvm_type_from_arche(tgt->field_type);
+				int col_is_float = strcmp(tgt->field_type, "float") == 0 || strcmp(tgt->field_type, "double") == 0;
+				HirExpr **elems = stmt->data.assign_stmt.value->data.array_literal.elements;
+				int n = stmt->data.assign_stmt.value->data.array_literal.element_count;
+				if (n > tgt->string_len)
+					n = tgt->string_len;
+				for (int i = 0; i < n; i++) {
+					char ebuf[256];
+					codegen_expression(ctx, elems[i], ebuf);
+					char promo[256];
+					const char *ev =
+					    col_is_float ? float_promote_operand(ctx, elems[i], ebuf, promo, sizeof(promo)) : ebuf;
+					char *gep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %d\n", gep, lt, lt, tgt->llvm_name, i);
+					buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lt, ev, lt, gep);
+				}
+				break;
 			}
 		}
 		/* Write-back to an out-ONLY unbounded `char[]`/`T[]` out-param (`out = buf[0:r]`): store the
@@ -7706,6 +9984,51 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			const char *var_name = stmt->data.assign_stmt.target->data.name.name;
 			ValueInfo *val = find_value(ctx, var_name);
 			if (val && val->type == 4) {
+				/* A column write inside a `system(Q)` row loop is a PER-ROW scalar store (`col[row] = expr`),
+				 * NOT the map whole-column loop (which assumes a map param + emits a vectorized loop). We are
+				 * already in the explicit row loop with `implicit_loop_index` set and `in_map` clear. */
+				if (ctx->implicit_loop_index[0] && !ctx->in_map) {
+					const char *arche_type = val->field_type ? val->field_type : "i64";
+					if (strcmp(arche_type, "handle") != 0) {
+						const char *st = llvm_type_from_arche(arche_type);
+						int is_flt = strcmp(st, "float") == 0 || strcmp(st, "double") == 0;
+						char *gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, st, st, val->llvm_name,
+						                  ctx->implicit_loop_index);
+						char rhs_buf[256];
+						codegen_expression(ctx, stmt->data.assign_stmt.value, rhs_buf);
+						if (stmt->data.assign_stmt.op != OP_NONE) {
+							char *cur = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", cur, st, st, gep);
+							const char *opc = "add";
+							switch (stmt->data.assign_stmt.op) {
+							case OP_ADD:
+								opc = is_flt ? "fadd" : "add";
+								break;
+							case OP_SUB:
+								opc = is_flt ? "fsub" : "sub";
+								break;
+							case OP_MUL:
+								opc = is_flt ? "fmul" : "mul";
+								break;
+							case OP_DIV:
+								opc = is_flt ? "fdiv" : "sdiv";
+								break;
+							case OP_MOD:
+								opc = is_flt ? "frem" : "srem";
+								break;
+							default:
+								break;
+							}
+							char *res = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", res, opc, st, cur, rhs_buf);
+							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", st, res, st, gep);
+						} else {
+							buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", st, rhs_buf, st, gep);
+						}
+					}
+					break;
+				}
 				is_whole_column = 1;
 			}
 		}
@@ -7827,9 +10150,15 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				HirArchetypeDecl *arch = find_archetype_decl(ctx, val->arch_name);
 				if (arch) {
 					int count_idx = arch->field_count;
-					/* Construct the archetype parameter name (handles both old %archetype and new %arch_<name>) */
+					/* The struct base: a map gets its pool by `%arch_<name>` PARAMETER; a no-arg columnar
+					 * `system(Q)` reads the pool from its GLOBAL (`@Arch` / `@archetype_<name>` for dynamic). */
 					char arch_param[256];
-					snprintf(arch_param, sizeof(arch_param), "%%arch_%s", val->arch_name);
+					if (ctx->in_columnar_system) {
+						int is_static = get_arch_static_capacity(ctx, val->arch_name) > 0;
+						emit_query_pool_ptr(ctx, val->arch_name, is_static, arch_param, sizeof(arch_param));
+					} else {
+						snprintf(arch_param, sizeof(arch_param), "%%arch_%s", val->arch_name);
+					}
 
 					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
 					                  count_gep, val->arch_name, val->arch_name, arch_param, count_idx);
@@ -8120,26 +10449,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			if (base_expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				arche_type = hir_resolved_type_name(base_expr);
 				scalar_type = llvm_type_from_arche(arche_type);
-			} else if (base_expr->kind == HIR_EXPR_FIELD) {
-				/* Fallback: lookup field type from archetype */
-				const char *field_name = base_expr->data.field.field_name;
-				ValueInfo *base_val = NULL;
-
-				if (base_expr->data.field.base->kind == HIR_EXPR_NAME) {
-					base_val = find_value(ctx, base_expr->data.field.base->data.name.name);
-				}
-
-				if (base_val && base_val->type == 3 && base_val->arch_name) {
-					HirArchetypeDecl *arch = find_archetype_decl(ctx, base_val->arch_name);
-					if (arch) {
-						for (int i = 0; i < arch->field_count; i++) {
-							if (strcmp(arch->fields[i]->name, field_name) == 0) {
-								arche_type = field_base_type_name(arch->fields[i]->type);
-								scalar_type = llvm_type_from_arche(arche_type);
-								break;
-							}
-						}
-					}
+			} else {
+				/* Fallback: resolve the pool-column element type (incl. a flattened tuple sub-column
+				 * `P.pos.x`→`pos_x`). Shared with the read path so a FLOAT column isn't defaulted to i32. */
+				const char *at = indexed_col_arche_type(ctx, base_expr);
+				if (at) {
+					arche_type = at;
+					scalar_type = llvm_type_from_arche(at);
 				}
 			}
 
@@ -8385,9 +10701,28 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		const char *map_name = stmt->data.run_stmt.map_name;
 
 		/* Find the map definition */
-		HirMapDecl *map = find_map_decl(ctx, map_name);
+		HirKernelDecl *map = find_map_decl(ctx, map_name);
 		if (!map) {
-			fprintf(stderr, "Error: `run %s` — unknown map '%s'\n", map_name, map_name);
+			/* A query named in `#run` is a domain, not a runnable kernel — give the precise diagnostic
+			 * (a query is what a map/each/system runs OVER, not a thing you schedule). */
+			const char *tail = strrchr(map_name, '.');
+			tail = tail ? tail + 1 : map_name;
+			int is_query = 0;
+			for (int qi = 0; qi < ctx->ast->decl_count; qi++) {
+				HirDecl *qd = ctx->ast->decls[qi];
+				if (qd->kind == HIR_DECL_QUERY && qd->data.query && qd->data.query->name &&
+				    (strcmp(qd->data.query->name, map_name) == 0 || strcmp(qd->data.query->name, tail) == 0)) {
+					is_query = 1;
+					break;
+				}
+			}
+			if (is_query)
+				fprintf(stderr,
+				        "Error: '%s' is a query, not a map — a query is the domain a map/each/system runs "
+				        "over, not a schedulable kernel\n",
+				        map_name);
+			else
+				fprintf(stderr, "Error: `%s` — unknown map '%s'\n", map_name, map_name);
 			ctx->had_error = 1;
 			buffer_append_fmt(ctx, "  ; ERROR: undefined map '%s'\n", map_name);
 			break;
@@ -8466,27 +10801,50 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 		 * dispatches one matching static pool whose columns are all float (the common case, and what the
 		 * GLSL emitter supports); a multi-pool, dynamic, or non-float map stays CPU-only. The column base
 		 * pointers are passed in map-param order — the same order the shader binds its SSBOs. */
+		/* DERIVED PLACEMENT (Slice 4): a scheduled pure map (find_map_decl already filtered to kind==MAP &&
+		 * !eff) is GPU-ELIGIBLE by construction — branchless (E0046) and effect-free. So under `--gpu` EVERY
+		 * such map is a candidate (no `@gpu` annotation needed); the cost model below (over the per-machine
+		 * profile + static row count) decides PROFITABILITY. `@gpu` remains a force-GPU override. Dispatch
+		 * keys on the kernel NAME, so it generalizes to any named kernel. */
 		char *gpu_done = NULL;
-		if (ctx->gpu && stmt->data.run_stmt.is_gpu && matching_count == 1 && map->param_count > 0 &&
-		    map->param_count <= 64) {
+		if (ctx->gpu && matching_count == 1 && map->param_count > 0 && map->param_count <= 64) {
 			const char *an = matching_archs[0];
 			HirArchetypeDecl *ga = find_archetype_decl(ctx, an);
 			int ok = ga != NULL && get_arch_static_capacity(ctx, an) > 0;
 			int field_idx[64];
+			const char *col_llty[64]; /* per-column LLVM element type ("float"/"i32") for the pointer bitcast */
 			for (int p = 0; ok && p < map->param_count; p++) {
 				const char *pn = map->params[p] ? map->params[p]->name : NULL;
 				int fi = -1;
+				col_llty[p] = NULL;
 				for (int f = 0; pn && f < ga->field_count; f++)
 					if (ga->fields[f]->kind == FIELD_COLUMN && strcmp(ga->fields[f]->name, pn) == 0) {
-						if (ga->fields[f]->type && ga->fields[f]->type->tag == HIR_TYPE_FLOAT)
-							fi = f; /* float column → GPU-able */
+						const char *llty = cg_gpu_col_llty(ga->fields[f]->type);
+						if (llty) {
+							fi = f; /* 32-bit float/int column → GPU-able */
+							col_llty[p] = llty;
+						}
 						break;
 					}
 				field_idx[p] = fi;
 				if (fi < 0)
-					ok = 0; /* a non-float / missing column → no GPU form for this map */
+					ok = 0; /* a non-emittable / missing column → no GPU form for this map */
 			}
+			/* Profitability: the layered decision (force → measured → estimate). If it prefers the CPU, drop
+			 * the GPU form and fall through to the direct CPU call below (the always-legal home). */
+			if (ok && !cg_placement_decide(ctx, map, get_arch_static_capacity(ctx, an)))
+				ok = 0;
+			if (getenv("ARCHE_PLACE_DEBUG"))
+				fprintf(stderr, "PLACE %s: fpe=%.0f rows=%d force=%d -> %s\n", map->name, cg_kernel_flops_per_elem(map),
+				        get_arch_static_capacity(ctx, an), map->is_gpu, ok ? "GPU" : "CPU");
 			if (ok) {
+				/* The placer chose GPU for this eligible map. Record it on the live decl so the shader-EMBED
+				 * pass (arche_gpu_embed → gpu_glsl_mark_runs, which runs AFTER codegen in compile.c) emits the
+				 * compute shader for it. Without this, a *derived* GPU placement (one not carrying an explicit
+				 * `@gpu`) would dispatch a kernel that was never embedded → arche_gpu_dispatch finds no shader →
+				 * silent CPU fallback (placement decided GPU, but the win never materializes). Setting is_gpu
+				 * here keeps the dispatch decision and the embedded-shader set consistent by construction. */
+				map->is_gpu = 1;
 				int ncol = map->param_count;
 				/* cols[]: an [ncol x i8*] of column base pointers (binding order). */
 				char *cols = gen_value_name(ctx);
@@ -8496,7 +10854,7 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n",
 					                  cp, an, an, an, field_idx[p]);
 					char *cp8 = gen_value_name(ctx);
-					buffer_append_fmt(ctx, "  %s = bitcast float* %s to i8*\n", cp8, cp);
+					buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", cp8, col_llty[p], cp);
 					char *slot = gen_value_name(ctx);
 					buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot,
 					                  ncol, ncol, cols, p);
@@ -8526,8 +10884,10 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 				                  nl + 1, nameg);
 				free(nameg);
 				char *rc = gen_value_name(ctx);
-				buffer_append_fmt(ctx, "  %s = call i32 @arche_gpu_dispatch(i8* %s, i32 %d, i8** %s, i32 4, i32 %s)\n",
-				                  rc, namep, ncol, cols0, cnt32);
+				int resident = cg_arch_is_resident(ctx, an); /* `@resident` pool → keep buffers on-device */
+				buffer_append_fmt(
+				    ctx, "  %s = call i32 @arche_gpu_dispatch(i8* %s, i32 %d, i8** %s, i32 4, i32 %s, i32 %d)\n", rc,
+				    namep, ncol, cols0, cnt32, resident);
 				char *need_cpu = gen_value_name(ctx);
 				buffer_append_fmt(ctx, "  %s = icmp ne i32 %s, 0\n", need_cpu, rc); /* nonzero → run CPU path */
 				char *cpu_lbl = gen_value_name(ctx);
@@ -8546,9 +10906,8 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			}
 		}
 
-		/* Build: call void @map_name(%struct.A* @A, %struct.B* @B, ...) */
 		char map_call_buf[512];
-		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, map_name, 0, map_call_buf, sizeof(map_call_buf)));
+		buffer_append_fmt(ctx, "  call void @%s(", cg_fnsym(ctx, map->name, 0, map_call_buf, sizeof(map_call_buf)));
 		for (int i = 0; i < matching_count; i++) {
 			if (i > 0)
 				buffer_append(ctx, ", ");
@@ -8599,6 +10958,14 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			char expr_buf[256];
 			codegen_expression(ctx, stmt->data.expr_stmt.expr, expr_buf);
 		}
+		break;
+	}
+
+	case HIR_STMT_EACH: {
+		/* An inline anonymous `each(Q) { … }`: emit the per-element fan IN PLACE (same path as the decl) so
+		 * its body captures the enclosing scope. Nested fans nest as ordinary loops. */
+		HirKernelDecl *e = stmt->data.each_stmt;
+		codegen_each_fan(ctx, e->params, e->param_count, e->stmts, e->stmt_count, e->row_var);
 		break;
 	}
 
@@ -8819,6 +11186,41 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 /* ========== DECLARATION CODEGEN ========== */
 
+/* Inside `@arche_delete_<arch>`, at the point a row at `%slot` is known live and about to be freed,
+ * fire the destructor of every droppable COLUMN — a column whose TYPE has a registered `@drop`. Load
+ * that column's value off the dying row and call its dtor. This is the open=insert / close=delete
+ * lifecycle: a resource a row holds (e.g. an fd kept as `fd` data) is released as the row leaves the
+ * pool, queried purely by the column's type (no wrapper archetype). Scalar columns only. */
+static void cg_emit_rowdrop(CodegenContext *ctx, HirArchetypeDecl *arch, int static_cap) {
+	int n = 0; /* one fired column per index — for unique SSA names */
+	for (int f = 0; f < arch->field_count; f++) {
+		HirField *col = arch->fields[f];
+		if (col->kind != FIELD_COLUMN || !col->type)
+			continue;
+		/* Match on the source-declared type name (an enum column lowers to its int, losing the nominal). */
+		const char *dtor = drop_dtor_for_type(ctx, col->decl_type_name);
+		if (!dtor)
+			continue;
+		const char *base_type = llvm_type_from_arche(field_base_type_name(col->type));
+		if (static_cap > 0) {
+			buffer_append_fmt(
+			    ctx, "  %%drp_p%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d, i64 %%slot\n", n,
+			    arch->name, arch->name, f);
+		} else {
+			buffer_append_fmt(ctx, "  %%drp_pp%d = getelementptr %%struct.%s, %%struct.%s* %%arch, i32 0, i32 %d\n", n,
+			                  arch->name, arch->name, f);
+			buffer_append_fmt(ctx, "  %%drp_arr%d = load %s*, %s** %%drp_pp%d\n", n, base_type, base_type, n);
+			buffer_append_fmt(ctx, "  %%drp_p%d = getelementptr %s, %s* %%drp_arr%d, i64 %%slot\n", n, base_type,
+			                  base_type, n);
+		}
+		buffer_append_fmt(ctx, "  %%drp_v%d = load %s, %s* %%drp_p%d\n", n, base_type, base_type, n);
+		char dtor_sym[512];
+		buffer_append_fmt(ctx, "  call void @%s(%s %%drp_v%d)\n",
+		                  cg_fnsym(ctx, dtor, decl_name_is_extern(ctx, dtor), dtor_sym, sizeof dtor_sym), base_type, n);
+		n++;
+	}
+}
+
 static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) {
 	/* One shape = one pool. Aliases (other names for the same component set) share the
 	 * canonical decl's struct + storage + helpers, so emit only for the canonical. */
@@ -8991,24 +11393,34 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 				                  base_type, col_idx, flat_slot);
 			}
 			if (col_n > 1 && strcmp(base_type, "i8") == 0) {
-				/* char[N] column: copy the whole row (col_n bytes) from the source
-				 * pointer %f<i> into the row slot. Numeric array columns fall through
-				 * to the scalar store below (element-0 init, legacy semantics). */
-				int bytes = col_n * llvm_type_sizeof(base_type);
-				char dstbuf[64];
-				char srcbuf[64];
-				if (strcmp(base_type, "i8") == 0) {
-					snprintf(dstbuf, sizeof dstbuf, "%%slot%d", col_idx);
-					snprintf(srcbuf, sizeof srcbuf, "%%f%d", i);
-				} else {
-					snprintf(dstbuf, sizeof dstbuf, "%%mcdst%d", col_idx);
-					snprintf(srcbuf, sizeof srcbuf, "%%mcsrc%d", col_idx);
-					buffer_append_fmt(ctx, "  %s = bitcast %s* %%slot%d to i8*\n", dstbuf, base_type, col_idx);
-					buffer_append_fmt(ctx, "  %s = bitcast %s* %%f%d to i8*\n", srcbuf, base_type, i);
-				}
-				buffer_append_fmt(ctx, "  call void @llvm.memcpy.p0.p0.i64(i8* %s, i8* %s, i64 %d, i1 false)\n", dstbuf,
-				                  srcbuf, bytes);
-				ctx->uses_memcpy = 1;
+				/* char[N] column: zero-pad the row slot, then copy the NUL-terminated source up to the
+				 * column width. A whole-width memcpy would OVER-READ a short runtime source — e.g. an
+				 * `argv` slice sitting near the stack top → SIGSEGV — whereas a NUL-bounded copy reads only
+				 * the live bytes; the slot stays zero-padded (also clearing any stale bytes of a reused
+				 * slot). Numeric array columns fall through to the scalar store below (element-0 init). */
+				int ci = col_idx;
+				buffer_append_fmt(ctx, "  call void @llvm.memset.p0.i64(i8* %%slot%d, i8 0, i64 %d, i1 false)\n", ci,
+				                  col_n);
+				buffer_append_fmt(ctx, "  %%cpj%d = alloca i64\n", ci);
+				buffer_append_fmt(ctx, "  store i64 0, i64* %%cpj%d\n", ci);
+				buffer_append_fmt(ctx, "  br label %%cpcond%d\n", ci);
+				buffer_append_fmt(ctx, "cpcond%d:\n", ci);
+				buffer_append_fmt(ctx, "  %%cjv%d = load i64, i64* %%cpj%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  %%clt%d = icmp ult i64 %%cjv%d, %d\n", ci, ci, col_n - 1);
+				buffer_append_fmt(ctx, "  br i1 %%clt%d, label %%cpld%d, label %%cpend%d\n", ci, ci, ci);
+				buffer_append_fmt(ctx, "cpld%d:\n", ci);
+				buffer_append_fmt(ctx, "  %%csp%d = getelementptr i8, i8* %%f%d, i64 %%cjv%d\n", ci, i, ci);
+				buffer_append_fmt(ctx, "  %%csc%d = load i8, i8* %%csp%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  %%cnz%d = icmp ne i8 %%csc%d, 0\n", ci, ci);
+				buffer_append_fmt(ctx, "  br i1 %%cnz%d, label %%cpbody%d, label %%cpend%d\n", ci, ci, ci);
+				buffer_append_fmt(ctx, "cpbody%d:\n", ci);
+				buffer_append_fmt(ctx, "  %%cdp%d = getelementptr i8, i8* %%slot%d, i64 %%cjv%d\n", ci, ci, ci);
+				buffer_append_fmt(ctx, "  store i8 %%csc%d, i8* %%cdp%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  %%cjn%d = add i64 %%cjv%d, 1\n", ci, ci);
+				buffer_append_fmt(ctx, "  store i64 %%cjn%d, i64* %%cpj%d\n", ci, ci);
+				buffer_append_fmt(ctx, "  br label %%cpcond%d\n", ci);
+				buffer_append_fmt(ctx, "cpend%d:\n", ci);
+				ctx->uses_memset = 1;
 			} else {
 				buffer_append_fmt(ctx, "  store %s %%f%d, %s* %%slot%d\n", base_type, i, base_type, col_idx);
 			}
@@ -9050,7 +11462,11 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 	buffer_append(ctx, "  store i32 %gnext, i32* %gc_elem\n");
 	buffer_append(ctx, "  br label %gen_load\n\n");
 	buffer_append(ctx, "gen_load:\n");
-	buffer_append(ctx, "  %gen_raw = load i32, i32* %gc_elem\n");
+	buffer_append(ctx, "  %gen_dead = load i32, i32* %gc_elem\n");
+	/* Clear the liveness sign bit: a reused slot was tombstoned by `delete` (gen < 0); insert revives it as
+	 * a LIVE (gen >= 0) generation. The `each` fan reads this bit to skip dead rows. The low 31 bits stay
+	 * the monotonic generation that invalidates stale handles. */
+	buffer_append(ctx, "  %gen_raw = and i32 %gen_dead, 2147483647\n");
 	/* Force the issued generation to be >= 1, so a live handle (slot|gen<<32) is never 0 — keeping
 	 * h == 0 an unambiguous overflow/failure sentinel even if a caller ignores `ok`. Store it back so
 	 * `delete`'s generation check matches what was issued. gen == 0 is never a free-slot marker (free
@@ -9103,17 +11519,23 @@ static void codegen_archetype_decl(CodegenContext *ctx, HirArchetypeDecl *arch) 
 
 	buffer_append(ctx, "valid:\n");
 	/* Crash loudly on generation exhaustion instead of wrapping (silent ABA): a
-	 * slot freed 2^32 times can no longer mint a distinct generation, so a stale
-	 * handle could alias a fresh entity. Abort like a stack overflow would. */
-	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, -1\n");
+	 * slot freed 2^31 times can no longer mint a distinct generation, so a stale
+	 * handle could alias a fresh entity. Abort like a stack overflow would. (Bit 31 is the dead/liveness
+	 * flag, so the generation is 31 bits; a live slot's stored_gen is positive, maxing at 0x7FFFFFFF.) */
+	buffer_append(ctx, "  %gen_maxed = icmp eq i32 %stored_gen, 2147483647\n");
 	buffer_append(ctx, "  br i1 %gen_maxed, label %gen_exhausted, label %do_free\n\n");
 	/* Generation exhausted: a resource limit, reported as a value (ok=0) rather than aborting. */
 	buffer_append(ctx, "gen_exhausted:\n");
 	buffer_append(ctx, "  store i32 0, i32* %ok_out\n");
 	buffer_append(ctx, "  ret void\n\n");
 	buffer_append(ctx, "do_free:\n");
-	/* Increment generation */
-	buffer_append(ctx, "  %new_gen = add i32 %stored_gen, 1\n");
+	/* Fire the row's `@drop` destructor (if any) while its data is still intact — the resource it
+	 * holds (e.g. an fd) is released as the row leaves the pool. */
+	cg_emit_rowdrop(ctx, arch, static_cap);
+	/* Increment generation (invalidates stale handles) AND set the dead/liveness sign bit so the `each`
+	 * fan skips this slot. Insert revives it by clearing the bit. */
+	buffer_append(ctx, "  %new_gen_inc = add i32 %stored_gen, 1\n");
+	buffer_append(ctx, "  %new_gen = or i32 %new_gen_inc, -2147483648\n");
 	buffer_append(ctx, "  store i32 %new_gen, i32* %gc_elem\n");
 
 	/* Load free_count */
@@ -9601,7 +12023,11 @@ static void emit_func_params(CodegenContext *ctx, HirFuncDecl *func) {
 		HirType *param_type = func->params[i]->type;
 		const char *type_name = field_base_type_name(param_type);
 		const char *llvm_type = llvm_type_from_arche(type_name);
-		if (param_type && param_type->tag == HIR_TYPE_ARRAY && !func->is_extern)
+		if (param_type && param_type->tag == HIR_TYPE_TUPLE) {
+			char tb[256];
+			tuple_llvm_type(param_type, tb, sizeof(tb));
+			buffer_append_fmt(ctx, "%s %%arg%d", tb, i); /* tuple passed by value as the {T,…} aggregate */
+		} else if (param_type && param_type->tag == HIR_TYPE_ARRAY && !func->is_extern)
 			buffer_append_fmt(ctx, "%s* %%arg%d.ptr, i64 %%arg%d.len", llvm_type, i, i);
 		else if (param_type && param_type->tag == HIR_TYPE_ARRAY)
 			buffer_append_fmt(ctx, "%s* %%arg%d", llvm_type, i);
@@ -9616,6 +12042,17 @@ static void emit_func_params(CodegenContext *ctx, HirFuncDecl *func) {
 
 static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 	ctx->entity_bind_count = 0; /* entity bindings are body-local (mirrors codegen_proc_decl) */
+	/* An `@intrinsic` func is a built-in primitive (e.g. `mem.bound` = inttoptr + checked slice): its calls
+	 * lower to inline IR at each call site (see the call path), so it is never emitted as an LLVM function.
+	 * The placeholder body in source exists only to type-check. */
+	if (func->is_intrinsic)
+		return;
+	/* An Eff-returning func is a compile-time effect BUILDER: it is inlined at each run site (the underlying
+	 * extern + args are recovered there) and never emitted as an LLVM function — an Eff has no runtime type.
+	 * It stays in the HIR so the fusion (eff_inline_build) can read its body. */
+	if (!func->is_extern && func->return_type_count > 0 && func->return_types[0] &&
+	    func->return_types[0]->tag == HIR_TYPE_EFF)
+		return;
 	/* For extern funcs, emit declare stub */
 	if (func->is_extern) {
 		/* Return type from the declaration: a bare extern with no `->` is void; char[] returns a
@@ -9725,6 +12162,8 @@ static void codegen_func_decl(CodegenContext *ctx, HirFuncDecl *func) {
 			vi->bit_width = strcmp(elt, "double") == 0 ? 64 : (strcmp(elt, "i8") == 0 ? 8 : 32);
 			scope->values = realloc(scope->values, (scope->value_count + 1) * sizeof(ValueInfo *));
 			scope->values[scope->value_count++] = vi;
+		} else if (ptype && ptype->tag == HIR_TYPE_TUPLE) {
+			add_tuple_value(ctx, func->params[i]->name, param_name, ptype); /* {T,…} aggregate by value */
 		} else {
 			add_value(ctx, func->params[i]->name, param_name, 0);
 		}
@@ -9828,6 +12267,10 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	ctx->entity_bind_count = 0; /* entity bindings are proc-local */
 	/* For extern procs, emit declare stub */
 	if (proc->is_extern) {
+		/* A `@syscall(N)` extern is never called as a symbol — its calls emit the syscall asm inline — so
+		 * it needs no `declare` (and emitting one collides when two modules declare the same syscall name). */
+		if (proc->syscall_num >= 0)
+			return;
 		/* An extern proc's out-only out-param (a name NOT in the in-list) maps to the C return
 		 * value; in-out names are in-place pointer writes already passed in the in-list. At most
 		 * one out-only param (C returns one value); none ⇒ void. */
@@ -10054,7 +12497,1408 @@ static void codegen_proc_decl(CodegenContext *ctx, HirProcDecl *proc) {
 	buffer_append(ctx, "}\n\n");
 }
 
-static void codegen_map_decl(CodegenContext *ctx, HirMapDecl *map, int decl_unit) {
+/* `Name :: system { body }` — the composer, emitted as a no-arg void function (a parameterless proc
+ * body). Dispatched by the generated @arche_run (from the #run ScheduleTree). */
+/* The archetype that owns a column of this name (first in decl order), or NULL. A query column resolves to
+ * its archetype by name — source-agnostic. Used to split a join's columns into the driver pool (looped) and
+ * `[1]` singleton pools (broadcast). */
+static const char *arch_owning_col(CodegenContext *ctx, const char *col) {
+	for (int d = 0; d < ctx->ast->decl_count; d++) {
+		if (ctx->ast->decls[d]->kind != HIR_DECL_ARCHETYPE)
+			continue;
+		HirArchetypeDecl *arch = ctx->ast->decls[d]->data.archetype;
+		for (int f = 0; f < arch->field_count; f++)
+			if (strcmp(arch->fields[f]->name, col) == 0)
+				return arch->name;
+	}
+	return NULL;
+}
+
+/* Load a singleton column's value at index 0 (broadcast) as a scalar SSA, binding it to `param_name`. */
+static void bind_singleton_col(CodegenContext *ctx, const char *param_name, const char *arch_name) {
+	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+	if (!arch)
+		return;
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	char base_buf[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+	for (int f = 0; f < arch->field_count; f++) {
+		if (strcmp(arch->fields[f]->name, param_name) != 0)
+			continue;
+		const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
+		char *elem_ptr;
+		if (is_static) {
+			elem_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+			                  elem_ptr, arch_name, arch_name, base_buf, f);
+		} else {
+			char *field_gep = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", field_gep,
+			                  arch_name, arch_name, base_buf, f);
+			elem_ptr = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", elem_ptr, elem_type, elem_type, field_gep);
+		}
+		char *val = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", val, elem_type, elem_type, elem_ptr);
+		add_value(ctx, param_name, val, 0);
+		break;
+	}
+}
+
+static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int decl_unit) {
+	/* Per-unit: a system is emitted in the unit that DECLARED it (whole-program emits all). Without this a
+	 * system defined in the entry file is emitted into every unit → "symbol multiply defined" at link. */
+	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
+		return;
+	ctx->entity_bind_count = 0;
+	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
+	ctx->current_return_types = NULL;
+	ctx->current_return_type_count = 0;
+	ctx->current_return_type = ctx->current_return_type_buf;
+	ctx->current_func = NULL;
+	char sys_sym_buf[512];
+	buffer_append_fmt(ctx, "define %svoid @%s() {\n", cg_linkage(ctx),
+	                  cg_fnsym(ctx, sys->name, 0, sys_sym_buf, sizeof(sys_sym_buf)));
+	buffer_append(ctx, "entry:\n");
+	FunctionBodyState fbs_sys = begin_function_body(ctx);
+	push_value_scope(ctx);
+	ctx->block_terminated = 0;
+	register_static_arrays_in_scope(ctx);
+	if (sys->param_count > 0) {
+		/* COLUMNAR `system(Q)`: the body is handed whole COLUMNS (not per-row scalars) and runs over them with
+		 * effects — like a `map` but effect-bearing and schedulable. Each `col = expr` vectorizes as a
+		 * whole-column loop (Path B of the assignment codegen); a boundary effect runs once. There is NO body
+		 * row loop — per-element iteration is `each`. Columns are bound as type-4 column pointers from the
+		 * pool GLOBAL (the system is dispatched no-arg); `ctx->in_columnar_system` tells the whole-column path
+		 * to read the count/base from that global. A `[1]` singleton in a join broadcasts as a scalar. */
+		/* Pick the archetype(s) to operate on: the non-singleton driver columns determine them (a query may
+		 * match several same-shape archetypes); a query over only singletons drives over the first. */
+		const char *cols[256];
+		int ncol = 0;
+		for (int p = 0; p < sys->param_count && ncol < 256; p++) {
+			const char *owner = arch_owning_col(ctx, sys->params[p]->name);
+			if (owner && get_arch_static_capacity(ctx, owner) == 1)
+				continue; /* singleton column — broadcast, not a driver */
+			cols[ncol++] = sys->params[p]->name;
+		}
+		if (ncol == 0 && sys->param_count > 0)
+			cols[ncol++] = sys->params[0]->name;
+		const char *archs[16];
+		int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
+		int prev_columnar = ctx->in_columnar_system;
+		ctx->in_columnar_system = 1;
+		for (int ai = 0; ai < na; ai++) {
+			const char *arch_name = archs[ai];
+			HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+			if (!arch)
+				continue;
+			int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+			/* A `[1]` DRIVER (the whole query is over a singleton, e.g. `system(query{handle})`) operates on
+			 * `col[0]`: bind its columns as type-4 pointers and drive the body at index 0, so they READ AND
+			 * WRITE the one cell. (A non-singleton driver is whole-column; a `[1]` JOIN PARTNER broadcasts.) */
+			int driver_is_singleton = get_arch_static_capacity(ctx, arch_name) == 1;
+			char base_buf[256];
+			emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+			const char *prev_qbn = ctx->qbinder_name, *prev_qba = ctx->qbinder_arch;
+			if (sys->query_binder) {
+				ctx->qbinder_name = sys->query_binder;
+				ctx->qbinder_arch = arch_name;
+			}
+			push_value_scope(ctx);
+			/* bind each query column: a column from an N-row pool as a type-4 COLUMN pointer (whole-column, no
+			 * row index); a `[1]` column the system does NOT own (a join broadcast partner) as the scalar at
+			 * index 0. The driver's own columns (incl. a `[1]` driver) bind as type-4 and read/write at col[0]. */
+			for (int p = 0; p < sys->param_count; p++) {
+				const char *param_name = sys->params[p]->name;
+				const char *owner = arch_owning_col(ctx, param_name);
+				if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+					bind_singleton_col(ctx, param_name, owner);
+					continue;
+				}
+				for (int f = 0; f < arch->field_count; f++) {
+					if (strcmp(arch->fields[f]->name, param_name) != 0)
+						continue;
+					const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
+					if (arch->fields[f]->kind == FIELD_COLUMN) {
+						char *field_ptr = gen_value_name(ctx);
+						if (is_static) {
+							buffer_append_fmt(
+							    ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+							    field_ptr, arch_name, arch_name, base_buf, f);
+						} else {
+							char *field_gep = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  field_gep, arch_name, arch_name, base_buf, f);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
+							                  field_gep);
+						}
+						add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer (whole-column) */
+						ValueInfo *col_val = find_value(ctx, param_name);
+						if (col_val) {
+							col_val->arch_name = malloc(strlen(arch_name) + 1);
+							strcpy(col_val->arch_name, arch_name);
+							col_val->field_type = field_base_type_name(arch->fields[f]->type);
+						}
+					} else {
+						char *field_gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+						                  field_gep, arch_name, arch_name, base_buf, f);
+						char *field_val = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", field_val, elem_type, elem_type, field_gep);
+						add_value(ctx, param_name, field_val, 0);
+					}
+					break;
+				}
+			}
+			/* A `[1]` driver reads/writes its columns at the single index 0 (`col[0]`); an N-row driver is
+			 * whole-column (no implicit index → assignments vectorize, scalar reads of an N-row column are an
+			 * each, not a system). */
+			if (driver_is_singleton)
+				snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "0");
+			ctx->block_terminated = 0;
+			codegen_body_fused(ctx, sys->stmts, sys->stmt_count);
+			ctx->implicit_loop_index[0] = '\0';
+			pop_value_scope(ctx);
+			ctx->qbinder_name = prev_qbn;
+			ctx->qbinder_arch = prev_qba;
+		}
+		ctx->in_columnar_system = prev_columnar;
+	} else {
+		codegen_body_fused(ctx, sys->stmts, sys->stmt_count);
+	}
+	pop_value_scope(ctx);
+	buffer_append(ctx, "  ret void\n");
+	end_function_body(ctx, fbs_sys);
+	buffer_append(ctx, "}\n\n");
+}
+
+/* `Name :: each(Q) { body }` — the PER-ELEMENT fan, emitted as a no-arg void function (dispatched by the
+ * schedule). Finds the archetype(s) carrying the query columns and runs the WHOLE body once PER row — ONE
+ * explicit row loop, and the body permits effects + control flow. Driver columns bind as type-4 column
+ * pointers auto-indexed at %row (`col[row]`, a scalar); a `[1]` singleton in a join binds as a broadcast
+ * scalar loaded at index 0. (This is what `system(Q)` did before it became columnar — now its own kind.) */
+/* Emit the per-element fan IN PLACE: split (possibly joined) columns into a DRIVER pool (its row count
+ * drives the loop) and `[1]` singleton broadcasts, then run the body once per row with columns bound as
+ * scalars at the current row. Shared by the top-level `each` decl (wrapped in a no-arg fn) and an inline
+ * anonymous `each` statement (emitted into the enclosing function so the body captures enclosing locals;
+ * the row index is saved/restored so nested fans don't clobber each other). */
+static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_count, HirStmt **stmts, int stmt_count,
+                             const char *row_var) {
+	/* This fan is a NESTED self-join fan iff it runs inside a columnar `system(Q)` — then the enclosing system's
+	 * BOUND columns are the neighbour fold domain, so a bare-column read inside a `reduce` iterates the fold
+	 * counter (while a `\x1f` self-read `me.col` stays at the fan row). A top-level map/system fan is not nested,
+	 * so its bare columns stay per-element self. */
+	int saved_nested = ctx->in_nested_fan;
+	ctx->in_nested_fan = ctx->in_columnar_system;
+	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
+	 * rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine which
+	 * archetype(s) we fan over (a query may still match several same-shape archetypes). */
+	const char *cols[256];
+	int ncol = 0;
+	for (int p = 0; p < param_count && ncol < 256; p++) {
+		const char *owner = arch_owning_col(ctx, params[p]->name);
+		if (owner && get_arch_static_capacity(ctx, owner) == 1)
+			continue; /* singleton column — broadcast, not a loop driver */
+		cols[ncol++] = params[p]->name;
+	}
+	/* A query over ONLY singletons (a join of `[1]` pools) has no broadcast counterpart — drive over the
+	 * FIRST singleton (one row); the rest broadcast as usual. */
+	if (ncol == 0 && param_count > 0)
+		cols[ncol++] = params[0]->name;
+	const char *archs[16];
+	int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
+	for (int ai = 0; ai < na; ai++) {
+		const char *arch_name = archs[ai];
+		HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
+		if (!arch)
+			continue;
+		int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+		char base_buf[256];
+		emit_query_pool_ptr(ctx, arch_name, is_static, base_buf, sizeof(base_buf));
+		char *cgep = gen_value_name(ctx); /* row count = the struct field after all columns */
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", cgep, arch_name,
+		                  arch_name, base_buf, arch->field_count);
+		char *count = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", count, cgep);
+		int id = ctx->value_counter++;
+		char head[40], lbody[40], lend[40];
+		snprintf(head, sizeof(head), "eachrow_head_%d", id);
+		snprintf(lbody, sizeof(lbody), "eachrow_body_%d", id);
+		snprintf(lend, sizeof(lend), "eachrow_end_%d", id);
+		char *ralloca = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", ralloca);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n  br label %%%s\n%s:\n", ralloca, head, head);
+		char *row = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", row, ralloca);
+		char *cmp = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n  br i1 %s, label %%%s, label %%%s\n%s:\n", cmp, row, count,
+		                  cmp, lbody, lend, lbody);
+		/* Liveness skip: the fan iterates 0..count, but `count` is a high-water mark — `delete` frees a slot
+		 * (sign-bit set in its generation) WITHOUT shrinking count. A tombstoned row has gen < 0; a live row
+		 * has gen >= 0. Skip dead slots so a drained pool re-iterates nothing and a delete-then-each pass
+		 * never re-processes a freed hole. (gc field: static = field_count+3, dynamic ptr = field_count+4.) */
+		char lcont[48], llive[48];
+		snprintf(lcont, sizeof(lcont), "eachrow_cont_%d", id);
+		snprintf(llive, sizeof(llive), "eachrow_live_%d", id);
+		int gc_field = arch->field_count + (is_static ? 3 : 4);
+		char *gcptr = gen_value_name(ctx);
+		if (is_static) {
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 %s\n", gcptr,
+			                  arch_name, arch_name, base_buf, gc_field, row);
+		} else {
+			char *gcbase = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gcbase,
+			                  arch_name, arch_name, base_buf, gc_field);
+			char *gcload = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i32*, i32** %s\n", gcload, gcbase);
+			buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", gcptr, gcload, row);
+		}
+		char *genval = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", genval, gcptr);
+		char *deadval = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n  br i1 %s, label %%%s, label %%%s\n%s:\n", deadval, genval,
+		                  deadval, lcont, llive, llive);
+		push_value_scope(ctx);
+		/* bind each query column: a DRIVER column (in this archetype) as a type-4 column pointer
+		 * (auto-indexed at %row); a SINGLETON column as a broadcast scalar loaded at index 0. */
+		for (int p = 0; p < param_count; p++) {
+			const char *param_name = params[p]->name;
+			const char *owner = arch_owning_col(ctx, param_name);
+			if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+				bind_singleton_col(ctx, param_name, owner);
+				continue;
+			}
+			for (int f = 0; f < arch->field_count; f++) {
+				if (strcmp(arch->fields[f]->name, param_name) != 0)
+					continue;
+				const char *elem_type = llvm_type_from_arche(field_base_type_name(arch->fields[f]->type));
+				if (arch->fields[f]->kind == FIELD_COLUMN) {
+					char *field_ptr = gen_value_name(ctx);
+					if (is_static) {
+						buffer_append_fmt(ctx,
+						                  "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n",
+						                  field_ptr, arch_name, arch_name, base_buf, f);
+					} else {
+						char *field_gep = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+						                  field_gep, arch_name, arch_name, base_buf, f);
+						buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", field_ptr, elem_type, elem_type,
+						                  field_gep);
+					}
+					add_value(ctx, param_name, field_ptr, 4); /* type 4 = column pointer (auto-indexed) */
+					ValueInfo *col_val = find_value(ctx, param_name);
+					if (col_val) {
+						col_val->arch_name = malloc(strlen(arch_name) + 1);
+						strcpy(col_val->arch_name, arch_name);
+						col_val->field_type = field_base_type_name(arch->fields[f]->type);
+						/* Pin this column to THIS fan's row (borrow the SSA-name string — it outlives the
+						 * binding), so a read inside a nested fan still indexes by the outer row, not the
+						 * ambient inner one. */
+						col_val->loop_idx = row;
+					}
+				} else {
+					char *field_gep = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+					                  field_gep, arch_name, arch_name, base_buf, f);
+					char *field_val = gen_value_name(ctx);
+					buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", field_val, elem_type, elem_type, field_gep);
+					add_value(ctx, param_name, field_val, 0);
+				}
+				break;
+			}
+		}
+		/* `each (query {…} as row_var)`: mint the matched row's generation-checked handle (slot | gen<<32 —
+		 * the same encoding `insert` produces, using the already-loaded `genval` and `row` == slot) and bind
+		 * it as a `handle(arch)` local. The body can then `delete(row_var)(ok:)` it (consume) or use it in a
+		 * relationship filter. */
+		if (row_var && row_var[0]) {
+			char *slot32 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", slot32, row);
+			char *slot64 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i32 %s to i64\n", slot64, slot32);
+			char *gen64 = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = zext i32 %s to i64\n", gen64, genval);
+			char *genshift = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = shl i64 %s, 32\n", genshift, gen64);
+			char *hval = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = or i64 %s, %s\n", hval, slot64, genshift);
+			char *hslot = gen_value_name(ctx);
+			emit_alloca(ctx, "  %s = alloca i64\n", hslot);
+			buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", hval, hslot);
+			ValueInfo *hvi = calloc(1, sizeof(ValueInfo));
+			hvi->name = strdup(row_var);
+			hvi->llvm_name = strdup(hslot);
+			hvi->type = 1;
+			hvi->string_len = -1;
+			hvi->field_type = "handle";
+			hvi->bit_width = 64;
+			hvi->handle_archetype = arch_name;
+			ValueScope *sc = &ctx->scopes[ctx->scope_count - 1];
+			sc->values = realloc(sc->values, (sc->value_count + 1) * sizeof(ValueInfo *));
+			sc->values[sc->value_count++] = hvi;
+		}
+		char saved_idx[64];
+		snprintf(saved_idx, sizeof(saved_idx), "%s", ctx->implicit_loop_index);
+		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s",
+		         row); /* col[row]; saved/restored so a NESTED each restores the outer row */
+		ctx->block_terminated = 0;
+		/* `continue` in the body skips to the next row: push this fan's row-advance (`eachrow_cont`) as the
+		 * continue target. (No break: stopping a data-parallel-ish fan early is incoherent.) Buffer lives for
+		 * the whole emission, and a nested each pushes its own, so `continue` always hits the innermost row. */
+		char lcont_br[52];
+		snprintf(lcont_br, sizeof lcont_br, "%%%s", lcont);
+		if (ctx->loop_cont_count >= ctx->loop_cont_capacity) {
+			ctx->loop_cont_capacity = ctx->loop_cont_capacity ? ctx->loop_cont_capacity * 2 : 8;
+			ctx->loop_cont_labels = realloc(ctx->loop_cont_labels, ctx->loop_cont_capacity * sizeof(char *));
+		}
+		ctx->loop_cont_labels[ctx->loop_cont_count++] = lcont_br;
+		for (int s = 0; s < stmt_count; s++)
+			codegen_statement(ctx, stmts[s]);
+		ctx->loop_cont_count--;
+		snprintf(ctx->implicit_loop_index, sizeof(ctx->implicit_loop_index), "%s", saved_idx);
+		pop_value_scope(ctx);
+		/* end of the live body → fall into the continue block (unless the body already terminated, e.g.
+		 * `os.exit`); the dead-slot skip also lands here. Then increment the row and loop. */
+		if (!ctx->block_terminated)
+			buffer_append_fmt(ctx, "  br label %%%s\n", lcont);
+		char *rnext = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "%s:\n  %s = add i64 %s, 1\n  store i64 %s, i64* %s\n  br label %%%s\n%s:\n", lcont,
+		                  rnext, row, rnext, ralloca, head, lend);
+		ctx->block_terminated = 0;
+	}
+	ctx->in_nested_fan = saved_nested;
+}
+
+static void codegen_each_decl(CodegenContext *ctx, HirKernelDecl *each, int decl_unit) {
+	/* Per-unit: emitted only in its declaring unit (whole-program emits all) — see codegen_system_decl. */
+	if (ctx->per_unit && ctx->emit_only_unit >= 0 && ctx->emit_only_unit != decl_unit)
+		return;
+	ctx->entity_bind_count = 0;
+	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
+	ctx->current_return_types = NULL;
+	ctx->current_return_type_count = 0;
+	ctx->current_return_type = ctx->current_return_type_buf;
+	ctx->current_func = NULL;
+	char each_sym_buf[512];
+	buffer_append_fmt(ctx, "define %svoid @%s() {\n", cg_linkage(ctx),
+	                  cg_fnsym(ctx, each->name, 0, each_sym_buf, sizeof(each_sym_buf)));
+	buffer_append(ctx, "entry:\n");
+	FunctionBodyState fbs_each = begin_function_body(ctx);
+	push_value_scope(ctx);
+	ctx->block_terminated = 0;
+	register_static_arrays_in_scope(ctx);
+	codegen_each_fan(ctx, each->params, each->param_count, each->stmts, each->stmt_count, each->row_var);
+	pop_value_scope(ctx);
+	buffer_append(ctx, "  ret void\n");
+	end_function_body(ctx, fbs_each);
+	buffer_append(ctx, "}\n\n");
+}
+
+/* Find a top-level system or map decl by its source name (schedule-entry resolution). A qualified schedule
+ * reference `game.pace` matches either the full dotted name or, for an imported decl that kept its bare
+ * name, the reference's tail (`pace`). */
+static HirDecl *cg_find_scheduled_decl(CodegenContext *ctx, const char *name) {
+	const char *dot = strrchr(name, '.');
+	const char *tail = dot ? dot + 1 : name;
+	for (int i = 0; i < ctx->ast->decl_count; i++) {
+		HirDecl *d = ctx->ast->decls[i];
+		const char *n = (d->kind == HIR_DECL_KERNEL) ? d->data.kernel->name : NULL;
+		if (n && (strcmp(n, name) == 0 || strcmp(n, tail) == 0))
+			return d;
+	}
+	return NULL;
+}
+
+/* Emit one ScheduleTree node into the current @arche_run body. Direct calls only — no fn pointers.
+ * `halt` is `ret void` (exits the loop); `loop` is a back-edge; `when` guards on a predicate direct-call. */
+/* Emit a host↔device transfer of a pool's GPU-emittable (32-bit float/int) columns: gather their base
+ * pointers + live count into an [ncol x i8*] and call the given runtime fn (`arche_gpu_sync` to download,
+ * `arche_gpu_upload` to refresh from host). The runtime acts only on columns that are actually resident, so
+ * this is a no-op for non-resident pools. `--gpu`-only (no residency without dispatch). */
+static void emit_gpu_xfer(CodegenContext *ctx, const char *sym, const char *runtime_fn) {
+	if (!ctx->gpu)
+		return;
+	const char *arch = sym ? canonical_arch_name(ctx, sym) : NULL;
+	HirArchetypeDecl *ga = arch ? find_archetype_decl(ctx, arch) : NULL;
+	if (!ga || get_arch_static_capacity(ctx, arch) <= 0)
+		return;
+	int col_field[64];
+	const char *col_llty[64];
+	int ncol = 0;
+	for (int f = 0; f < ga->field_count && ncol < 64; f++)
+		if (ga->fields[f]->kind == FIELD_COLUMN) {
+			const char *llty = cg_gpu_col_llty(ga->fields[f]->type);
+			if (llty) {
+				col_field[ncol] = f;
+				col_llty[ncol] = llty;
+				ncol++;
+			}
+		}
+	if (ncol == 0)
+		return;
+	char *cols = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca [%d x i8*]\n", cols, ncol);
+	for (int p = 0; p < ncol; p++) {
+		char *cp = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d, i64 0\n", cp, arch,
+		                  arch, arch, col_field[p]);
+		char *cp8 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = bitcast %s* %s to i8*\n", cp8, col_llty[p], cp);
+		char *slot = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 %d\n", slot, ncol, ncol,
+		                  cols, p);
+		buffer_append_fmt(ctx, "  store i8* %s, i8** %s\n", cp8, slot);
+		free(cp);
+		free(cp8);
+		free(slot);
+	}
+	char *cols0 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr [%d x i8*], [%d x i8*]* %s, i32 0, i32 0\n", cols0, ncol, ncol, cols);
+	char *cgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* @%s, i32 0, i32 %d\n", cgep, arch, arch,
+	                  arch, ga->field_count);
+	char *cnt64 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cnt64, cgep);
+	char *cnt32 = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = trunc i64 %s to i32\n", cnt32, cnt64);
+	buffer_append_fmt(ctx, "  call void @%s(i8** %s, i32 %d, i32 4, i32 %s)\n", runtime_fn, cols0, ncol, cnt32);
+	free(cols);
+	free(cols0);
+	free(cgep);
+	free(cnt64);
+	free(cnt32);
+}
+
+static void emit_sched(CodegenContext *ctx, ScheduleTree *t) {
+	if (!t || ctx->block_terminated)
+		return;
+	switch (t->kind) {
+	case SCHED_HALT:
+		buffer_append(ctx, "  ret void\n");
+		ctx->block_terminated = 1;
+		break;
+	case SCHED_RUN: {
+		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
+		/* A `system` and an effectful per-entity fan (`map (Q) eff`) are invoked as no-arg functions; a pure
+		 * `map` runs via HIR_STMT_RUN (whole-column / GPU-dispatchable). */
+		if (d && d->kind == HIR_DECL_KERNEL && (d->data.kernel->kind == HIR_KERNEL_SYSTEM || d->data.kernel->eff)) {
+			char sym[512];
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, d->data.kernel->name, 0, sym, sizeof(sym)));
+		} else {
+			HirStmt rs = {0};
+			rs.kind = HIR_STMT_RUN;
+			rs.data.run_stmt.map_name = t->sym;
+			/* a `@gpu` map scheduled by name dispatches on the GPU (CPU fallback) — carry its flag through */
+			rs.data.run_stmt.is_gpu = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel->is_gpu : 0;
+			codegen_statement(ctx, &rs);
+		}
+		break;
+	}
+	case SCHED_SEQ:
+	case SCHED_PAR: /* MVP: sequential (data-dependency concurrency is §9-open) */
+		for (int i = 0; i < t->child_count && !ctx->block_terminated; i++)
+			emit_sched(ctx, t->children[i]);
+		break;
+	case SCHED_LOOP: {
+		int id = ctx->value_counter++;
+		buffer_append_fmt(ctx, "  br label %%Lsched%d\nLsched%d:\n", id, id);
+		emit_sched(ctx, t->children[0]);
+		if (!ctx->block_terminated)
+			buffer_append_fmt(ctx, "  br label %%Lsched%d\n", id);
+		ctx->block_terminated = 1; /* loop never falls through — only a halt-ret leaves it */
+		break;
+	}
+	case SCHED_WHEN: {
+		int id = ctx->value_counter++;
+		char *r = gen_value_name(ctx);
+		char sym[512];
+		buffer_append_fmt(ctx, "  %s = call i8 @%s()\n", r,
+		                  t->sym ? cg_fnsym(ctx, t->sym, 0, sym, sizeof(sym)) : "arche_false");
+		char *c = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp ne i8 %s, 0\n", c, r);
+		buffer_append_fmt(ctx, "  br i1 %s, label %%Lw%dt, label %%Lw%de\nLw%dt:\n", c, id, id, id);
+		free(r);
+		free(c);
+		emit_sched(ctx, t->children[0]);
+		if (!ctx->block_terminated)
+			buffer_append_fmt(ctx, "  br label %%Lw%de\n", id);
+		buffer_append_fmt(ctx, "Lw%de:\n", id);
+		ctx->block_terminated = 0;
+		break;
+	}
+	case SCHED_GPU_SYNC:
+		/* `gpu.sync(Pool)` — download the pool's GPU-resident columns back to host (a no-op for non-resident
+		 * cols, and outside `--gpu` builds). */
+		emit_gpu_xfer(ctx, t->sym, "arche_gpu_sync");
+		break;
+	case SCHED_GPU_UPLOAD:
+		/* Derived upload — refresh the pool's resident device columns from host (a no-op for non-resident
+		 * cols, and outside `--gpu` builds). Inserted by the coherence pass before a GPU read of data the
+		 * host wrote after the pool went resident. */
+		emit_gpu_xfer(ctx, t->sym, "arche_gpu_upload");
+		break;
+	}
+}
+
+/* ============================================================================
+ * Derived residency & coherence (auto `@resident` + auto `gpu.sync`)
+ *
+ * A single forward pass over the folded #run schedule tracks, per pool, which device holds the authoritative
+ * copy. Using the read/write footprint of each kernel (§ cg_kernel_footprint) and its derived placement
+ * (cg_map_placed_gpu), it (1) inserts a `gpu.sync(Pool)` before any HOST read of a pool the GPU last wrote —
+ * the mandatory, correctness-driven download — and (2) derives `@resident` for a pool touched by 2+
+ * consecutive GPU steps with no intervening host read, eliding per-dispatch downloads. This is footprint-based
+ * coherence in the tradition of PPCG / Polly-ACC / CGCM, made trivial by arche's fully static schedule.
+ *
+ * Correctness posture: conservative. A written pool is treated as also read; a control-flow node
+ * (loop/when/par) is a BARRIER (flush all dirty pools, seed the body's GPU-writes as dirty) — over-syncing is
+ * slower, under-syncing is WRONG. Only the straight-line `seq` case derives residency; that is the case the
+ * benchmark and the win live in. Explicit `@resident`/`gpu.sync` remain honored (never removed): a
+ * user-written sync clears dirty here, so no duplicate is inserted.
+ * ==========================================================================*/
+
+/* Per-kernel pool-level access footprint: which concrete pools the kernel reads / writes. */
+typedef struct {
+	const char *pools[64]; /* canonical shape names (stable for program lifetime) */
+	int is_write[64];
+	int is_read[64];
+	int n;
+} CgFootprint;
+
+static void cg_fp_add(CgFootprint *fp, const char *pool, int write, int read) {
+	if (!pool)
+		return;
+	for (int i = 0; i < fp->n; i++)
+		if (strcmp(fp->pools[i], pool) == 0) {
+			fp->is_write[i] |= write;
+			fp->is_read[i] |= read;
+			return;
+		}
+	if (fp->n >= 64)
+		return;
+	fp->pools[fp->n] = pool;
+	fp->is_write[fp->n] = write;
+	fp->is_read[fp->n] = read;
+	fp->n++;
+}
+
+/* Record a pool-QUALIFIED access (`Pool.col`, `Pool.col[i]`) reachable from `e`. `write_ctx`: 0 = read,
+ * 1 = read+write (a partial or compound write — the prior contents survive, so it also reads), 2 = write-only
+ * (a plain whole-column overwrite `Pool.col = {…}` — the prior contents are discarded, so NO read/download is
+ * needed before it). Selector-bound bare columns are handled by the caller. */
+static void cg_fp_expr(CodegenContext *ctx, HirExpr *e, int write_ctx, CgFootprint *fp) {
+	if (!e)
+		return;
+	switch (e->kind) {
+	case HIR_EXPR_FIELD:
+		if (e->data.field.base && e->data.field.base->kind == HIR_EXPR_NAME && e->data.field.base->data.name.name &&
+		    find_archetype_decl(ctx, e->data.field.base->data.name.name)) {
+			cg_fp_add(fp, canonical_arch_name(ctx, e->data.field.base->data.name.name),
+			          /*write*/ write_ctx >= 1, /*read*/ write_ctx != 2);
+			return; /* the base names the pool; nothing deeper to walk */
+		}
+		cg_fp_expr(ctx, e->data.field.base, 0, fp);
+		break;
+	case HIR_EXPR_INDEX:
+		/* `Pool.col[i] = …` writes ONE element and preserves the rest — a partial write, so read+write even
+		 * for a plain assign (downgrade write-only → read+write on the base). */
+		cg_fp_expr(ctx, e->data.index.base, write_ctx == 2 ? 1 : write_ctx, fp);
+		for (int i = 0; i < e->data.index.index_count; i++)
+			cg_fp_expr(ctx, e->data.index.indices[i], 0, fp);
+		break;
+	case HIR_EXPR_SLICE:
+		cg_fp_expr(ctx, e->data.slice.base, 0, fp);
+		cg_fp_expr(ctx, e->data.slice.lo, 0, fp);
+		cg_fp_expr(ctx, e->data.slice.hi, 0, fp);
+		break;
+	case HIR_EXPR_BINARY:
+		cg_fp_expr(ctx, e->data.binary.left, 0, fp);
+		cg_fp_expr(ctx, e->data.binary.right, 0, fp);
+		break;
+	case HIR_EXPR_UNARY:
+		cg_fp_expr(ctx, e->data.unary.operand, 0, fp);
+		break;
+	case HIR_EXPR_CALL:
+		cg_fp_expr(ctx, e->data.call.callee, 0, fp);
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			cg_fp_expr(ctx, e->data.call.args[i], 0, fp);
+		break;
+	case HIR_EXPR_ALLOC:
+		if (e->data.alloc.archetype_name && find_archetype_decl(ctx, e->data.alloc.archetype_name))
+			cg_fp_add(fp, canonical_arch_name(ctx, e->data.alloc.archetype_name), 1, 1); /* insert writes the pool */
+		for (int i = 0; i < e->data.alloc.field_count; i++)
+			cg_fp_expr(ctx, e->data.alloc.field_values[i], 0, fp);
+		cg_fp_expr(ctx, e->data.alloc.init_length, 0, fp);
+		break;
+	case HIR_EXPR_ENTITY_LIT:
+		if (e->data.entity.type_name && find_archetype_decl(ctx, e->data.entity.type_name))
+			cg_fp_add(fp, canonical_arch_name(ctx, e->data.entity.type_name), 1, 1);
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			cg_fp_expr(ctx, e->data.entity.field_values[i], 0, fp);
+		break;
+	case HIR_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			cg_fp_expr(ctx, e->data.array_literal.elements[i], 0, fp);
+		break;
+	default:
+		break; /* NAME / LITERAL / STRING: no pool-qualified access */
+	}
+}
+
+static void cg_fp_stmts(CodegenContext *ctx, HirStmt **stmts, int n, CgFootprint *fp);
+
+static void cg_fp_stmt(CodegenContext *ctx, HirStmt *s, CgFootprint *fp) {
+	if (!s)
+		return;
+	switch (s->kind) {
+	case HIR_STMT_ASSIGN: {
+		/* A plain `=` overwrites (write-only, 2); a compound `+=`/… reads the target too (read+write, 1). */
+		int wc = (s->data.assign_stmt.op == OP_NONE) ? 2 : 1;
+		cg_fp_expr(ctx, s->data.assign_stmt.target, wc, fp);
+		cg_fp_expr(ctx, s->data.assign_stmt.value, 0, fp);
+		break;
+	}
+	case HIR_STMT_BIND:
+		cg_fp_expr(ctx, s->data.bind_stmt.value, 0, fp);
+		break;
+	case HIR_STMT_MULTI_BIND:
+		cg_fp_expr(ctx, s->data.multi_bind.value, 0, fp);
+		break;
+	case HIR_STMT_EXPR:
+		cg_fp_expr(ctx, s->data.expr_stmt.expr, 0, fp);
+		break;
+	case HIR_STMT_RETURN:
+		for (int i = 0; i < s->data.return_stmt.count; i++)
+			cg_fp_expr(ctx, s->data.return_stmt.values[i], 0, fp);
+		break;
+	case HIR_STMT_IF:
+		cg_fp_expr(ctx, s->data.if_stmt.cond, 0, fp);
+		cg_fp_stmts(ctx, s->data.if_stmt.then_body, s->data.if_stmt.then_count, fp);
+		cg_fp_stmts(ctx, s->data.if_stmt.else_body, s->data.if_stmt.else_count, fp);
+		break;
+	case HIR_STMT_FOR:
+		cg_fp_expr(ctx, s->data.for_stmt.iterable, 0, fp);
+		cg_fp_stmt(ctx, s->data.for_stmt.init, fp);
+		cg_fp_expr(ctx, s->data.for_stmt.cond, 0, fp);
+		cg_fp_stmt(ctx, s->data.for_stmt.incr, fp);
+		cg_fp_stmts(ctx, s->data.for_stmt.body, s->data.for_stmt.body_count, fp);
+		break;
+	case HIR_STMT_BLOCK:
+		cg_fp_stmts(ctx, s->data.block.stmts, s->data.block.count, fp);
+		break;
+	case HIR_STMT_EACH_FIELD:
+		cg_fp_stmts(ctx, s->data.each_field.body, s->data.each_field.body_count, fp);
+		break;
+	case HIR_STMT_EACH:
+		/* an inline per-entity fan: its selector pool is accessed, plus any pool-qualified body access. */
+		if (s->data.each_stmt) {
+			HirKernelDecl *fan = s->data.each_stmt;
+			const char *fcols[256];
+			int fnc = map_query_cols(fan, fcols, 256);
+			const char *fcomp[256];
+			int fcc = query_match_archs(ctx, fcols, fnc, fcomp, 256);
+			for (int i = 0; i < fcc; i++) {
+				const char *cn = canonical_arch_name(ctx, fcomp[i]);
+				if (get_arch_static_capacity(ctx, cn) > 0)
+					cg_fp_add(fp, cn, fan->write_count > 0, 1);
+			}
+			cg_fp_stmts(ctx, fan->stmts, fan->stmt_count, fp);
+		}
+		break;
+	default:
+		break;
+	}
+}
+
+static void cg_fp_stmts(CodegenContext *ctx, HirStmt **stmts, int n, CgFootprint *fp) {
+	for (int i = 0; i < n; i++)
+		cg_fp_stmt(ctx, stmts[i], fp);
+}
+
+/* The pool-level read/write footprint of a scheduled kernel: its selector pool(s) (read if it binds columns,
+ * written if it declares `(writes)`) plus every pool-qualified access in the body. */
+static void cg_kernel_footprint(CodegenContext *ctx, HirKernelDecl *k, CgFootprint *fp) {
+	if (!k)
+		return;
+	if (k->param_count > 0) {
+		const char *cols[256];
+		int nc = map_query_cols(k, cols, 256);
+		const char *comp[256];
+		int cc = query_match_archs(ctx, cols, nc, comp, 256);
+		for (int i = 0; i < cc; i++) {
+			const char *cn = canonical_arch_name(ctx, comp[i]);
+			if (get_arch_static_capacity(ctx, cn) > 0)
+				cg_fp_add(fp, cn, k->write_count > 0, 1);
+		}
+	}
+	cg_fp_stmts(ctx, k->stmts, k->stmt_count, fp);
+}
+
+/* Per-pool coherence state carried across the forward walk. */
+typedef struct {
+	const char *pools[128];
+	int dirty_gpu[128];  /* GPU wrote → GPU holds the authoritative copy; the host is stale (→ download) */
+	int dirty_host[128]; /* host wrote → host holds the authoritative copy; the resident device copy is stale
+	                        (→ upload before a GPU read) */
+	int gpu_seen[128];   /* the pool has been GPU-dispatched, so a resident device buffer may exist (an upload
+	                        before the FIRST dispatch would be a no-op — the dispatch auto-uploads) */
+	int gpu_run[128];    /* consecutive GPU touches with no intervening host read (residency signal) */
+	int n;
+} CgCoh;
+
+static int cg_coh_idx(CgCoh *c, const char *pool) {
+	for (int i = 0; i < c->n; i++)
+		if (strcmp(c->pools[i], pool) == 0)
+			return i;
+	if (c->n >= 128)
+		return -1;
+	c->pools[c->n] = pool;
+	c->dirty_gpu[c->n] = 0;
+	c->dirty_host[c->n] = 0;
+	c->gpu_seen[c->n] = 0;
+	c->gpu_run[c->n] = 0;
+	return c->n++;
+}
+
+static ScheduleTree *cg_sched_node(SchedKind k) {
+	ScheduleTree *t = calloc(1, sizeof(ScheduleTree));
+	t->kind = k;
+	return t;
+}
+
+static ScheduleTree *cg_sched_sync(const char *pool) {
+	ScheduleTree *t = cg_sched_node(SCHED_GPU_SYNC);
+	if (pool) {
+		t->sym = malloc(strlen(pool) + 1);
+		strcpy(t->sym, pool);
+	}
+	return t;
+}
+
+static ScheduleTree *cg_sched_upload(const char *pool) {
+	ScheduleTree *t = cg_sched_node(SCHED_GPU_UPLOAD);
+	if (pool) {
+		t->sym = malloc(strlen(pool) + 1);
+		strcpy(t->sym, pool);
+	}
+	return t;
+}
+
+static void cg_coh_append(ScheduleTree ***a, int *n, ScheduleTree *node) {
+	*a = realloc(*a, (size_t)(*n + 1) * sizeof(ScheduleTree *));
+	(*a)[(*n)++] = node;
+}
+
+static void cg_coh_process_seq(CodegenContext *ctx, ScheduleTree *seq, CgCoh *c);
+static void cg_coh_process_slot(CodegenContext *ctx, ScheduleTree **slot, CgCoh *c);
+
+/* The pool sets a control-flow (loop/when) body touches, gathered in one walk:
+ *  - gwrite: pools a GPU-placed map WRITES  (→ seed dirty at body entry: loop-carry / maybe-run safety);
+ *  - gtouch: pools a GPU-placed map reads OR writes (→ loop-residency candidates);
+ *  - hwrite: pools a HOST (CPU) step writes (→ EXCLUDED from residency — no host→device re-upload exists,
+ *            so a resident pool the host writes then the GPU reads would read stale VRAM). */
+typedef struct {
+	const char *gwrite[128];
+	int ngwrite;
+	const char *gtouch[128];
+	int ngtouch;
+	const char *hwrite[128];
+	int nhwrite;
+} CgLoopSets;
+
+static void cg_loopset_add(const char **arr, int *n, const char *pool) {
+	for (int j = 0; j < *n; j++)
+		if (strcmp(arr[j], pool) == 0)
+			return;
+	if (*n < 128)
+		arr[(*n)++] = pool;
+}
+
+static void cg_coh_collect_loop_sets(CodegenContext *ctx, ScheduleTree *t, CgLoopSets *s) {
+	if (!t)
+		return;
+	if (t->kind == SCHED_RUN) {
+		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
+		HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+		if (!k)
+			return;
+		CgFootprint fp = {0};
+		cg_kernel_footprint(ctx, k, &fp);
+		const char *gp = NULL;
+		int gpu = cg_map_placed_gpu(ctx, k, &gp);
+		for (int p = 0; p < fp.n; p++) {
+			if (gpu) {
+				if (fp.is_write[p])
+					cg_loopset_add(s->gwrite, &s->ngwrite, fp.pools[p]);
+				if (fp.is_read[p] || fp.is_write[p])
+					cg_loopset_add(s->gtouch, &s->ngtouch, fp.pools[p]);
+			} else if (fp.is_write[p]) {
+				cg_loopset_add(s->hwrite, &s->nhwrite, fp.pools[p]);
+			}
+		}
+		return;
+	}
+	for (int i = 0; i < t->child_count; i++)
+		cg_coh_collect_loop_sets(ctx, t->children[i], s);
+}
+
+/* Process one schedule child, appending it (and any syncs it needs before it) to the parent sequence's new
+ * child list. Recurses into nested sequences and control-flow nodes. */
+static void cg_coh_process_child(CodegenContext *ctx, ScheduleTree *ch, CgCoh *c, ScheduleTree ***out, int *nout) {
+	int dbg = getenv("ARCHE_COH_DEBUG") != NULL;
+	switch (ch->kind) {
+	case SCHED_SEQ:
+	case SCHED_PAR: /* PAR is emitted sequentially today — same coherence as SEQ */
+		cg_coh_process_seq(ctx, ch, c);
+		cg_coh_append(out, nout, ch);
+		break;
+	case SCHED_RUN: {
+		HirDecl *d = ch->sym ? cg_find_scheduled_decl(ctx, ch->sym) : NULL;
+		HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+		if (!k) {
+			cg_coh_append(out, nout, ch);
+			break;
+		}
+		CgFootprint fp = {0};
+		cg_kernel_footprint(ctx, k, &fp);
+		const char *gpupool = NULL;
+		int gpu = cg_map_placed_gpu(ctx, k, &gpupool);
+		int nosync = getenv("ARCHE_COH_NO_SYNC") != NULL;
+		int noupload = getenv("ARCHE_COH_NO_UPLOAD") != NULL; /* suppress ONLY uploads (isolates the upload test) */
+		/* Insert the transfer this step's reads require. Symmetric: a HOST step reading a GPU-dirty pool needs
+		 * a DOWNLOAD (sync) first; a GPU step reading a HOST-dirty resident pool needs an UPLOAD first (the
+		 * runtime uploads a resident buffer only once, so a later host write is otherwise invisible — gated on
+		 * gpu_seen so the pre-first-dispatch upload, which the dispatch does itself, is skipped). ARCHE_COH_NO_SYNC
+		 * suppresses ONLY the insertion (state still tracked) — the lever proving the transfer is load-bearing. */
+		for (int p = 0; p < fp.n; p++) {
+			if (!fp.is_read[p])
+				continue;
+			int idx = cg_coh_idx(c, fp.pools[p]);
+			if (idx < 0)
+				continue;
+			if (!gpu && c->dirty_gpu[idx]) {
+				if (dbg)
+					fprintf(stderr, "COHERENCE sync %s before %s\n", fp.pools[p], ch->sym ? ch->sym : "?");
+				if (!nosync)
+					cg_coh_append(out, nout, cg_sched_sync(fp.pools[p]));
+				c->dirty_gpu[idx] = 0;
+				c->gpu_run[idx] = 0;
+			} else if (gpu && c->dirty_host[idx] && c->gpu_seen[idx]) {
+				if (dbg)
+					fprintf(stderr, "COHERENCE upload %s before %s\n", fp.pools[p], ch->sym ? ch->sym : "?");
+				if (!nosync && !noupload)
+					cg_coh_append(out, nout, cg_sched_upload(fp.pools[p]));
+				c->dirty_host[idx] = 0;
+			}
+		}
+		cg_coh_append(out, nout, ch);
+		/* Apply the step's writes + accumulate the residency signal. */
+		for (int p = 0; p < fp.n; p++) {
+			int idx = cg_coh_idx(c, fp.pools[p]);
+			if (idx < 0)
+				continue;
+			if (gpu) {
+				c->gpu_seen[idx] = 1;
+				c->gpu_run[idx]++;
+				if (c->gpu_run[idx] >= 2) {
+					if (dbg && !cg_arch_is_resident(ctx, fp.pools[p]))
+						fprintf(stderr, "COHERENCE resident %s\n", fp.pools[p]);
+					cg_arch_set_resident(ctx, fp.pools[p]);
+				}
+				if (fp.is_write[p]) {
+					c->dirty_gpu[idx] = 1;
+					c->dirty_host[idx] = 0; /* device now holds the authoritative copy */
+				}
+			} else {
+				if (fp.is_write[p]) {
+					c->dirty_host[idx] = 1; /* host now holds the authoritative copy */
+					c->dirty_gpu[idx] = 0;
+				}
+				c->gpu_run[idx] = 0; /* a host touch breaks the resident run */
+			}
+		}
+		break;
+	}
+	case SCHED_GPU_SYNC: {
+		/* A sync (user-written, or one we inserted upstream) downloads the pool → host is current again. */
+		const char *pool = ch->sym ? canonical_arch_name(ctx, ch->sym) : NULL;
+		if (pool) {
+			int idx = cg_coh_idx(c, pool);
+			if (idx >= 0) {
+				c->dirty_gpu[idx] = 0;
+				c->gpu_run[idx] = 0;
+			}
+		}
+		cg_coh_append(out, nout, ch);
+		break;
+	}
+	case SCHED_GPU_UPLOAD: {
+		/* An upload (one we inserted upstream) refreshes the device from host → the device copy is current. */
+		const char *pool = ch->sym ? canonical_arch_name(ctx, ch->sym) : NULL;
+		if (pool) {
+			int idx = cg_coh_idx(c, pool);
+			if (idx >= 0)
+				c->dirty_host[idx] = 0;
+		}
+		cg_coh_append(out, nout, ch);
+		break;
+	}
+	case SCHED_LOOP: {
+		/* Residency-carrying fixpoint (NOT a barrier): a pool the GPU touches every iteration should live in
+		 * VRAM across the back-edge, not be re-uploaded per frame. Do NOT flush before the loop — carry the
+		 * pre-loop dirty state in; the body's own transfer insertion covers loop-carried host reads (download)
+		 * AND host writes (upload). Seed the conservative one-step fixpoint symmetrically: `dirty_gpu ⊇ gwrite`
+		 * and `dirty_host ⊇ hwrite` (a pool GPU-/host-written anywhere in the body is dirty at the top of every
+		 * iteration ≥ 2), plus `gpu_seen` for gtouch (a resident buffer exists by iteration 2, so a loop-carried
+		 * host-write→GPU-read gets an upload). Over-syncs iteration 1 at worst; never under-syncs. EVERY
+		 * GPU-touched pool is kept resident now — host-written ones stay coherent via the derived upload. */
+		CgLoopSets ls = {0};
+		cg_coh_collect_loop_sets(ctx, ch, &ls);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1;
+		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1;
+		}
+		for (int j = 0; j < ls.ngtouch; j++) {
+			int idx = cg_coh_idx(c, ls.gtouch[j]);
+			if (idx >= 0)
+				c->gpu_seen[idx] = 1; /* touched by iteration 1 → resident buffer may exist for a carried upload */
+			if (dbg && !cg_arch_is_resident(ctx, ls.gtouch[j]))
+				fprintf(stderr, "COHERENCE resident %s\n", ls.gtouch[j]);
+			cg_arch_set_resident(ctx, ls.gtouch[j]);
+		}
+		for (int i = 0; i < c->n; i++)
+			c->gpu_run[i] = 0; /* the straight-line run counter doesn't span the boundary */
+		if (ch->child_count > 0)
+			cg_coh_process_slot(ctx, &ch->children[0], c);
+		cg_coh_append(out, nout, ch);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1; /* GPU-written in the loop → dirty afterwards (post-loop coherence) */
+		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1;
+		}
+		break;
+	}
+	case SCHED_WHEN: {
+		/* BARRIER (conservative): a conditional body isn't the every-iteration repetition that justifies
+		 * residency, so keep the safe form — flush dirty before, seed the body's GPU-writes as dirty (maybe-run
+		 * safety), process, leave them dirty. No residency forced across the boundary. */
+		for (int i = 0; i < c->n; i++)
+			if (c->dirty_gpu[i]) {
+				if (dbg)
+					fprintf(stderr, "COHERENCE sync %s before control-flow\n", c->pools[i]);
+				cg_coh_append(out, nout, cg_sched_sync(c->pools[i]));
+				c->dirty_gpu[i] = 0;
+			}
+		CgLoopSets ls = {0};
+		cg_coh_collect_loop_sets(ctx, ch, &ls);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1;
+		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1; /* maybe-run host write → device maybe stale (upload before a later GPU read) */
+		}
+		for (int i = 0; i < c->n; i++)
+			c->gpu_run[i] = 0;
+		if (ch->child_count > 0)
+			cg_coh_process_slot(ctx, &ch->children[0], c);
+		cg_coh_append(out, nout, ch);
+		for (int j = 0; j < ls.ngwrite; j++) {
+			int idx = cg_coh_idx(c, ls.gwrite[j]);
+			if (idx >= 0)
+				c->dirty_gpu[idx] = 1;
+		}
+		for (int j = 0; j < ls.nhwrite; j++) {
+			int idx = cg_coh_idx(c, ls.hwrite[j]);
+			if (idx >= 0)
+				c->dirty_host[idx] = 1;
+		}
+		break;
+	}
+	default:
+		cg_coh_append(out, nout, ch);
+		break;
+	}
+}
+
+static void cg_coh_process_seq(CodegenContext *ctx, ScheduleTree *seq, CgCoh *c) {
+	ScheduleTree **nc = NULL;
+	int nn = 0;
+	for (int i = 0; i < seq->child_count; i++)
+		cg_coh_process_child(ctx, seq->children[i], c, &nc, &nn);
+	free(seq->children);
+	seq->children = nc;
+	seq->child_count = nn;
+}
+
+/* Process a single child position, wrapping it in a fresh SEQ if a preceding sync had to be spliced in. */
+static void cg_coh_process_slot(CodegenContext *ctx, ScheduleTree **slot, CgCoh *c) {
+	ScheduleTree *ch = *slot;
+	if (!ch)
+		return;
+	if (ch->kind == SCHED_SEQ || ch->kind == SCHED_PAR) {
+		cg_coh_process_seq(ctx, ch, c);
+		return;
+	}
+	ScheduleTree **out = NULL;
+	int n = 0;
+	cg_coh_process_child(ctx, ch, c, &out, &n);
+	if (n == 1) {
+		*slot = out[0];
+		free(out);
+	} else if (n > 1) {
+		ScheduleTree *seq = cg_sched_node(SCHED_SEQ);
+		seq->children = out;
+		seq->child_count = n;
+		*slot = seq;
+	} else {
+		free(out);
+	}
+}
+
+/* Entry point: run the coherence pass over the folded schedule, mutating it in place (inserting gpu.sync
+ * nodes and deriving `@resident`). Only under `--gpu`; a no-op otherwise (no device ⇒ no residency). */
+/* ---- Joint placement (residency-aware cluster costing) -----------------------------------------------------
+ * The greedy per-map estimate prices every GPU map as if its data must be transferred each dispatch, so a map
+ * that would win only when resident is placed on the CPU — and then never becomes resident. This pass breaks
+ * that: it walks the folded schedule, groups consecutive eligible maps over the SAME pool into a CLUSTER, and
+ * costs the cluster AS A UNIT — the transfer is paid ONCE (at the CPU↔GPU cut), not per map. It records a
+ * per-map decision that cg_placement_decide consults above the greedy estimate. Residency then falls out: a
+ * pool internal to a GPU cluster is exactly what the coherence pass keeps resident. */
+
+typedef struct {
+	const char *pool;         /* canonical pool of the forming cluster; NULL = empty */
+	long rows;                /* pool capacity (shared by all maps in the cluster) */
+	int nmaps;                /* map count in the chain */
+	int max_ncol;             /* widest column set touched (→ transfer bytes) */
+	HirKernelDecl *maps[256]; /* the cluster's maps, in schedule order (the DP chain) */
+} CgCluster;
+
+static void cg_joint_record(CodegenContext *ctx, HirKernelDecl *k, int gpu) {
+	if (!k || !k->name)
+		return;
+	char **nn = realloc(ctx->joint_names, sizeof(char *) * (size_t)(ctx->joint_count + 1));
+	int *ng = realloc(ctx->joint_gpu, sizeof(int) * (size_t)(ctx->joint_count + 1));
+	if (!nn || !ng) {
+		free(nn);
+		free(ng);
+		return;
+	}
+	ctx->joint_names = nn;
+	ctx->joint_gpu = ng;
+	ctx->joint_names[ctx->joint_count] = k->name;
+	ctx->joint_gpu[ctx->joint_count] = gpu;
+	ctx->joint_count++;
+}
+
+/* Cost the forming cluster and record each map's decision, then reset it. This is the exact min-cut for a
+ * linear chain: a DP that assigns each map CPU or GPU to minimize Σ compute + (#device-boundaries)·transfer,
+ * where a boundary is a one-way host↔device copy (`gpu_xfer_us/2`, staging-dominated, + a size term if the
+ * profile carries one). The chain's ENTRY and EXIT device are the pool's resident device at the cluster
+ * edges: CPU for a straight-line cluster (bounded by host accesses), GPU for a loop-body cluster (the pool
+ * stays resident across the back-edge, so entry/exit crossings vanish — that is the residency win). Splitting
+ * is allowed: `membound, heavy` over one pool correctly places membound on the CPU and heavy on the GPU (the
+ * transfer for heavy is paid regardless, and membound is cheaper on the CPU). */
+static void cg_joint_flush(CodegenContext *ctx, CgCluster *cl, int in_loop, const char **host_pools, int n_host) {
+	if (cl->pool && cl->nmaps > 0) {
+		const MachineProfile *p = &ctx->profile;
+		const double INF = 1e30;
+		/* A loop cluster is RESIDENT (entry/exit on the GPU, no boundary transfer — the residency win) only if
+		 * no HOST step in the loop touches its pool. If a CPU consumer reads it every iteration (e.g. a software
+		 * renderer reads the positions each frame), the pool round-trips every iteration — a hard cut the
+		 * partition can't remove — so it is costed like a straight-line cluster (CPU entry/exit, transfer paid).
+		 * That keeps an 8-row map feeding a CPU renderer on the CPU, instead of wrongly forcing it to the GPU. */
+		int resident = in_loop;
+		for (int i = 0; i < n_host && resident; i++)
+			if (host_pools[i] && strcmp(host_pools[i], cl->pool) == 0)
+				resident = 0;
+		int gpu_of[256]; /* the DP's per-map decision */
+		int decided = 0;
+		if (p->gpu_present && p->gpu_gflops > 0 && p->cpu_gflops > 0 && cl->rows > 0) {
+			/* one-way transfer cost: half the measured round-trip + a one-way size term (≈0 when pcie is off) */
+			double bytes = (double)cl->max_ncol * 4.0 * (double)cl->rows;
+			double xf = p->gpu_xfer_us * 0.5e-6 + ((p->pcie_up_gbps > 0) ? bytes / (p->pcie_up_gbps * 1e9) : INF);
+			double launch = p->gpu_launch_us * 1e-6;
+			int entry_gpu = resident, exit_gpu = resident; /* resident device at the cluster edges */
+			double dpC = entry_gpu ? INF : 0, dpG = entry_gpu ? 0 : INF;
+			int fromC[256], fromG[256]; /* backtrack: prev device chosen for this map on C / on G */
+			for (int i = 0; i < cl->nmaps; i++) {
+				double comp = cg_kernel_flops_per_elem(cl->maps[i]) * (double)cl->rows;
+				double cpu_c = comp / (p->cpu_gflops * 1e9);
+				double gpu_c = launch + comp / (p->gpu_gflops * 1e9);
+				double stayC = dpC, hopC = dpG + xf; /* end on CPU: stay, or download from GPU */
+				double nC = cpu_c + (stayC <= hopC ? stayC : hopC);
+				fromC[i] = (stayC <= hopC) ? 0 : 1;
+				double stayG = dpG, hopG = dpC + xf; /* end on GPU: stay, or upload from CPU */
+				double nG = gpu_c + (stayG <= hopG ? stayG : hopG);
+				fromG[i] = (stayG <= hopG) ? 1 : 0;
+				dpC = nC;
+				dpG = nG;
+			}
+			double endC = dpC + (exit_gpu ? xf : 0); /* exit crossing back to the resident device, if any */
+			double endG = dpG + (exit_gpu ? 0 : xf);
+			int dev = (endG < endC) ? 1 : 0;
+			for (int i = cl->nmaps - 1; i >= 0; i--) { /* backtrack the chosen device per map */
+				gpu_of[i] = dev;
+				dev = dev ? fromG[i] : fromC[i];
+			}
+			decided = 1;
+		}
+		int dbg = getenv("ARCHE_PLACE_DEBUG") != NULL;
+		for (int i = 0; i < cl->nmaps; i++) {
+			int g = decided ? gpu_of[i] : 0;
+			cg_joint_record(ctx, cl->maps[i], g);
+			if (dbg)
+				fprintf(stderr, "JOINT %s [pool=%s rows=%ld cluster=%d loop=%d resident=%d] -> %s\n",
+				        cl->maps[i]->name ? cl->maps[i]->name : "?", cl->pool, cl->rows, cl->nmaps, in_loop, resident,
+				        g ? "GPU" : "CPU");
+		}
+	}
+	cl->pool = NULL;
+	cl->rows = 0;
+	cl->nmaps = 0;
+	cl->max_ncol = 0;
+}
+
+static void cg_joint_walk(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools, int n_host);
+
+/* Collect the pools touched by HOST steps (systems, `eff` maps, non-GPU-eligible maps) anywhere in the
+ * subtree `t`. A pool in this set has a CPU consumer/producer inside the loop, so it cannot stay resident
+ * across the back-edge — its loop clusters must pay the transfer. Appends canonical pool names (deduped). */
+static void cg_joint_collect_host_pools(CodegenContext *ctx, ScheduleTree *t, const char **pools, int *n, int cap) {
+	if (!t)
+		return;
+	if (t->kind == SCHED_RUN) {
+		HirDecl *d = t->sym ? cg_find_scheduled_decl(ctx, t->sym) : NULL;
+		HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+		const char *gp = NULL;
+		if (!k || cg_map_gpu_eligible(ctx, k, &gp))
+			return; /* a GPU-eligible map is not a host cut */
+		CgFootprint fp = {0};
+		cg_kernel_footprint(ctx, k, &fp);
+		for (int i = 0; i < fp.n; i++) {
+			int seen = 0;
+			for (int j = 0; j < *n; j++)
+				if (pools[j] == fp.pools[i] || (pools[j] && fp.pools[i] && strcmp(pools[j], fp.pools[i]) == 0)) {
+					seen = 1;
+					break;
+				}
+			if (!seen && *n < cap)
+				pools[(*n)++] = fp.pools[i];
+		}
+		return;
+	}
+	for (int i = 0; i < t->child_count; i++)
+		cg_joint_collect_host_pools(ctx, t->children[i], pools, n, cap);
+}
+
+/* Walk a SEQ/PAR's children in order, forming clusters. A run of eligible maps over one pool extends the
+ * cluster; anything else (a system, a CPU map, an eligible map over a DIFFERENT pool, a control-flow node)
+ * closes it — that is exactly a cut edge (a host access or a device switch). */
+static void cg_joint_walk_seq(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools, int n_host) {
+	CgCluster cl = {0};
+	for (int i = 0; i < t->child_count; i++) {
+		ScheduleTree *ch = t->children[i];
+		if (ch && ch->kind == SCHED_RUN) {
+			HirDecl *d = ch->sym ? cg_find_scheduled_decl(ctx, ch->sym) : NULL;
+			HirKernelDecl *k = (d && d->kind == HIR_DECL_KERNEL) ? d->data.kernel : NULL;
+			const char *pool = NULL;
+			if (k && cg_map_gpu_eligible(ctx, k, &pool)) {
+				if (cl.pool && strcmp(cl.pool, pool) != 0)
+					cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host); /* different pool → close */
+				cl.pool = pool;
+				cl.rows = get_arch_static_capacity(ctx, pool);
+				if (k->param_count > cl.max_ncol)
+					cl.max_ncol = k->param_count;
+				if (cl.nmaps < 256)
+					cl.maps[cl.nmaps++] = k;
+			} else {
+				cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host); /* a host step — a hard cut */
+			}
+		} else {
+			cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host);
+			cg_joint_walk(ctx, ch, in_loop, host_pools, n_host); /* recurse into nested control flow */
+		}
+	}
+	cg_joint_flush(ctx, &cl, in_loop, host_pools, n_host);
+}
+
+static void cg_joint_walk(CodegenContext *ctx, ScheduleTree *t, int in_loop, const char **host_pools, int n_host) {
+	if (!t)
+		return;
+	switch (t->kind) {
+	case SCHED_SEQ:
+	case SCHED_PAR:
+		cg_joint_walk_seq(ctx, t, in_loop, host_pools, n_host);
+		break;
+	case SCHED_LOOP: {
+		/* Entering a loop: a pool touched by a host step in the body cannot stay resident across the back-edge,
+		 * so gather that host set and hand it to the body's clusters (which drop residency for those pools). */
+		const char *hp[64];
+		int nh = 0;
+		for (int i = 0; i < t->child_count; i++)
+			cg_joint_collect_host_pools(ctx, t->children[i], hp, &nh, 64);
+		for (int i = 0; i < t->child_count; i++)
+			cg_joint_walk(ctx, t->children[i], 1, hp, nh);
+		break;
+	}
+	case SCHED_WHEN:
+		for (int i = 0; i < t->child_count; i++)
+			cg_joint_walk(ctx, t->children[i], in_loop, host_pools, n_host); /* inherit residency context */
+		break;
+	default:
+		break; /* a bare RUN is handled by its parent SEQ; SYNC/UPLOAD/HALT: nothing to place */
+	}
+}
+
+/* Compute residency-aware placement for every eligible map, before the coherence pass + emit. */
+static void cg_joint_placement(CodegenContext *ctx, ScheduleTree *tree) {
+	if (!ctx->gpu || !tree)
+		return;
+	cg_joint_walk(ctx, tree, 0, NULL, 0);
+}
+
+static void cg_coherence_pass(CodegenContext *ctx, ScheduleTree **tree) {
+	if (!ctx->gpu || !tree || !*tree)
+		return;
+	CgCoh c = {0};
+	cg_coh_process_slot(ctx, tree, &c);
+}
+
+/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree.
+ * Walked at compile time into direct-dispatch control flow; called once from @main. */
+static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
+	ctx->entity_bind_count = 0;
+	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
+	ctx->current_return_types = NULL;
+	ctx->current_return_type_count = 0;
+	ctx->current_return_type = ctx->current_return_type_buf;
+	ctx->current_func = NULL;
+	buffer_append(ctx, "define void @arche_run() {\nentry:\n");
+	FunctionBodyState fbs = begin_function_body(ctx);
+	push_value_scope(ctx);
+	ctx->block_terminated = 0;
+	register_static_arrays_in_scope(ctx);
+	/* Joint placement: cost consecutive-map clusters as a unit (transfer once) and record residency-aware
+	 * per-map CPU/GPU decisions, so the coherence pass + emit below see them. Then derive residency + insert
+	 * coherence syncs before lowering the schedule to control flow. */
+	cg_joint_placement(ctx, tree);
+	cg_coherence_pass(ctx, &tree);
+	emit_sched(ctx, tree);
+	if (!ctx->block_terminated)
+		buffer_append(ctx, "  ret void\n");
+	pop_value_scope(ctx);
+	end_function_body(ctx, fbs);
+	buffer_append(ctx, "}\n\n");
+}
+
+/* A map body is "flat" — a plain sequence of column transforms (`col = expr`) — when every statement is an
+ * assignment. A flat body takes the vectorized whole-column fusion path (and is GPU-emittable). A body with
+ * `:=` locals or control flow is NOT flat: its statements must run INSIDE the per-element loop (a `:=` can't
+ * be hoisted to the whole-column top level, where columns are bare pointers), so it runs as a scalar
+ * per-element loop (the each fan) — the same machinery `map … eff` uses, minus the effects. */
+/* Does an expression contain a collective call (`reduce`/`scan`/`sort`)? A per-element `reduce` folds over a
+ * pool per row (the neighbour reduction), so a map using one must run as a scalar per-element loop — never
+ * the vectorized fusion (which would feed a vector `self` into the scalar fold). */
+static int cg_expr_has_collective(const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_CALL: {
+		const char *fn = e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME
+		                     ? e->data.call.callee->data.name.name
+		                     : NULL;
+		if (fn && (strcmp(fn, "reduce") == 0 || strcmp(fn, "scan") == 0 || strcmp(fn, "sort") == 0))
+			return 1;
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (cg_expr_has_collective(e->data.call.args[i]))
+				return 1;
+		return 0;
+	}
+	case HIR_EXPR_BINARY:
+		return cg_expr_has_collective(e->data.binary.left) || cg_expr_has_collective(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return cg_expr_has_collective(e->data.unary.operand);
+	default:
+		return 0;
+	}
+}
+
+/* Does an expression reference the `me.id` row-id intrinsic (the `\x1e` marker)? A flat map vectorizes in
+ * 4-lane blocks where a per-element scalar row index doesn't exist, so a body using `.id` must run as a scalar
+ * per-element loop (the each fan) — force it non-flat. */
+static int cg_expr_has_row_id(const HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		return e->data.name.name && e->data.name.name[0] == '\x1e';
+	case HIR_EXPR_BINARY:
+		return cg_expr_has_row_id(e->data.binary.left) || cg_expr_has_row_id(e->data.binary.right);
+	case HIR_EXPR_UNARY:
+		return cg_expr_has_row_id(e->data.unary.operand);
+	case HIR_EXPR_CALL:
+		for (int i = 0; i < e->data.call.arg_count; i++)
+			if (cg_expr_has_row_id(e->data.call.args[i]))
+				return 1;
+		return 0;
+	case HIR_EXPR_FIELD:
+		return cg_expr_has_row_id(e->data.field.base);
+	default:
+		return 0;
+	}
+}
+
+static int cg_stmt_is_flat(const HirStmt *s) {
+	if (!s)
+		return 1;
+	switch (s->kind) {
+	case HIR_STMT_ASSIGN:
+		/* `out = reduce(…)` → scalar per-element; `out = f(me.id)` → needs the per-row scalar index. */
+		return !cg_expr_has_collective(s->data.assign_stmt.value) && !cg_expr_has_row_id(s->data.assign_stmt.value);
+	/* These need the whole body run INSIDE a per-element loop (a scalar `:=` can't be hoisted to the
+	 * whole-column top level; control flow isn't a column transform). */
+	case HIR_STMT_BIND:
+	case HIR_STMT_IF:
+	case HIR_STMT_FOR:
+	case HIR_STMT_EACH:
+	case HIR_STMT_EACH_FIELD:
+		return 0;
+	case HIR_STMT_BLOCK:
+		/* A BLOCK is both a control-flow desugar AND a tuple-column write's expansion (`pos = …` → a block of
+		 * `pos_x = …; pos_y = …`). Flat iff every inner statement is — so tuple writes stay fused, but a
+		 * match/`{}` holding control flow does not. */
+		for (int i = 0; i < s->data.block.count; i++)
+			if (!cg_stmt_is_flat(s->data.block.stmts[i]))
+				return 0;
+		return 1;
+	default: /* a `col = expr` assignment, a tuple `MULTI_BIND`, … — a whole-column transform */
+		return 1;
+	}
+}
+
+static int cg_map_is_flat(const HirKernelDecl *k) {
+	for (int i = 0; i < k->stmt_count; i++)
+		if (!cg_stmt_is_flat(k->stmts[i]))
+			return 0;
+	return 1;
+}
+
+static void codegen_map_decl(CodegenContext *ctx, HirKernelDecl *map, int decl_unit) {
 	/* Per-unit: a map is emitted in the unit that DECLARED it (a device's map lives in that device's
 	 * unit), so editing a device's map body rebuilds ITS `.so` and hot-reloads — exactly like a proc.
 	 * A `run` from another unit (the driver) reaches it via a cross-unit declare (release) or reload
@@ -10095,6 +13939,24 @@ static void codegen_map_decl(CodegenContext *ctx, HirMapDecl *map, int decl_unit
 	buffer_append(ctx, ") #0 {\nentry:\n");
 
 	FunctionBodyState fbs = begin_function_body(ctx);
+
+	/* Non-flat body (`:=` locals or control flow): run the WHOLE body once per element (scalar), reusing the
+	 * each fan — a `:=`/`if` must live inside the per-row loop, not be hoisted to the whole-column top level.
+	 * The fan reads the pool from its global, which is the same storage the run site passes as the param (for
+	 * the map's own driver pool); the param signature is kept for ABI/dispatch compatibility, and this body is
+	 * also the correct CPU fallback for a GPU-placed non-flat map. */
+	if (!cg_map_is_flat(map)) {
+		push_value_scope(ctx);
+		ctx->block_terminated = 0;
+		register_static_arrays_in_scope(ctx);
+		codegen_each_fan(ctx, map->params, map->param_count, map->stmts, map->stmt_count, map->row_var);
+		pop_value_scope(ctx);
+		buffer_append(ctx, "  ret void\n");
+		end_function_body(ctx, fbs);
+		buffer_append(ctx, "}\n\n");
+		codegen_register_map_version(ctx, map->name, map->name); /* HIR_STMT_RUN dispatches it by name */
+		return;
+	}
 
 	/* For each matching archetype: bind columns and emit body inline */
 	for (int ai = 0; ai < matching_count; ai++) {
@@ -10170,11 +14032,11 @@ static void codegen_map_decl(CodegenContext *ctx, HirMapDecl *map, int decl_unit
 			add_arch_value(ctx, foreign_pools[fp], fp_llvm, foreign_pools[fp]);
 		}
 
-		/* Emit map body with this archetype's bindings */
+		/* Emit map body with this archetype's bindings. Fuse the body's whole-column assignments into ONE
+		 * per-element loop (intermediates stay in registers) instead of one full-column sweep per statement.
+		 * Flush before any non-column statement so emission order is preserved. */
 		ctx->in_map = 1;
-		for (int s = 0; s < map->stmt_count; s++) {
-			codegen_statement(ctx, map->stmts[s]);
-		}
+		codegen_body_fused(ctx, map->stmts, map->stmt_count);
 		ctx->in_map = 0;
 
 		pop_value_scope(ctx);
@@ -10402,6 +14264,85 @@ int codegen_gpu_enabled(void) {
 	return g_gpu_mode;
 }
 
+/* ===== Derived placement: the per-machine cost profile (Slice 4) ===== */
+static MachineProfile g_machine_profile;
+static int g_machine_profile_set = 0;
+
+void codegen_default_machine_profile(MachineProfile *out) {
+	/* Conservative CPU-only default: no measured device, so every kernel is placed on the CPU (the always-
+	 * legal home). A real profile from calibration overrides this. */
+	out->gpu_present = 0;
+	out->gpu_launch_us = 0;
+	out->gpu_xfer_us = 0;
+	out->pcie_up_gbps = 0;
+	out->pcie_down_gbps = 0;
+	out->cpu_gflops = 0;
+	out->gpu_gflops = 0;
+}
+
+void codegen_set_machine_profile(const MachineProfile *p) {
+	if (p) {
+		g_machine_profile = *p;
+		g_machine_profile_set = 1;
+	} else {
+		g_machine_profile_set = 0;
+	}
+}
+
+#ifndef ARCHE_VERSION
+#define ARCHE_VERSION "0.0.0-dev"
+#endif
+
+int codegen_load_machine_profile(const char *cache_dir, MachineProfile *out) {
+	if (!cache_dir || !out)
+		return 0;
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/machine.profile", cache_dir);
+	FILE *f = fopen(path, "r");
+	if (!f)
+		return 0;
+	MachineProfile p;
+	int n = fscanf(f,
+	               "gpu_present %d gpu_launch_us %lf pcie_up_gbps %lf pcie_down_gbps %lf cpu_gflops %lf "
+	               "gpu_gflops %lf",
+	               &p.gpu_present, &p.gpu_launch_us, &p.pcie_up_gbps, &p.pcie_down_gbps, &p.cpu_gflops, &p.gpu_gflops);
+	if (n != 6) {
+		fclose(f);
+		return 0;
+	}
+	/* Optional `gpu_xfer_us` (added with joint placement): the fixed per-round-trip transfer. Absent on older
+	 * or synthetic (test) profiles → 0 (the size-dependent pcie term then carries transfer, as before). */
+	p.gpu_xfer_us = 0;
+	fscanf(f, " gpu_xfer_us %lf", &p.gpu_xfer_us);
+	/* Optional trailing `arche_version` stamp: a mismatch means the profile was calibrated by a different
+	 * arche (its measurement methodology may have shifted) — note it, but still use it (a stale profile only
+	 * risks a suboptimal placement, never a wrong result). Absent on legacy profiles → accepted silently. */
+	char ver[64] = "";
+	if (fscanf(f, " arche_version %63s", ver) == 1 && strcmp(ver, ARCHE_VERSION) != 0)
+		fprintf(stderr, "arche: note: machine profile calibrated with arche %s (now %s) — consider `arche calibrate`\n",
+		        ver, ARCHE_VERSION);
+	fclose(f);
+	*out = p;
+	return 1;
+}
+
+int codegen_save_machine_profile(const char *cache_dir, const MachineProfile *p) {
+	if (!cache_dir || !p)
+		return 0;
+	char path[1024];
+	snprintf(path, sizeof(path), "%s/machine.profile", cache_dir);
+	FILE *f = fopen(path, "w");
+	if (!f)
+		return 0;
+	fprintf(f,
+	        "gpu_present %d\ngpu_launch_us %.6f\npcie_up_gbps %.6f\npcie_down_gbps %.6f\ncpu_gflops %.6f\n"
+	        "gpu_gflops %.6f\ngpu_xfer_us %.6f\narche_version %s\n",
+	        p->gpu_present, p->gpu_launch_us, p->pcie_up_gbps, p->pcie_down_gbps, p->cpu_gflops, p->gpu_gflops,
+	        p->gpu_xfer_us, ARCHE_VERSION);
+	fclose(f);
+	return 1;
+}
+
 CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	CodegenContext *ctx = malloc(sizeof(CodegenContext));
 	ctx->ast = ast;
@@ -10411,6 +14352,13 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->shared = g_shared_mode;
 	ctx->hot = g_hot_mode;
 	ctx->gpu = g_gpu_mode;
+	if (g_machine_profile_set)
+		ctx->profile = g_machine_profile;
+	else
+		codegen_default_machine_profile(&ctx->profile);
+	ctx->joint_names = NULL;
+	ctx->joint_gpu = NULL;
+	ctx->joint_count = 0;
 	ctx->emit_only_unit = -1;
 	ctx->scopes = NULL;
 	ctx->scope_count = 0;
@@ -10476,6 +14424,13 @@ CodegenContext *codegen_create(HirProgram *ast, SemanticContext *sem_ctx) {
 	ctx->cb_pending_capacity = 0;
 	ctx->efield_name_counter = 0;
 	ctx->uses_memcpy = 0;
+	ctx->uses_memset = 0;
+	ctx->uses_sqrt = 0;
+	ctx->uses_sqrt_v4 = 0;
+	ctx->fold_pool = NULL;
+	ctx->fold_index = NULL;
+	ctx->qbinder_name = NULL;
+	ctx->qbinder_arch = NULL;
 	ctx->drop_reg = NULL;
 	ctx->drop_reg_count = 0;
 	ctx->drop_reg_capacity = 0;
@@ -10516,16 +14471,16 @@ static void codegen_build_drop_registry(CodegenContext *ctx) {
 		if (!d || d->kind != HIR_DECL_PROC || !d->data.proc || !d->data.proc->is_drop)
 			continue;
 		HirProcDecl *p = d->data.proc;
-		if (p->param_count != 1 || !p->params[0] || !p->params[0]->type)
-			continue;
-		HirType *pt = p->params[0]->type;
-		if (pt->tag != HIR_TYPE_OPAQUE || !pt->name)
+		/* Keyed uniformly by the `@drop(T)` type name. Semantic guarantees T is a distinct type (opaque
+		 * or enum) and that the `own` param's type is T, so one key serves both storages: scope-exit RAII
+		 * (opaque locals) and row-delete (a pool column whose type is T). */
+		if (!p->drop_type)
 			continue;
 		if (ctx->drop_reg_count >= ctx->drop_reg_capacity) {
 			ctx->drop_reg_capacity = ctx->drop_reg_capacity ? ctx->drop_reg_capacity * 2 : 8;
 			ctx->drop_reg = realloc(ctx->drop_reg, ctx->drop_reg_capacity * sizeof(*ctx->drop_reg));
 		}
-		ctx->drop_reg[ctx->drop_reg_count].type_name = pt->name;
+		ctx->drop_reg[ctx->drop_reg_count].type_name = p->drop_type;
 		ctx->drop_reg[ctx->drop_reg_count].dtor = p->name;
 		ctx->drop_reg_count++;
 	}
@@ -10562,7 +14517,7 @@ static int query_match_archs(CodegenContext *ctx, const char **cols, int ncol, c
 
 /* A map's columns (its query) as a name list. Matches the old guard: empty if the first param is
  * missing (then query_match_archs also returns empty). */
-static int map_query_cols(HirMapDecl *map, const char **cols, int max) {
+static int map_query_cols(HirKernelDecl *map, const char **cols, int max) {
 	if (!(map->param_count > 0 && map->params[0] && map->params[0]->name))
 		return 0;
 	int n = 0;
@@ -10572,7 +14527,7 @@ static int map_query_cols(HirMapDecl *map, const char **cols, int max) {
 }
 
 /* Archetypes covering a map's params (the map's ABI param list) — a thin wrapper over the evaluator. */
-static int collect_map_matching_archs(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+static int collect_map_matching_archs(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max) {
 	const char *cols[256];
 	int ncol = map_query_cols(map, cols, 256);
 	return query_match_archs(ctx, cols, ncol, out, max);
@@ -10648,6 +14603,12 @@ static int stmt_refs_name(const HirStmt *s, const char *name) {
 				return 1;
 		return 0;
 	}
+	case HIR_STMT_EACH: {
+		for (int i = 0; i < s->data.each_stmt->stmt_count; i++)
+			if (stmt_refs_name(s->data.each_stmt->stmts[i], name))
+				return 1;
+		return 0;
+	}
 	default:
 		return 0;
 	}
@@ -10701,7 +14662,7 @@ static int query_foreign_pools(CodegenContext *ctx, const char **cols, int ncol,
 }
 
 /* The foreign pools a map reads — a thin wrapper deriving the query (its columns) and body from the map. */
-static int collect_map_foreign_pools(CodegenContext *ctx, HirMapDecl *map, const char **out, int max) {
+static int collect_map_foreign_pools(CodegenContext *ctx, HirKernelDecl *map, const char **out, int max) {
 	const char *cols[256];
 	int ncol = map_query_cols(map, cols, 256);
 	return query_foreign_pools(ctx, cols, ncol, map->stmts, map->stmt_count, out, max);
@@ -10840,26 +14801,41 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 	for (int i = 0; i < ctx->ast->decl_count; i++) {
 		HirDecl *d = ctx->ast->decls[i];
 		char sym[512];
-		if (d->kind == HIR_DECL_MAP) {
-			/* A map is defined in its DECLARING unit (so editing a device's map rebuilds its .so);
+		if (d->kind == HIR_DECL_KERNEL && d->data.kernel->kind == HIR_KERNEL_MAP && !d->data.kernel->eff) {
+			/* A pure map is defined in its DECLARING unit (so editing a device's map rebuilds its .so);
 			 * any OTHER unit that `run`s it needs a cross-unit declare (or a hot trampoline). */
 			if (d->unit == ctx->emit_only_unit)
 				continue; /* defined here */
 			const char *archs[256];
-			int na = collect_map_matching_archs(ctx, d->data.map, archs, 256);
+			int na = collect_map_matching_archs(ctx, d->data.kernel, archs, 256);
 			if (na == 0)
 				continue; /* no matching shape → no definition emitted → nothing to declare */
 			/* Append the foreign read-set pools, so the trampoline/declare ABI matches the define + run. */
-			na += collect_map_foreign_pools(ctx, d->data.map, archs + na, 256 - na);
-			cg_fnsym(ctx, d->data.map->name, 0, sym, sizeof(sym));
+			na += collect_map_foreign_pools(ctx, d->data.kernel, archs + na, 256 - na);
+			cg_fnsym(ctx, d->data.kernel->name, 0, sym, sizeof(sym));
 			if (ctx->hot) {
-				emit_hot_map_trampoline(ctx, sym, d->data.map->name, d->unit, archs, na);
+				emit_hot_map_trampoline(ctx, sym, d->data.kernel->name, d->unit, archs, na);
 			} else {
 				buffer_append_fmt(ctx, "declare void @%s(", sym);
 				for (int a = 0; a < na; a++)
 					buffer_append_fmt(ctx, "%s%%struct.%s*", a ? ", " : "", archs[a]);
 				buffer_append(ctx, ")\n");
 			}
+			continue;
+		}
+		if (d->kind == HIR_DECL_KERNEL) {
+			/* A system or effectful per-entity fan is a no-arg `void @name()` emitted in its DECLARING unit
+			 * (the per-unit filter in codegen_system_decl/each_decl). The entry unit's `@arche_run` schedules
+			 * it BY NAME, so any other unit needs a cross-unit declare (release) or a reload trampoline (dev).
+			 * (A pure map was handled above.) */
+			if (d->unit == ctx->emit_only_unit)
+				continue;
+			const char *nm = d->data.kernel->name;
+			cg_fnsym(ctx, nm, 0, sym, sizeof(sym));
+			if (ctx->hot)
+				emit_hot_map_trampoline(ctx, sym, nm, d->unit, NULL, 0);
+			else
+				buffer_append_fmt(ctx, "declare void @%s()\n", sym);
 			continue;
 		}
 		if (d->unit == ctx->emit_only_unit)
@@ -10907,6 +14883,11 @@ static void emit_cross_unit_declares(CodegenContext *ctx) {
 }
 
 void codegen_generate(CodegenContext *ctx, FILE *output) {
+	/* Map-body fusion state starts clean (the caller-allocated ctx may not zero new fields; per-unit
+	 * incremental codegen reuses fresh contexts). */
+	ctx->map_batch_active = 0;
+	ctx->map_batch_count = 0;
+
 	/* RAII: build the opaque-type -> destructor registry before emitting any body. */
 	codegen_build_drop_registry(ctx);
 
@@ -10939,8 +14920,11 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		buffer_append(ctx, "declare i8* @arche_hot_resolve(i32, i8*)\n");
 
 	/* `--gpu`: the in-binary Vulkan dispatcher (runtime/gpu_runtime.c). Returns nonzero → CPU fallback. */
-	if (ctx->gpu)
-		buffer_append(ctx, "declare i32 @arche_gpu_dispatch(i8*, i32, i8**, i32, i32)\n");
+	if (ctx->gpu) {
+		buffer_append(ctx, "declare i32 @arche_gpu_dispatch(i8*, i32, i8**, i32, i32, i32)\n");
+		buffer_append(ctx, "declare void @arche_gpu_sync(i8**, i32, i32, i32)\n");
+		buffer_append(ctx, "declare void @arche_gpu_upload(i8**, i32, i32, i32)\n");
+	}
 
 	/* Per-unit: declare cross-unit funcs/procs up front (inert in whole-program mode). */
 	emit_cross_unit_declares(ctx);
@@ -11068,8 +15052,14 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			}
 			codegen_proc_decl(ctx, decl->data.proc);
 			break;
-		case HIR_DECL_MAP:
-			codegen_map_decl(ctx, decl->data.map, decl->unit);
+		case HIR_DECL_KERNEL:
+			/* (kind, eff) selects the path: SYSTEM → composer; MAP+eff → per-entity fan; MAP → pure map. */
+			if (decl->data.kernel->kind == HIR_KERNEL_SYSTEM)
+				codegen_system_decl(ctx, decl->data.kernel, decl->unit);
+			else if (decl->data.kernel->eff)
+				codegen_each_decl(ctx, decl->data.kernel, decl->unit);
+			else
+				codegen_map_decl(ctx, decl->data.kernel, decl->unit);
 			break;
 		case HIR_DECL_CONST:
 			/* Value consts are inlined at their use sites (semantic_get_const_value); type
@@ -11082,6 +15072,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			/* A `@default` directive only sets a resolution table (read by cg_policy_for /
 			 * cg_insert_handler); it emits no code. */
 			break;
+		case HIR_DECL_RUN:
+			/* The #run tree drives the synthesized @arche_run (emitted beside @main, below). */
+			break;
 		}
 	}
 
@@ -11089,14 +15082,10 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	 * (archetype-parametric proc, archetype) pair encountered at a call site. */
 	drain_monomorph_worklist(ctx);
 
-	/* Emit global constants (strings, etc.) */
-	if (ctx->globals_pos > 0) {
-		buffer_append(ctx, "\n; Global constants\n");
-		char temp[ctx->globals_pos + 1];
-		strcpy(temp, ctx->globals_buffer);
-		buffer_append(ctx, temp);
-		buffer_append(ctx, "\n");
-	}
+	/* Global constants (strings, etc.) are emitted LAST, just before the output write — see below. The
+	 * synthesized `@arche_run`/`@main` below still intern globals (e.g. the `@gpu` dispatch's map-name
+	 * string passed to `arche_gpu_dispatch`); flushing here would drop any constant interned after this
+	 * point. LLVM places module globals in any order (forward refs resolve), so emitting them last is safe. */
 
 	/* Generate main entry point (always needed for initialization) */
 	int has_main_proc = 0;
@@ -11110,7 +15099,21 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* The process entry wrapper is program-global: emit it only in the entry unit (0) — never in a
 	 * per-unit module for an imported unit. (emit_only_unit -1 = whole-program, also emits it.) */
 	if (!(ctx->per_unit && ctx->emit_only_unit >= 1)) {
-		char init_sym[512], mainu_sym[512];
+		char init_sym[512];
+		/* Synthesize @arche_run from the folded #run ScheduleTree (the runtime-owned loop), entry unit
+		 * only, before @main — @main calls it (no driver proc). */
+		ScheduleTree *run_tree = NULL;
+		for (int i = 0; i < ctx->ast->decl_count; i++)
+			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN) {
+				run_tree = ctx->ast->decls[i]->data.run->tree;
+				break;
+			}
+		int has_run = 0;
+		for (int i = 0; i < ctx->ast->decl_count; i++)
+			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN)
+				has_run = 1;
+		if (has_run)
+			codegen_run_decl(ctx, run_tree);
 		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
 		/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
 		 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
@@ -11151,8 +15154,14 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		if (has_init_proc)
 			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, init_sym, sizeof(init_sym)));
 
-		if (has_main_proc)
-			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "main_user", 0, mainu_sym, sizeof(mainu_sym)));
+		/* `main` is NOT the entry — it is an ordinary name. The program's entry is `#run` → `@arche_run`
+		 * (below). A decl named `main` runs only if `#run` schedules it (or something calls it), like any
+		 * other name. (`has_main_proc` / `main_user` rename is just C-`@main` collision avoidance.) */
+		(void)has_main_proc;
+
+		/* The runtime owns the loop: run the program's #run Schedule (no driver proc). */
+		if (has_run)
+			buffer_append(ctx, "  call void @arche_run()\n");
 
 		buffer_append(ctx, "  ret i32 0\n");
 		buffer_append(ctx, "}\n");
@@ -11169,6 +15178,20 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	 * order is irrelevant in LLVM IR). */
 	if (ctx->uses_memcpy)
 		buffer_append(ctx, "\ndeclare void @llvm.memcpy.p0.p0.i64(i8*, i8*, i64, i1)\n");
+	if (ctx->uses_memset)
+		buffer_append(ctx, "declare void @llvm.memset.p0.i64(i8*, i8, i64, i1)\n");
+	if (ctx->uses_sqrt)
+		buffer_append(ctx, "declare float @llvm.sqrt.f32(float)\n");
+	if (ctx->uses_sqrt_v4)
+		buffer_append(ctx, "declare <4 x float> @llvm.sqrt.v4f32(<4 x float>)\n");
+
+	/* Global constants (strings, etc.), emitted LAST so any constant interned during late body emission
+	 * (notably the `@gpu` dispatch's map-name in `@arche_run`) is captured. */
+	if (ctx->globals_pos > 0) {
+		buffer_append(ctx, "\n; Global constants\n");
+		buffer_append(ctx, ctx->globals_buffer);
+		buffer_append(ctx, "\n");
+	}
 
 	/* Output the generated IR */
 	fprintf(output, "%s", ctx->output_buffer);
@@ -11182,6 +15205,8 @@ void codegen_free(CodegenContext *ctx) {
 		pop_value_scope(ctx);
 	}
 	free(ctx->scopes);
+	free(ctx->joint_names); /* the name strings are borrowed (owned by the HIR) — free only the arrays */
+	free(ctx->joint_gpu);
 	free(ctx->output_buffer);
 	free(ctx->globals_buffer);
 	for (int i = 0; i < ctx->interned_cap; i++) {

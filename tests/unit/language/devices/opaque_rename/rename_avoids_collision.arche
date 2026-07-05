@@ -18,5 +18,7 @@ relay :: func(h: dh) -> int {
   return dconf.use(h);
 }
 
-main :: proc() {
+entry :: system {
 }
+
+#run entry

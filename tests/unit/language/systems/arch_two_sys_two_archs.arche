@@ -1,30 +1,33 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { fmt }
 Particle :: arche { pos :: float, vel :: float }
 
 Body :: arche { pos, vel, mass :: float }
 
-[5]Particle;
+[5]Particle ?abort;
 
-[5]Body;
+[5]Body ?abort;
 
-step :: map (query { pos, vel }) {
+step :: map (query { pos, vel })(pos) {
   pos = pos + vel;
 }
 
-dampen :: map (query { vel }) {
+dampen :: map (query { vel })(vel) {
   vel = vel * 0.99;
 }
 
-main :: proc() {
+seed :: system eff {
   insert(Particle { pos: 10.0, vel: 1.0 })(_:, _:);
   insert(Body { pos: 20.0, vel: 2.0, mass: 10.0 })(_:, _:);
-  run step;
-  run dampen;
+}
+
+verify :: system eff {
   pp  := Particle.pos[0];
   bp  := Body.vel[0];
   ppi := pp * 10.0;
   bpi := bp * 100.0;
-  fmt.assert(ppi == 110.0, "Particle.pos != 11.0\n");
-  fmt.assert(bpi == 198.0, "Body.vel != 1.98\n");
+  fmt.assert(ppi == 110.0, "Particle.pos != 11.0\n")();
+  fmt.assert(bpi == 198.0, "Body.vel != 1.98\n")();
 }
+
+#run seq({ seed, step, dampen, verify })

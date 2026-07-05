@@ -96,9 +96,15 @@ enum {
 	R_ALLOW_UNDEFINED,
 	R_WHOLE_PROGRAM,
 	R_EXPORTED_MUTABLE,
+	R_PROC_LEAF,
 	R_SYS_FOREIGN_WRITE,
+	R_POOL_INDEX,
+	R_PROC_NOT_PRIMITIVE,
+	R_DISCARDED_OK,
 	R_WNO_LSA,
-	R_WERR_LSA
+	R_WERR_LSA,
+	R_GPU,
+	R_NO_GPU
 };
 
 static const ArgSpec k_run_specs[] = {
@@ -117,8 +123,19 @@ static const ArgSpec k_run_specs[] = {
      "force a whole-program build (run defaults to incremental: per-device object cache, fast rebuilds)"},
     {R_EXPORTED_MUTABLE, "--exported-mutable", ARG_VALUE, 0, 0, "<level>",
      "exported-mutable-global lint (W0022): error (default) | warn | allow"},
+    {R_PROC_LEAF, "--proc-leaf", ARG_VALUE, 0, 0, "<level>",
+     "proc-calls-proc lint (W0028): warn (default) | error | allow"},
     {R_SYS_FOREIGN_WRITE, "--map-foreign-write", ARG_VALUE, 0, 0, "<level>",
      "map-writes-foreign-pool lint (W0024): error (default) | warn | allow"},
+    {R_POOL_INDEX, "--pool-index", ARG_VALUE, 0, 0, "<level>",
+     "pool-index-outside-query lint (W0029): error (default) | warn | allow"},
+    {R_PROC_NOT_PRIMITIVE, "--proc-not-primitive", ARG_VALUE, 0, 0, "<level>",
+     "proc-not-primitive lint (W0030): error (default) | warn | allow"},
+    {R_DISCARDED_OK, "--discarded-ok", ARG_VALUE, 0, 0, "<level>",
+     "discarded-ok lint (W0016): error (default) | warn | allow"},
+    {R_GPU, "--gpu", ARG_FLAG, 0, 0, NULL,
+     "force GPU on (default: DERIVED from `arche calibrate`'s profile — on iff a device is present + glslc)"},
+    {R_NO_GPU, "--no-gpu", ARG_FLAG, 0, 0, NULL, "force CPU-only; also via ARCHE_NO_GPU=1"},
     {0, NULL, ARG_FLAG, 0, 0, NULL, NULL},
 };
 
@@ -166,8 +183,28 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
 		return ARCHE_USAGE;
 	}
+	if (cli_apply_proc_leaf(args_value(&p, R_PROC_LEAF)) != 0) {
+		fprintf(stderr, "%s: --proc-leaf expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
 	if (cli_apply_map_foreign_write(args_value(&p, R_SYS_FOREIGN_WRITE)) != 0) {
 		fprintf(stderr, "%s: --map-foreign-write expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_proc_not_primitive(args_value(&p, R_PROC_NOT_PRIMITIVE)) != 0) {
+		fprintf(stderr, "%s: --proc-not-primitive expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_discarded_ok(args_value(&p, R_DISCARDED_OK)) != 0) {
+		fprintf(stderr, "%s: --discarded-ok expects error|warn|allow\n", g_prog);
+		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
+		return ARCHE_USAGE;
+	}
+	if (cli_apply_pool_index(args_value(&p, R_POOL_INDEX)) != 0) {
+		fprintf(stderr, "%s: --pool-index expects error|warn|allow\n", g_prog);
 		args_usage(stderr, g_prog, "run", "[flags] <input.arche> [-- program-args...]", k_run_specs);
 		return ARCHE_USAGE;
 	}
@@ -200,7 +237,11 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	/* `arche run` is the dev-iteration path → default to device-granular incremental codegen (per-unit +
 	 * object cache) so editing one device only recompiles that device. `arche build` stays whole-program
 	 * (full cross-device inlining) for release. `--whole-program` opts run out. */
-	if (args_has(&p, R_WHOLE_PROGRAM))
+	/* GPU is derived from the machine profile (like `arche build`) and forces a whole-program link — which is
+	 * incompatible with per-unit/hot — so a GPU run is a non-hot one-shot. `--gpu`/`--no-gpu`/ARCHE_NO_GPU
+	 * override. */
+	int use_gpu = compile_gpu_auto(args_has(&p, R_GPU), args_has(&p, R_NO_GPU) || getenv("ARCHE_NO_GPU") != NULL);
+	if (args_has(&p, R_WHOLE_PROGRAM) || use_gpu)
 		codegen_force_whole_program(); /* hard override, beats the ARCHE_PER_UNIT env too */
 	else
 		codegen_set_per_unit(1);
@@ -234,7 +275,7 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	 * (no loop) just exits, so the watcher returns immediately. `--whole-program` is the release-style codegen
 	 * path (static, direct calls), so it opts OUT of hot — and `arche build` never sets ARCHE_HOT_DIR at all.
 	 * Don't clobber an explicit ARCHE_HOT_DIR (the lit/test harness sets its own). */
-	int hot = !args_has(&p, R_WHOLE_PROGRAM);
+	int hot = !args_has(&p, R_WHOLE_PROGRAM) && !use_gpu; /* GPU run is non-hot (see above) */
 	char hotdir[1200];
 	if (hot && !getenv("ARCHE_HOT_DIR")) {
 		snprintf(hotdir, sizeof(hotdir), "%s/build/.arche-hot", proj);
@@ -252,7 +293,8 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	}
 
 	CompileOpts opts = {0};
-	opts.quiet = 1; /* `go run`-style: no pipeline chatter, just the program's own output */
+	opts.quiet = 1;     /* `go run`-style: no pipeline chatter, just the program's own output */
+	opts.gpu = use_gpu; /* derived above (profile + glslc), whole-program/non-hot when on */
 	int rc = compile_source(src, input, exe, &opts);
 	free(src);
 	if (rc != 0) {

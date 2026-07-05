@@ -166,6 +166,27 @@ static TypeId synth_call(TyCtx *cx, SyntaxView e) {
 		check(cx, sem_node_at_expr(e, i), expected, where);
 	}
 
+	/* BUILD SITE: an extern under-applied in value position (in-args only) BUILDS an Eff value — its
+	 * out-params are the out-slots; a VOID extern (no out-params) builds the empty `Eff()`. Mirrors
+	 * call_type_id in semantic.c so tycheck agrees on the type. */
+	if (cr->is_extern && cr->kind == DECL_PROC) {
+		int oc = cr->out_param_count;
+		TypeId obuf[16];
+		const char *nbuf[16];
+		TypeId *outs = oc > 16 ? malloc((size_t)oc * sizeof(TypeId)) : obuf;
+		const char **names = oc > 16 ? malloc((size_t)oc * sizeof(const char *)) : nbuf;
+		for (int i = 0; i < oc; i++) {
+			outs[i] = cr->out_params[i].type_id;
+			names[i] = cr->out_params[i].name; /* infer out-slot names from the extern's out-params */
+		}
+		TypeId r = tyid_of_eff_named(cx->arena, name, outs, names, oc);
+		if (outs != obuf)
+			free(outs);
+		if (names != nbuf)
+			free(names);
+		free(name);
+		return r;
+	}
 	TypeId r = ret_count > 0 ? cr->return_type_ids[0] : tyid_of_prim(cx->arena, PRIM_VOID);
 	free(name);
 	return r;
@@ -211,6 +232,25 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 	case SN_BINARY_EXPR: {
 		SyntaxView l = sem_node_at_expr(e, 0);
 		SyntaxView r = sem_node_at_expr(e, 1);
+		if (sem_binary_op(e) == OP_FMAP) {
+			/* `eff |> fin` — the result Eff yields the FINALIZER's return types (mirrors binary_type_id in
+			 * semantic.c). The right operand is a func NAME, not a value; resolve it and read its declared
+			 * returns. Without this, tycheck synthesizes the raw left Eff, so a type-changing finalizer
+			 * (`i64 -> i32`) trips a false `return value` mismatch (`Eff(i32)` vs `Eff(i64)`). */
+			TypeId lt = synth(cx, l);
+			if (tyid_kind(cx->arena, lt) != TYK_EFF)
+				return lt;
+			const char *fname = cx->model ? sem_model_ref_name(cx->model, sv_id(r)) : NULL;
+			const DeclSummary *fd = fname ? find_callee(cx->ctx, fname) : NULL;
+			if (fd && fd->return_type_count > 0) {
+				TypeId rbuf[8];
+				int rc = fd->return_type_count > 8 ? 8 : fd->return_type_count;
+				for (int i = 0; i < rc; i++)
+					rbuf[i] = fd->return_type_ids[i];
+				return tyid_of_eff_structural(cx->arena, rbuf, rc);
+			}
+			return lt;
+		}
 		TypeId lt = synth(cx, l);
 		TypeId rt = synth(cx, r);
 		/* A slice/array (an aggregate) is not an arithmetic/comparison operand — `M[i] + 1`, `s == t`.
@@ -317,6 +357,18 @@ static int subtype_check(TyCtx *cx, TypeId got, TypeId expected) {
 	tyid_display(cx->arena, expected, ename, sizeof(ename));
 	int e_sub = semantic_is_type_alias(cx->ctx, ename) && !semantic_alias_is_transparent(cx->ctx, ename);
 	int g_sub = semantic_is_type_alias(cx->ctx, gname) && !semantic_alias_is_transparent(cx->ctx, gname);
+	/* A distinct subtype is usable AS any type in its backing CHAIN, not only the ultimate backing:
+	 * `handle :: win` and `win :: opaque` make `handle` usable as `win` (its immediate backing) and as
+	 * `opaque`. Check this first — it applies even when `expected` is itself an opaque-backed subtype
+	 * (e.g. a `window` handle passed to a foreign proc), which the opaque-identity branches below reject. */
+	if (g_sub) {
+		const char *step = semantic_alias_backing_step(cx->ctx, gname);
+		for (int guard = 0; step && guard <= 64; guard++) {
+			if (strcmp(step, ename) == 0)
+				return 1;
+			step = semantic_alias_backing_step(cx->ctx, step);
+		}
+	}
 	if (e_sub) {
 		const char *eb = semantic_resolve_type_alias(cx->ctx, ename);
 		if (eb && strcmp(eb, "opaque") == 0) {
@@ -370,6 +422,11 @@ static int target_is_opaque_nominal(TyCtx *cx, TypeId t) {
 		return 0;
 	char name[64];
 	tyid_display(cx->arena, t, name, sizeof(name));
+	/* The raw `opaque` base: a pool-column element type synthesised THROUGH its alias (`Holder.h[0]` where
+	 * `h :: res` and `res :: opaque`) resolves to base `opaque`, not the nominal `res`. Catch it directly so
+	 * the create-once seal covers columns of opaque, not just bare opaque nominals. */
+	if (strcmp(name, "opaque") == 0)
+		return 1;
 	if (!semantic_is_type_alias(cx->ctx, name) || semantic_alias_is_transparent(cx->ctx, name))
 		return 0;
 	const char *b = semantic_resolve_type_alias(cx->ctx, name);
@@ -399,6 +456,10 @@ static void check(TyCtx *cx, SyntaxView e, TypeId expected, const char *where) {
 	if (tyid_is_unknown(got))
 		return;
 	if (tyid_equal(got, expected))
+		return;
+	/* An Eff position accepts a concrete `Eff#extern(out…)` where the STRUCTURAL `Eff(out…)` is declared
+	 * (e.g. a func's `-> Eff(int,int)` return). Out-slots must match; the extern rides in the concrete id. */
+	if (tyid_kind(cx->arena, expected) == TYK_EFF && tyid_usable_as(cx->arena, got, expected))
 		return;
 	int sub = subtype_check(cx, got, expected);
 	if (sub == 1)
@@ -509,8 +570,12 @@ static void visit_stmt(TyCtx *cx, SyntaxView s, const DeclSummary *fn) {
 			visit_expr(cx, value);
 		if (sv_present(target) && sv_present(value)) {
 			TypeId tt = synth(cx, target);
+			/* Column ← array-literal init/scatter (`Slot.slot = { h }`, `Mob.pos.x = {1,2,3}`) MOVES each
+			 * element into a pool row — drop-managed storage, not an overwrite of a local. Exempt it from the
+			 * opaque create-once seal (which is for `local_opaque = …`); the element check runs below. */
+			int col_scatter = (sv_kind(target) == SN_FIELD_EXPR && sv_kind(value) == SN_ARRAY_LIT_EXPR);
 			/* An opaque handle is create-once — you may never overwrite an existing one with `=`. */
-			if (target_is_opaque_nominal(cx, tt)) {
+			if (!col_scatter && target_is_opaque_nominal(cx, tt)) {
 				char on[64];
 				tyid_display(cx->arena, tt, on, sizeof(on));
 				sem_emit_opaque_overwrite(cx->ctx, sem_node_loc(target.node), on);
@@ -623,8 +688,16 @@ void tycheck_run(SemanticContext *ctx) {
 			}
 		}
 
-		if (d->kind == DECL_FUNC || d->kind == DECL_PROC) {
+		/* Type-check the body of every executable decl. Systems/eaches/maps had been SKIPPED — so a type
+		 * error inside a `system`/`each`/`map` body (`x: int = "str"`, a bad call arg, `break` outside a
+		 * loop) silently compiled. With `proc` going away and bodies moving into systems, they must get the
+		 * same statement/expression checks as a `proc`. `fn` (the return-type context) is only a `func`;
+		 * systems/eaches/maps have no return, so they pass NULL like a proc. */
+		if (d->kind == DECL_FUNC || d->kind == DECL_PROC || d->kind == DECL_SYSTEM || d->kind == DECL_EACH ||
+		    d->kind == DECL_MAP) {
 			const DeclSummary *fn = d->kind == DECL_FUNC ? d : NULL;
+			/* An `each` body IS a per-row loop, so `continue` (skip to the next element) is valid in it. */
+			cx.loop_depth = (d->kind == DECL_EACH) ? 1 : 0;
 			for (int k = 0, sc = sem_stmt_count(d->body_node); k < sc; k++)
 				visit_stmt(&cx, sem_stmt_at(d->body_node, k), fn);
 		}

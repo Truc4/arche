@@ -9,10 +9,8 @@ P   :: arche { pos, vel }
 
 Movers :: query { pos, vel }
 
-step :: map (Movers) {
+step :: map (Movers)(pos) {
   pos = pos + vel;
 }
 
-main :: proc() {
-  run step;
-}
+#run seq({ step })

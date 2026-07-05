@@ -416,7 +416,10 @@ void arche_lib_roots(const char *source_dir, LibRoots *out) {
 		for (char *tok = strtok_r(buf, ":", &save); tok; tok = strtok_r(NULL, ":", &save))
 			lib_roots_add(out, tok);
 	}
-	/* Then the nearest `arche.toml`'s `[lib] paths`. */
+	/* Then the nearest `arche.toml`'s `[lib] paths`, AND the PROJECT ROOT itself (the manifest's dir). The
+	 * root lets a member file resolve a SIBLING device/module by bare name (`app/` importing `./game`)
+	 * exactly as the entry file at the root does — so resolution doesn't depend on which file is the entry
+	 * (matters for the analyzer/LSP, which analyzes one file at a time, and is harmless for the compiler). */
 	char *path = find_manifest(source_dir);
 	if (path) {
 		char dir[1024];
@@ -425,6 +428,7 @@ void arche_lib_roots(const char *source_dir, LibRoots *out) {
 		if (slash)
 			*slash = '\0';
 		lib_roots_from_manifest(out, path, dir[0] ? dir : "/");
+		lib_roots_add(out, dir[0] ? dir : "/");
 		free(path);
 	}
 }

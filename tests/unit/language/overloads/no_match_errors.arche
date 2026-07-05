@@ -8,8 +8,10 @@ pick_float :: func(x: float) -> float {
 }
 pick :: func { pick_int, pick_float }
 
-main :: proc() {
+entry :: system {
   c := 'X';
   r := pick(c);
   // error: no member of group 'pick' matches char arg
 }
+
+#run entry

@@ -14,5 +14,7 @@ maybe_close :: proc(own f: res) {
     res_close(move f);
   }
 }
-main :: proc() {
+entry :: system {
 }
+
+#run entry

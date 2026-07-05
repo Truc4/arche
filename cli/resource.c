@@ -113,6 +113,79 @@ const char *arche_resource_dir(ArcheResource which) {
 	return cache[i];
 }
 
+static int file_readable(const char *p) {
+	return access(p, R_OK) == 0;
+}
+
+/* The per-user arche cache directory: $XDG_CACHE_HOME/arche, else $HOME/.cache/arche. Fills `out` and
+ * returns 1, or returns 0 if neither var is set (a homeless environment). Does NOT create the directory. */
+int arche_user_cache_dir(char *out, size_t cap) {
+	const char *xdg = getenv("XDG_CACHE_HOME");
+	if (xdg && *xdg) {
+		snprintf(out, cap, "%s/arche", xdg);
+		return 1;
+	}
+	const char *home = getenv("HOME");
+	if (home && *home) {
+		snprintf(out, cap, "%s/.cache/arche", home);
+		return 1;
+	}
+	return 0;
+}
+
+/* The directory holding a readable machine.profile, searched highest-priority first:
+ *   1. $ARCHE_CACHE_DIR — explicit override (tests, measure.py, a project-pinned profile);
+ *   2. the per-user cache ($XDG_CACHE_HOME/arche or ~/.cache/arche) — `arche calibrate`'s default;
+ *   3. $ARCHE_SYSROOT/lib/arche, then exe-relative <bindir>/../lib/arche — the install-global profile.
+ * Each candidate is used only if it actually contains a readable machine.profile. Fills `out` (the DIR,
+ * so callers append "/machine.profile") and returns 1; returns 0 if none — the CPU-only default stands. */
+int arche_machine_profile_dir(char *out, size_t cap) {
+	char probe[1200];
+
+	const char *cdir = getenv("ARCHE_CACHE_DIR");
+	if (cdir && *cdir) {
+		snprintf(probe, sizeof(probe), "%s/machine.profile", cdir);
+		if (file_readable(probe)) {
+			snprintf(out, cap, "%s", cdir);
+			return 1;
+		}
+	}
+
+	char udir[1024];
+	if (arche_user_cache_dir(udir, sizeof(udir))) {
+		snprintf(probe, sizeof(probe), "%s/machine.profile", udir);
+		if (file_readable(probe)) {
+			snprintf(out, cap, "%s", udir);
+			return 1;
+		}
+	}
+
+	const char *sysroot = getenv("ARCHE_SYSROOT");
+	if (sysroot && *sysroot) {
+		snprintf(probe, sizeof(probe), "%s/lib/arche/machine.profile", sysroot);
+		if (file_readable(probe)) {
+			snprintf(out, cap, "%s/lib/arche", sysroot);
+			return 1;
+		}
+	}
+
+	char exe[640];
+	ssize_t n = readlink("/proc/self/exe", exe, sizeof(exe) - 1);
+	if (n > 0) {
+		exe[n] = '\0';
+		char *slash = strrchr(exe, '/');
+		if (slash) {
+			*slash = '\0'; /* exe now = bindir */
+			snprintf(probe, sizeof(probe), "%s/../lib/arche/machine.profile", exe);
+			if (file_readable(probe)) {
+				snprintf(out, cap, "%s/../lib/arche", exe);
+				return 1;
+			}
+		}
+	}
+	return 0;
+}
+
 int arche_path_is_core(const char *path) {
 	if (!path || !path[0])
 		return 0;

@@ -4,6 +4,8 @@
 // use/cross_module.arche. `#foreign` externs like `fmt.printf` keep their bare C name and are exempt.)
 // RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -q "Undefined symbol 'assert'" %t.out
 #import { fmt }
-main :: proc() {
+entry :: system {
   assert(1, "x\n"); // bare — assert is a device's arche proc, so this must NOT resolve (needs fmt.assert)
 }
+
+#run entry

@@ -6,7 +6,9 @@ answer :: func() -> int {
   return 42;
 }
 
-main :: proc() {
+entry :: system eff {
   x := answer();
   fmt.printf("%d\n", x);
 }
+
+#run entry

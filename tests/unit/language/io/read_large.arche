@@ -1,11 +1,15 @@
-// RUN: %arche build -o %t %s && %t
+// RUN: %arche build --pool-index=allow -o %t %s && %t
 #import { io fmt }
 cb      :: char;
 CharBuf :: arche { cb }
 [10000]CharBuf;
-main :: proc() {
+entry :: system eff {
   io.fopen_read("../../../../../tests/fixtures/data.csv")(fd:);
-  io.fread(fd, CharBuf.cb[0: CharBuf.capacity], 10000)(data:);
-  io.fclose(move fd);
+  scratch := CharBuf.cb[0: CharBuf.capacity]; // slice-local OUT (lint-only: column write outside a query)
+  io.fread(fd, 10000)(scratch, rd_data:);
+  data := CharBuf.cb[0: rd_data];
+  io.fclose(move fd)(_:);
   fmt.printf("requested 10000, got: %d\n", data.length);
 }
+
+#run entry

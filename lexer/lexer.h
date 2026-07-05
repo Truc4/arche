@@ -18,6 +18,7 @@ typedef enum TokenKind {
 	TOK_ARCHETYPE,
 	TOK_PROC,
 	TOK_MAP,
+	TOK_SYSTEM,
 	TOK_QUERY,
 	TOK_FUNC,
 	TOK_LET,
@@ -57,6 +58,7 @@ typedef enum TokenKind {
 	TOK_HASH_FILE,    /* #file    — narrow visibility to file scope (phase B) */
 	TOK_HASH_FOREIGN, /* #foreign — region of foreign-bodied (FFI) proc decls */
 	TOK_HASH_LINK,    /* #link    — region of quoted system-library names to link (-l<name>) */
+	TOK_HASH_RUN,     /* #run <Schedule-value> — the program's schedule the runtime executes */
 
 	/* assignment */
 	TOK_EQ,         /* = */
@@ -84,6 +86,7 @@ typedef enum TokenKind {
 	/* logical */
 	TOK_AMP_AMP,   /* && */
 	TOK_PIPE_PIPE, /* || */
+	TOK_PIPE_GT,   /* |> — fmap a pure func over an Eff's out-slots (the applicative result-map) */
 
 	/* arrow */
 	TOK_ARROW, /* -> */
