@@ -254,7 +254,9 @@ Particle :: arche { pos_x, vel_x };
 ```arche
 // updates each position by its velocity, across the whole column
 Particle.pos_x = Particle.pos_x + Particle.vel_x;
-fmt.assert(Particle.pos_x[0] == 2.0, "whole-column add\n")();
+map (query { pos_x }) eff {
+  fmt.assert(pos_x == 2.0, "whole-column add\n")(); // every row advanced by its velocity
+};
 ```
 
 This iterates all elements, updating each position by its velocity. Inside a map the
@@ -668,6 +670,10 @@ a surprise. A pool policy binds `(count, cap, ok, slot)` — set `ok = 0` to rej
 victim row to evict:
 
 ```arche
+Conn    :: arche { fd :: int };
+Job     :: arche { id :: int };
+Pending :: arche { ticket :: int };
+
 [8]Conn ?abort;              // a full connection pool crashes — overflow is a bug here
 [64]Job ?evict_oldest;       // … or evict the oldest job to make room
 [16]Pending;                 // no policy → reject: every `insert` must check `ok`
@@ -711,7 +717,9 @@ Particle :: arche { mass, charge };
 insert(Particle{ mass: 1.0, charge: 0.1 })(h:, ok:);   // h: the generation-checked handle, ok: 0 if the pool was full
 if (!ok) { fmt.printf("pool full\n"); } // handle the full-pool case at the call site
 fmt.assert(ok == 1, "insert succeeded\n")();
-fmt.assert(Particle.mass[0] == 1.0, "inserted mass\n")();
+map (query { mass }) eff {              // read the inserted row through a query, not `Particle.mass[i]`
+  fmt.assert(mass == 1.0, "inserted mass\n")();
+};
 delete(h)(ok:);                         // ok: 0 on generation exhaustion
 fmt.assert(ok == 1, "delete succeeded\n")();
 ```

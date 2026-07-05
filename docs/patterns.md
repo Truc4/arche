@@ -65,23 +65,23 @@ handle :: system eff {
 Request :: arche { code :: int }
 Bad     :: arche { status :: int }  // malformed requests route here → an error response
 Routed  :: arche { handler :: int } // well-formed requests route here → dispatched
-[4]Request;
-[4]Bad;
-[4]Routed;
+[4]Request ?abort;
+[4]Bad ?abort;
+[4]Routed ?abort;
 
 seed :: system eff {
-  insert(Request { code: 2 })(_:, _:);
-  insert(Request { code: -1 })(_:, _:); // malformed
-  insert(Request { code: 0 })(_:, _:);
+  insert(Request { code: 2 });
+  insert(Request { code: -1 }); // malformed
+  insert(Request { code: 0 });
 }
 
 // PARSE = the producer: route each request into the pool for its case. The `if (!ok) respond(400)` guard
 // becomes "insert into Bad"; everything else goes to Routed. No `return`, no downstream gating.
 parse :: map (query { code }) eff {
   if (code < 0) {
-    insert(Bad { status: 400 })(_:, _:);
+    insert(Bad { status: 400 });
   } else {
-    insert(Routed { handler: code })(_:, _:);
+    insert(Routed { handler: code });
   }
 }
 

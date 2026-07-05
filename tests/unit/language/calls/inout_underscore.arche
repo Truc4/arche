@@ -11,7 +11,7 @@
 entry :: system eff {
   b: [3]char;
   memset(_, 88, 2)(b); // fill 2 bytes with 88 ('X'); `_` is the in-slot for the out-bound `b`
-  b[2] = 0;            // null-terminate for print
+  b[2] = 0; // null-terminate for print
   fmt.print(b)(_:);
 }
 
