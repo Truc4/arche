@@ -67,11 +67,12 @@ int *net_connect(const char *ip, int port) {
 	return wrap(fd);
 }
 
-/* Returns bytes sent, or -1 on error. */
+/* Returns bytes sent, or -1 on error. `MSG_NOSIGNAL` so writing to a peer that has already hung up returns
+ * `-1`/`EPIPE` instead of raising SIGPIPE — an early client close must never kill the whole server. */
 int net_send(int *s, const char *buf, int n) {
 	if (!s)
 		return -1;
-	return (int)send(*s, buf, n, 0);
+	return (int)send(*s, buf, n, MSG_NOSIGNAL);
 }
 
 /* Returns bytes received, 0 on orderly peer close, or -1 on error. */
