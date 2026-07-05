@@ -1,0 +1,11 @@
+#!/usr/bin/env python3
+# Portable `not`: run the given command and invert its exit status (0<->nonzero), so RUN lines can assert a
+# build/analysis FAILS without depending on the LLVM `not` tool being installed on the runner (it is not on
+# stock CI images). stdout/stderr are inherited, so `not %arche build … | grep` still pipes the compiler's
+# diagnostics to grep unchanged.
+import subprocess
+import sys
+
+if len(sys.argv) < 2:
+    sys.exit(2)
+sys.exit(1 if subprocess.call(sys.argv[1:]) == 0 else 0)

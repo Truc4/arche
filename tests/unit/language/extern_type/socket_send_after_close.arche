@@ -1,0 +1,23 @@
+// Writing to a peer that has already hung up must NOT kill the process. `net.send` uses `MSG_NOSIGNAL`,
+// so a broken pipe comes back as a value (`r < 0`) instead of a SIGPIPE that terminates the whole server.
+// Regression: an early client close (a port probe, an aborted request) once killed a server with signal 13
+// — the accepted connection's `respond` wrote to the closed socket and the default SIGPIPE disposition
+// terminated the process. The client closes WITHOUT reading, so the peer RSTs; the loop keeps writing into
+// the dead connection and the program must reach "survived", not die.
+// RUN: %arche build -o %t %s && %t | grep "survived"
+#import { net fmt }
+
+entry :: system eff {
+  net.listen(34569)(srv:);
+  net.connect("127.0.0.1", 34569)(cli:);
+  net.accept(srv)(conn:);
+  net.close(move cli)(); // client hangs up before reading a byte
+  for (i := 0; i < 8; i = i + 1) {
+    net.send(conn, "response body\n")(_:, r:); // write into the dead peer — must return, never SIGPIPE
+  }
+  fmt.printf("survived\n"); // reached only if no signal killed us mid-loop
+  net.close(move conn)();
+  net.close(move srv)();
+}
+
+#run entry
