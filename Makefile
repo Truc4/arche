@@ -57,6 +57,10 @@ RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 # Position-independent copies of the runtime, linked into `--emit=shared` (.so) builds. Kept SEPARATE
 # from the non-PIC `.o` set so the executable link (-no-pie -mcmodel=large) stays byte-identical.
 RUNTIME_PIC_OBJS = $(BUILD_DIR)/runtime/stack_check.pic.o $(BUILD_DIR)/runtime/io.pic.o $(BUILD_DIR)/runtime/net.pic.o $(BUILD_DIR)/runtime/term.pic.o
+# The wasm backend (`arche build --arch=wasm32`) compiles these runtime SOURCES with clang at wasm-build
+# time (they need the wasi-libc/target that isn't present when arche itself is built), so we stage the
+# `.c` alongside the native `.o` in the runtime resource dir instead of prebuilding an object.
+WASM_RT_SRCS = $(BUILD_DIR)/runtime/arche_syscall.c $(BUILD_DIR)/runtime/io.c
 
 OBJS = $(SRCS:.c=.o)
 # CLI multitool: dispatch + table-driven arg parser + one object per subcommand.
@@ -84,7 +88,7 @@ INSPECT_TEST_OBJS = $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/unit/runtime/ins
 # Default target
 # `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
 # arche-analyzer (LSP) + arche-syntax-tokens stay for editor integration.
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/runtime/gpu_runtime.o
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/runtime/gpu_runtime.o $(WASM_RT_SRCS)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/syntax $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -152,6 +156,11 @@ $(BUILD_DIR)/%.o: %.c | $(BUILD_DIR)
 $(BUILD_DIR)/%.pic.o: %.c | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	$(CC) $(CFLAGS) -fPIC -MMD -MP -c -o $@ $<
+
+# Stage runtime SOURCES into the resource dir for the wasm backend (compiled by clang at wasm-build time).
+$(BUILD_DIR)/runtime/%.c: runtime/%.c | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	cp $< $@
 
 # Pull in the generated header-dependency files (none on a clean build).
 # Auto-dependency files only — `-type f` so a test artifact directory that happens to end in `.d`
@@ -655,6 +664,7 @@ install: all
 	install -m 0644 core/core.arche "$(ARCHE_LIBDIR)/core/"
 	cp -R stdlib/. "$(ARCHE_LIBDIR)/stdlib/"
 	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(BUILD_DIR)/runtime/gpu_runtime.o $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o "$(ARCHE_LIBDIR)/runtime/"
+	install -m 0644 $(WASM_RT_SRCS) "$(ARCHE_LIBDIR)/runtime/"
 	@[ -d docs/explain ] && cp -R docs/explain/. "$(ARCHE_LIBDIR)/explain/" || true
 	@# `cp -R` preserves source-tree modes (and leaves a pre-existing dest file's mode untouched on
 	@# re-install), so a stdlib file that happens to be 0600 in the tree lands unreadable for the

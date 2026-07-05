@@ -14,6 +14,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -682,6 +683,13 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	codegen_set_shared(emit == EMIT_SHARED ? 1 : 0);
 	if (emit == EMIT_SHARED)
 		codegen_force_whole_program();
+	/* `--arch=wasm32`: emit the wasm triple + lower syscalls to the `@arche_syscall` shim. Set explicitly
+	 * each call (a global; the in-process doctest runner reuses this entry) so it never leaks into a later
+	 * native build. wasm is whole-program (one clang link over the merged IR; no per-unit `.so`s). */
+	int target_wasm = (opts && opts->target == TARGET_WASM32);
+	codegen_set_target_wasm(target_wasm);
+	if (target_wasm)
+		codegen_force_whole_program();
 	/* Dev hot-reload is driven internally (no user flag): the run path sets ARCHE_HOT_DIR. Enabling it
 	 * implies per-unit (each device → its own reloadable `.so`). `arche build` never sets it → release
 	 * stays direct-call. (Internal env, set by `arche run`; also lets tests exercise the path.) */
@@ -1048,6 +1056,60 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		printf("Generated LLVM IR: %s\n", ir_file);
 
 	if (emit == EMIT_LLVM_IR) {
+		rc = 0;
+		goto cleanup;
+	}
+
+	/* wasm32-wasi: ONE clang invocation replaces the whole native opt→llc→cc→link chain — it compiles the
+	 * whole-program IR + the portable runtime shims (arche_syscall.c, io.c) and links wasi-libc via wasm-ld.
+	 * Needs a WASI sysroot: `$ARCHE_WASI_SDK`/`$WASI_SDK_PATH` (a wasi-sdk install) or the system
+	 * `/usr/share/wasi-sysroot` (e.g. Arch's wasi-libc). Only a full link (a `.wasm`) is supported. */
+	if (target_wasm) {
+		if (emit != EMIT_LINK) {
+			fprintf(stderr, "--arch=wasm32 supports only a full link (a `.wasm`) or --emit=llvm-ir\n");
+			goto cleanup;
+		}
+		const char *sdk = getenv("ARCHE_WASI_SDK");
+		if (!sdk || !sdk[0])
+			sdk = getenv("WASI_SDK_PATH");
+		char clangbuf[512], sysarg[600] = "";
+		const char *clang = "clang";
+		if (sdk && sdk[0]) {
+			snprintf(clangbuf, sizeof(clangbuf), "%s/bin/clang", sdk);
+			clang = clangbuf;
+			snprintf(sysarg, sizeof(sysarg), "--sysroot=%s/share/wasi-sysroot ", sdk);
+		} else if (access("/usr/share/wasi-sysroot", F_OK) == 0) {
+			snprintf(sysarg, sizeof(sysarg), "--sysroot=/usr/share/wasi-sysroot ");
+		}
+		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+		char cmd[2048];
+		int m = snprintf(cmd, sizeof(cmd), "%s --target=wasm32-wasip1 %s-O2 %s %s/arche_syscall.c %s/io.c -o %s", clang,
+		                 sysarg, ir_file, rt, rt, out_path);
+		if (m < 0 || m >= (int)sizeof(cmd)) {
+			fprintf(stderr, "wasm link command too long\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Linking wasm module (wasm32-wasip1)...\n");
+		/* The `build` frontend caps arche's own address space (RLIMIT_AS, cmd_build.c) to bound runaway
+		 * compilation; the clang child inherits it, and clang's wasi-libc-link worker threads can't allocate
+		 * stacks under that cap → a std::system_error abort on exit (harmless — the .wasm is already written and
+		 * clang returns 0 — but it prints a scary "report a bug to LLVM"). Lift the soft cap to the hard limit
+		 * for this process (arche is done compiling; only the child link remains) so clang runs clean. */
+		{
+			struct rlimit rl;
+			if (getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != rl.rlim_max) {
+				rl.rlim_cur = rl.rlim_max;
+				setrlimit(RLIMIT_AS, &rl);
+			}
+		}
+		if (system(cmd) != 0) {
+			fprintf(stderr, "Failed to build wasm module — need a WASI sysroot (set ARCHE_WASI_SDK to a "
+			                "wasi-sdk, or install wasi-libc)\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Successfully generated wasm module: %s\n", out_path);
 		rc = 0;
 		goto cleanup;
 	}

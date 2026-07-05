@@ -50,6 +50,10 @@ int codegen_hot_enabled(void);
 void codegen_set_gpu(int on);
 int codegen_gpu_enabled(void);
 
+/* `--arch=wasm32`: emit the wasm32-wasi triple and lower `@syscall`/`@intrinsic syscall` to a call to the
+ * portable `@arche_syscall` shim instead of the x86-64 inline `syscall` asm. Off (default) = native. */
+void codegen_set_target_wasm(int on);
+
 /* ===== Derived placement (Slice 4): per-machine cost profile =====
  * Placement (CPU vs GPU per eligible map) is DERIVED from the kernel signature + a per-machine cost
  * profile, decided at build time and FROZEN into the schedule (no runtime scheduler). The profile is

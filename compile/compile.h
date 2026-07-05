@@ -17,6 +17,14 @@ typedef enum {
 	EMIT_SHARED,   /* opt → llc(pic) → cc -shared -fPIC: a loadable shared library (.so) */
 } EmitKind;
 
+/* Codegen target ARCHITECTURE — orthogonal to EmitKind. Distinct from the `--target` device-variant
+ * profile (variant_select.c): this selects the LLVM triple + syscall lowering + link toolchain.
+ * TARGET_NATIVE (0) = the historical x86-64 Linux path, so a zero-init CompileOpts is unchanged. */
+typedef enum {
+	TARGET_NATIVE = 0, /* x86-64 Linux: inline `syscall` asm, cc/-lc link */
+	TARGET_WASM32,     /* wasm32-wasi: `@arche_syscall` shim, wasi-libc via clang/wasm-ld */
+} TargetArch;
+
 /* Options for one compile. Mirrors the CLI flags the historical inline pipeline
  * in main() consumed; kept here so every frontend (the `build` path, the
  * doctest runner, future tools) drives compilation through one entry point. */
@@ -26,7 +34,8 @@ typedef struct {
 	const char *link_paths[ARCHE_MAX_LINK_PATHS]; /* extra .c/.o files for cc at link time */
 	int link_count;
 	const char *emit_gpu_dir; /* `--emit-gpu=<dir>`: also write a GLSL compute shader per `@gpu` map (NULL = off) */
-	int gpu; /* `--gpu`: embed @gpu maps' SPIR-V and dispatch them on the GPU at runtime (CPU fallback) */
+	int gpu;           /* `--gpu`: embed @gpu maps' SPIR-V and dispatch them on the GPU at runtime (CPU fallback) */
+	TargetArch target; /* codegen architecture (default TARGET_NATIVE) — `--arch=wasm32` selects wasm32-wasi */
 } CompileOpts;
 
 /* Compile `user_source` (raw user text — the core prelude is NOT yet prepended;

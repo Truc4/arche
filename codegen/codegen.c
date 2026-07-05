@@ -4238,16 +4238,29 @@ static void coerce_syscall_arg(CodegenContext *ctx, HirExpr *arg, char *out, int
 	}
 }
 
-/* Emit the raw Linux/x86-64 `syscall` instruction: number + up to 6 args in i64 regs, result in rax;
- * rcx/r11/memory clobbered. `a[0..6]` are pre-coerced i64 operands (a[0] = number). Returns the SSA
- * name of the result into `res_out`. */
+/* `--arch=wasm32`: retarget the module triple/datalayout + syscall lowering to wasm32-wasi. Default 0 =
+ * the historical native x86-64 path, so this is inert unless `arche build --arch=wasm32` sets it. */
+static int g_codegen_target_wasm = 0;
+void codegen_set_target_wasm(int on) {
+	g_codegen_target_wasm = on;
+}
+
+/* Emit a system call. NATIVE: the raw Linux/x86-64 `syscall` instruction — number + up to 6 args in i64
+ * regs, result in rax; rcx/r11/memory clobbered. WASM32: a call to the portable `@arche_syscall` shim
+ * (runtime/arche_syscall.c) which maps the Linux number to a wasi-libc call — wasm has no `syscall`
+ * opcode. `a[0..6]` are pre-coerced i64 operands (a[0] = number). Result SSA name → `res_out`. */
 static void emit_syscall_asm(CodegenContext *ctx, char a[7][256], char *res_out) {
 	char *res = gen_value_name(ctx);
-	buffer_append_fmt(ctx,
-	                  "  %s = call i64 asm sideeffect \"syscall\", "
-	                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
-	                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
-	                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+	if (g_codegen_target_wasm)
+		buffer_append_fmt(ctx,
+		                  "  %s = call i64 @arche_syscall(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+		                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+	else
+		buffer_append_fmt(ctx,
+		                  "  %s = call i64 asm sideeffect \"syscall\", "
+		                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
+		                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+		                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
 	strcpy(res_out, res);
 }
 
@@ -14891,11 +14904,17 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* RAII: build the opaque-type -> destructor registry before emitting any body. */
 	codegen_build_drop_registry(ctx);
 
-	/* Preamble: declare external functions */
-	buffer_append(ctx, "; Target datalayout and triple would go here\n");
-	buffer_append(ctx,
-	              "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
-	buffer_append(ctx, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+	/* Preamble: target triple + datalayout. For wasm we emit NEITHER — clang's `--target=wasm32-wasi` owns
+	 * the exact triple + 32-bit-pointer datalayout, so hardcoding them here only earns an override warning. */
+	if (g_codegen_target_wasm) {
+		/* clang's canonical form for --target=wasm32-wasip1 (WASI preview1) — matching it avoids a
+		 * `-Woverride-module` warning. The datalayout is inferred from the triple (32-bit pointers). */
+		buffer_append(ctx, "target triple = \"wasm32-unknown-wasip1\"\n\n");
+	} else {
+		buffer_append(
+		    ctx, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
+		buffer_append(ctx, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+	}
 
 	/* Declare custom types as opaque structures */
 	buffer_append(ctx, "; Type definitions\n");
@@ -14907,6 +14926,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
+	/* wasm has no `syscall` opcode: os-level calls lower to this portable shim (runtime/arche_syscall.c). */
+	if (g_codegen_target_wasm)
+		buffer_append(ctx, "declare i64 @arche_syscall(i64, i64, i64, i64, i64, i64, i64)\n");
 	/* The `cores` backend's multicore reduce primitives (runtime/io.c). Declared unconditionally; harmless
 	 * if unused (resolves against io.o, which every program links). */
 	buffer_append(ctx, "declare float @arche_par_reduce_f32(float*, i64, i32)\n");
@@ -15129,7 +15151,11 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 			/* Dev state inspector: declares + pool/field name constants (module scope, before main). */
 			codegen_emit_inspect_decls(ctx);
 		}
-		buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
+		/* The C-ABI entry. Native: `main`, called by the C `_start`. WASM: `__main_argc_argv` — wasi-libc's
+		 * command crt (`_start`→`__main_void`) calls THAT symbol (the `main` alias is a C-frontend artifact a
+		 * raw-IR module doesn't get), so naming it `main` leaves a weak-undefined `main` stub that traps. */
+		buffer_append(ctx, g_codegen_target_wasm ? "\ndefine i32 @__main_argc_argv(i32 %argc, i8** %argv) {\n"
+		                                         : "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
 		buffer_append(ctx, "entry:\n");
 		buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
 		if (ctx->hot)
