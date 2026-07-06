@@ -1,0 +1,19 @@
+/// WASM backend for gfx: the browser is the windowing system — merged under ARCHE_SELECT=gfx=wasm (or
+/// `[select] gfx = "wasm"`). Unlike x11/wayland/headless there is NO C shim: the wasm link deliberately
+/// drops device C shims, so these `gfx_be_*` stay undefined and become wasm IMPORTS the JS host provides
+/// (it owns the <canvas>). `gfx_be_present` hands the host the driver's `[W*H]int` framebuffer + dims to
+/// blit via putImageData; `gfx_be_poll` is a no-op (the tab is always "open"). Byte-identical `#foreign`
+/// contract to headless/backend.arche — same software-framebuffer model, different surface.
+///
+/// No `#link` (the browser provides the surface); the `gfx_be_*` symbols are #module-private.
+/// Not a standalone test.
+// RUN: true
+#module
+#foreign
+gfx_be_open    :: proc(w: int, h: int, own title: []char)(win: window);
+gfx_be_w       :: proc(win: window)(w: int);
+gfx_be_h       :: proc(win: window)(h: int);
+gfx_be_present :: proc(win: window, px: []int, w: int, h: int)(px: []int);
+gfx_be_poll    :: proc(win: window)(is_open: int);
+@drop(window)
+gfx_be_close :: proc(own win: window);

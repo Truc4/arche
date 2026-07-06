@@ -4245,6 +4245,14 @@ void codegen_set_target_wasm(int on) {
 	g_codegen_target_wasm = on;
 }
 
+/* Reactor split verdict, set during entry emission and read by the wasm link (compile.c) to choose
+ * `-mexec-model=reactor` + the `arche_run`/`arche_frame` exports. Set only when a wasm build had a
+ * top-level `forever` in its #run schedule. */
+static int g_codegen_was_reactor = 0;
+int codegen_was_reactor(void) {
+	return g_codegen_was_reactor;
+}
+
 /* Emit a system call. NATIVE: the raw Linux/x86-64 `syscall` instruction — number + up to 6 args in i64
  * regs, result in rax; rcx/r11/memory clobbered. WASM32: a call to the portable `@arche_syscall` shim
  * (runtime/arche_syscall.c) which maps the Linux number to a wasi-libc call — wasm has no `syscall`
@@ -13792,20 +13800,46 @@ static void cg_coherence_pass(CodegenContext *ctx, ScheduleTree **tree) {
 	cg_coh_process_slot(ctx, tree, &c);
 }
 
-/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree.
- * Walked at compile time into direct-dispatch control flow; called once from @main. */
-static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
+/* The top-level `forever` (SCHED_LOOP) of a #run schedule, if any — the seam the reactor split cuts at:
+ * everything but this loop is one-shot init; this loop's body is the per-frame schedule. Handles both a
+ * `forever` directly at root and one sitting among a root `seq`/`par`'s children (the usual shape). */
+static ScheduleTree *cg_reactor_top_loop(ScheduleTree *t) {
+	if (!t)
+		return NULL;
+	if (t->kind == SCHED_LOOP)
+		return t;
+	if (t->kind == SCHED_SEQ || t->kind == SCHED_PAR)
+		for (int i = 0; i < t->child_count; i++)
+			if (t->children[i] && t->children[i]->kind == SCHED_LOOP)
+				return t->children[i];
+	return NULL;
+}
+
+/* Emit one exported schedule function `@<name>` from a folded ScheduleTree — walked at compile time into
+ * direct-dispatch control flow. `emit_allocinit` prepends the pool/global alloc-init (+ optional user `init`
+ * proc) into the body: the command model runs that in @main, but the reactor's @arche_run has no @main to
+ * lean on, so it initializes pools itself before the one-shot init schedule runs. */
+static void codegen_sched_fn(CodegenContext *ctx, ScheduleTree *tree, const char *name, int emit_allocinit,
+                             int has_init_proc) {
 	ctx->entity_bind_count = 0;
 	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
 	ctx->current_return_types = NULL;
 	ctx->current_return_type_count = 0;
 	ctx->current_return_type = ctx->current_return_type_buf;
 	ctx->current_func = NULL;
-	buffer_append(ctx, "define void @arche_run() {\nentry:\n");
+	buffer_append_fmt(ctx, "define void @%s() {\nentry:\n", name);
 	FunctionBodyState fbs = begin_function_body(ctx);
 	push_value_scope(ctx);
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
+	if (emit_allocinit) {
+		for (int i = 0; i < ctx->alloc_count; i++)
+			codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+		if (has_init_proc) {
+			char isym[512];
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, isym, sizeof(isym)));
+		}
+	}
 	/* Joint placement: cost consecutive-map clusters as a unit (transfer once) and record residency-aware
 	 * per-map CPU/GPU decisions, so the coherence pass + emit below see them. Then derive residency + insert
 	 * coherence syncs before lowering the schedule to control flow. */
@@ -13817,6 +13851,12 @@ static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	pop_value_scope(ctx);
 	end_function_body(ctx, fbs);
 	buffer_append(ctx, "}\n\n");
+}
+
+/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree.
+ * Walked at compile time into direct-dispatch control flow; called once from @main. */
+static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
+	codegen_sched_fn(ctx, tree, "arche_run", 0, 0);
 }
 
 /* A map body is "flat" — a plain sequence of column transforms (`col = expr`) — when every statement is an
@@ -15125,72 +15165,92 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		/* Synthesize @arche_run from the folded #run ScheduleTree (the runtime-owned loop), entry unit
 		 * only, before @main — @main calls it (no driver proc). */
 		ScheduleTree *run_tree = NULL;
-		for (int i = 0; i < ctx->ast->decl_count; i++)
-			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN) {
-				run_tree = ctx->ast->decls[i]->data.run->tree;
-				break;
-			}
 		int has_run = 0;
 		for (int i = 0; i < ctx->ast->decl_count; i++)
-			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN)
+			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN) {
+				if (!run_tree)
+					run_tree = ctx->ast->decls[i]->data.run->tree;
 				has_run = 1;
-		if (has_run)
-			codegen_run_decl(ctx, run_tree);
-		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
-		/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
-		 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
-		int hot_maxu = 0;
-		if (ctx->hot) {
-			for (int i = 0; i < ctx->ast->decl_count; i++)
-				if (ctx->ast->decls[i]->unit > hot_maxu)
-					hot_maxu = ctx->ast->decls[i]->unit;
-			buffer_append(ctx, "declare void @arche_hot_register(i32, i8*)\n");
-			for (int u = 1; u <= hot_maxu; u++)
-				buffer_append_fmt(ctx, "@.hotpath.%d = private unnamed_addr constant [%d x i8] c\"unit_%d.so\\00\"\n",
-				                  u, (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u)), u);
-			/* Dev state inspector: declares + pool/field name constants (module scope, before main). */
-			codegen_emit_inspect_decls(ctx);
-		}
-		/* The C-ABI entry. Native: `main`, called by the C `_start`. WASM: `__main_argc_argv` — wasi-libc's
-		 * command crt (`_start`→`__main_void`) calls THAT symbol (the `main` alias is a C-frontend artifact a
-		 * raw-IR module doesn't get), so naming it `main` leaves a weak-undefined `main` stub that traps. */
-		buffer_append(ctx, g_codegen_target_wasm ? "\ndefine i32 @__main_argc_argv(i32 %argc, i8** %argv) {\n"
-		                                         : "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
-		buffer_append(ctx, "entry:\n");
-		buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
-		if (ctx->hot)
-			for (int u = 1; u <= hot_maxu; u++) {
-				int plen = (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u));
-				buffer_append_fmt(
-				    ctx,
-				    "  call void @arche_hot_register(i32 %d, i8* getelementptr inbounds ([%d x i8], [%d x "
-				    "i8]* @.hotpath.%d, i64 0, i64 0))\n",
-				    u, plen, plen, u);
 			}
-		/* Dev state inspector: tell runtime/inspect.o where each pool lives and how it is laid out, so
-		 * `arche inspect` can read/edit live state. Hot mode only; release builds emit none of this. */
-		if (ctx->hot)
-			codegen_emit_inspect_calls(ctx);
+		/* Reactor model (wasm + a top-level `forever`): a browser can't block in a wasm loop, so instead of
+		 * one @arche_run that loops forever we split the #run schedule into two exported functions — a
+		 * one-shot @arche_run (everything before the forever, plus the pool alloc-init @main would normally
+		 * do) and @arche_frame (the forever body, one tick). The wasm link then drops @main and uses
+		 * `-mexec-model=reactor`; the JS host calls _initialize, then arche_run once, then arche_frame per
+		 * requestAnimationFrame. Non-wasm builds and wasm builds with no forever keep the command model. */
+		ScheduleTree *rx_loop = (g_codegen_target_wasm && has_run) ? cg_reactor_top_loop(run_tree) : NULL;
+		g_codegen_was_reactor = (rx_loop != NULL);
+		if (rx_loop) {
+			ScheduleTree *frame_tree = (rx_loop->child_count > 0) ? rx_loop->children[0] : NULL;
+			ScheduleTree *init_tree = cg_sched_node(SCHED_SEQ);
+			if (run_tree->kind == SCHED_SEQ || run_tree->kind == SCHED_PAR)
+				for (int i = 0; i < run_tree->child_count; i++)
+					if (run_tree->children[i] != rx_loop)
+						cg_coh_append(&init_tree->children, &init_tree->child_count, run_tree->children[i]);
+			codegen_sched_fn(ctx, init_tree, "arche_run", 1, has_init_proc);
+			codegen_sched_fn(ctx, frame_tree, "arche_frame", 0, 0);
+			(void)has_main_proc;
+			(void)init_sym;
+		} else {
+			if (has_run)
+				codegen_run_decl(ctx, run_tree);
+			buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
+			/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
+			 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
+			int hot_maxu = 0;
+			if (ctx->hot) {
+				for (int i = 0; i < ctx->ast->decl_count; i++)
+					if (ctx->ast->decls[i]->unit > hot_maxu)
+						hot_maxu = ctx->ast->decls[i]->unit;
+				buffer_append(ctx, "declare void @arche_hot_register(i32, i8*)\n");
+				for (int u = 1; u <= hot_maxu; u++)
+					buffer_append_fmt(ctx,
+					                  "@.hotpath.%d = private unnamed_addr constant [%d x i8] c\"unit_%d.so\\00\"\n", u,
+					                  (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u)), u);
+				/* Dev state inspector: declares + pool/field name constants (module scope, before main). */
+				codegen_emit_inspect_decls(ctx);
+			}
+			/* The C-ABI entry. Native: `main`, called by the C `_start`. WASM: `__main_argc_argv` — wasi-libc's
+			 * command crt (`_start`→`__main_void`) calls THAT symbol (the `main` alias is a C-frontend artifact a
+			 * raw-IR module doesn't get), so naming it `main` leaves a weak-undefined `main` stub that traps. */
+			buffer_append(ctx, g_codegen_target_wasm ? "\ndefine i32 @__main_argc_argv(i32 %argc, i8** %argv) {\n"
+			                                         : "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
+			buffer_append(ctx, "entry:\n");
+			buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
+			if (ctx->hot)
+				for (int u = 1; u <= hot_maxu; u++) {
+					int plen = (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u));
+					buffer_append_fmt(
+					    ctx,
+					    "  call void @arche_hot_register(i32 %d, i8* getelementptr inbounds ([%d x i8], [%d x "
+					    "i8]* @.hotpath.%d, i64 0, i64 0))\n",
+					    u, plen, plen, u);
+				}
+			/* Dev state inspector: tell runtime/inspect.o where each pool lives and how it is laid out, so
+			 * `arche inspect` can read/edit live state. Hot mode only; release builds emit none of this. */
+			if (ctx->hot)
+				codegen_emit_inspect_calls(ctx);
 
-		/* Emit allocation initialization code (always, regardless of user main) */
-		for (int i = 0; i < ctx->alloc_count; i++) {
-			codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+			/* Emit allocation initialization code (always, regardless of user main) */
+			for (int i = 0; i < ctx->alloc_count; i++) {
+				codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+			}
+
+			if (has_init_proc)
+				buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, init_sym, sizeof(init_sym)));
+
+			/* `main` is NOT the entry — it is an ordinary name. The program's entry is `#run` → `@arche_run`
+			 * (below). A decl named `main` runs only if `#run` schedules it (or something calls it), like any
+			 * other name. (`has_main_proc` / `main_user` rename is just C-`@main` collision avoidance.) */
+			(void)has_main_proc;
+
+			/* The runtime owns the loop: run the program's #run Schedule (no driver proc). */
+			if (has_run)
+				buffer_append(ctx, "  call void @arche_run()\n");
+
+			buffer_append(ctx, "  ret i32 0\n");
+			buffer_append(ctx, "}\n");
 		}
-
-		if (has_init_proc)
-			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, init_sym, sizeof(init_sym)));
-
-		/* `main` is NOT the entry — it is an ordinary name. The program's entry is `#run` → `@arche_run`
-		 * (below). A decl named `main` runs only if `#run` schedules it (or something calls it), like any
-		 * other name. (`has_main_proc` / `main_user` rename is just C-`@main` collision avoidance.) */
-		(void)has_main_proc;
-
-		/* The runtime owns the loop: run the program's #run Schedule (no driver proc). */
-		if (has_run)
-			buffer_append(ctx, "  call void @arche_run()\n");
-
-		buffer_append(ctx, "  ret i32 0\n");
-		buffer_append(ctx, "}\n");
 	}
 
 	/* (No built-in print helpers: printing is NOT a language primitive. Numeric/text printing is

@@ -1082,9 +1082,16 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			snprintf(sysarg, sizeof(sysarg), "--sysroot=/usr/share/wasi-sysroot ");
 		}
 		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+		/* Device backends (e.g. gfx) are shim-less on wasm: their `gfx_be_*` externs are left undefined so
+		 * `--allow-undefined` turns them into `env` imports the JS host provides (it owns the <canvas>). And
+		 * a reactor build (a #run with a top-level `forever`) has no @main — it exports arche_run/arche_frame
+		 * for the browser's rAF loop to drive, so link as a wasi reactor and keep those symbols. */
+		const char *reactor_args =
+		    codegen_was_reactor() ? "-mexec-model=reactor -Wl,--export=arche_run,--export=arche_frame " : "";
 		char cmd[2048];
-		int m = snprintf(cmd, sizeof(cmd), "%s --target=wasm32-wasip1 %s-O2 %s %s/arche_syscall.c %s/io.c -o %s", clang,
-		                 sysarg, ir_file, rt, rt, out_path);
+		int m = snprintf(cmd, sizeof(cmd),
+		                 "%s --target=wasm32-wasip1 %s%s-Wl,--allow-undefined -O2 %s %s/arche_syscall.c %s/io.c -o %s",
+		                 clang, sysarg, reactor_args, ir_file, rt, rt, out_path);
 		if (m < 0 || m >= (int)sizeof(cmd)) {
 			fprintf(stderr, "wasm link command too long\n");
 			goto cleanup;
