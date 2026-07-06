@@ -22,14 +22,14 @@ streq :: func(a: []char, b: []char) -> bool {
 }
 
 #foreign {
-  _exit   :: proc(code: int);
-  dprintf :: proc(fd: int, own fmt: []char)(r: int);
+  _exit      :: proc(code: int);
+  arche_eputs :: proc(fd: int, own msg: []char)(r: int);
 }
 
 @policy(bounds)
 abort :: policy(len: int, i: int) {
   if (i < 0 || i >= len) {
-    dprintf(2, "arche: index out of bounds\n")(_:);
+    arche_eputs(2, "arche: index out of bounds\n")(_:);
     _exit(134);
   }
 }
@@ -63,7 +63,7 @@ zero :: policy(a: int, b: int) {
 @policy(divide)
 abort :: policy(a: int, b: int) {
   if (b == 0) {
-    dprintf(2, "arche: divide by zero\n")(_:);
+    arche_eputs(2, "arche: divide by zero\n")(_:);
     _exit(134);
   }
 }
@@ -81,7 +81,7 @@ reject :: policy(count: int, cap: int, ok: int) {
 @policy(pool)
 abort :: policy(count: int, cap: int) {
   if (count >= cap) {
-    dprintf(2, "arche: pool full\n")(_:);
+    arche_eputs(2, "arche: pool full\n")(_:);
     _exit(134);
   }
 }
