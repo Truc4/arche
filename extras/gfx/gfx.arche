@@ -11,6 +11,13 @@ dims :: func(h: window) -> Eff(int, int) {
   return zip(gfx_be_w(h), gfx_be_h(h));
 }
 
+/// The window's horizontal input axis as one Eff: -1 while a left key (←/A) is held, +1 while a right key
+/// (→/D) is held, 0 otherwise. A step system binds it — `gfx.axis_x(handle)(dx:)` — and folds `dx` into a
+/// position. Backends that have no keyboard wired (headless, wayland) report 0.
+axis_x :: func(h: window) -> Eff(int) {
+  return gfx_be_axis_x(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {
