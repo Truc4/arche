@@ -1,0 +1,12 @@
+/// Datasheet for the `physics` device — basic axis-aligned-rectangle (AABB) bodies in a float world.
+///
+/// Requirements only (components + a storage minimum): a `Body` (defined in physics.arche) is a centre
+/// `pos` (the shared `vec` 2-vector), `half`-extents (a rectangle is centre ± half), a `vel`, and a `push`
+/// accumulator the collision pass fills and `physics.shift` applies (two-phase resolve, so every body
+/// reads the same pre-resolve positions — the boids `nvel`/`apply` split). The driver owns and sizes the
+/// pool; `[4]Body` is a mild storage floor (the device works with any count).
+vel(x, y)  :: float;
+half(x, y) :: float;
+push(x, y) :: float;
+
+[4]Body;

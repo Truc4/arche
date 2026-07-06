@@ -1,0 +1,8 @@
+/// Datasheet for `vec` — the shared 2-D float-vector vocabulary that `physics`, `camera`, and drivers
+/// build on. `pos` is the canonical world/point 2-vector; `XHAT`/`YHAT` are its axis basis (assemble a
+/// vector from two computed scalars as `XHAT * a + YHAT * b`, since a runtime `(a, b)` tuple literal does
+/// not lower yet). A pure vocabulary device — no storage.
+pos(x, y) :: float;
+
+XHAT(x, y) :: (1.0, 0.0);
+YHAT(x, y) :: (0.0, 1.0);

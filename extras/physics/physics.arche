@@ -1,0 +1,77 @@
+/// Behavior for the `physics` device — branch-free AABB rectangle physics over the `Body` shape.
+///
+/// Everything here is straight-line (`select`, no data-dependent loops): the AABB overlap and the
+/// minimum-translation-vector (`mtv`) are the 2-axis case of the separating-axis test, and `collide`
+/// resolves every pair with a self-join `reduce` (the boids pattern) — data-parallel and GPU-eligible.
+/// Coordinates are `float` world units (the shared `vec.pos`). Exercised from a driver, since a device's
+/// funcs reference datasheet types and so can't be driven from a single-file doctest.
+#import { vec }
+
+/// An AABB body: centre `pos` (shared `vec` 2-vector) ± `half`-extents, moving at `vel`, with a `push`
+/// accumulator the two-phase collision pass fills. The driver owns and sizes the pool (min `[64]Body`).
+Body :: arche { pos, vel, half, push }
+
+/// Advance every body by its velocity (Euler step, dt = 1 frame). A pure branch-free kernel.
+integrate :: map (query { pos, vel })(pos) {
+  pos = pos + vel;
+}
+
+/// The support point of an AABB (`p` centre, `h` half-extents) along `dir` — the box corner farthest in
+/// that direction. Closed-form and branch-free; the shared primitive a general convex/GJK tier reuses.
+support :: func(p: pos, h: half, dir: pos) -> pos {
+  ex := select(dir.x < 0.0, 0.0 - h.x, h.x);
+  ey := select(dir.y < 0.0, 0.0 - h.y, h.y);
+  return p + vec.mk(ex, ey);
+}
+
+/// Do two AABBs overlap? Centres `ap`/`bp`, half-extents `ah`/`bh`. Strict (touching = not overlapping).
+overlaps :: func(ap: pos, ah: half, bp: pos, bh: half) -> int {
+  d := ap - bp;
+  return select(vec.absf(d.x) < ah.x + bh.x && vec.absf(d.y) < ah.y + bh.y, 1, 0);
+}
+
+/// Is point `pt` inside the AABB (`p` centre, `h` half-extents)?
+contains :: func(p: pos, h: half, pt: pos) -> int {
+  d := p - pt;
+  return select(vec.absf(d.x) < h.x && vec.absf(d.y) < h.y, 1, 0);
+}
+
+/// Minimum-translation vector to push AABB `a` out of AABB `b` — the shortest move that separates them,
+/// along the axis of least penetration. `(0,0)` if disjoint or coincident (so a body's self-pair adds
+/// nothing to a `reduce`). The 2-axis separating-axis test.
+mtv :: func(ap: pos, ah: half, bp: pos, bh: half) -> pos {
+  d  := ap - bp;
+  ox := (ah.x + bh.x) - vec.absf(d.x);
+  oy := (ah.y + bh.y) - vec.absf(d.y);
+  sx := select(d.x < 0.0, 0.0 - ox, ox);
+  sy := select(d.y < 0.0, 0.0 - oy, oy);
+  d2 := d.x * d.x + d.y * d.y;
+  hit := select(ox > 0.0 && oy > 0.0 && d2 > 0.0, 1.0, 0.0);
+  mx := select(ox < oy, sx, 0.0) * hit;
+  my := select(ox < oy, 0.0, sy) * hit;
+  return vec.mk(mx, my);
+}
+
+/// Clamp a body's centre so its AABB stays inside the world rectangle spanned by `lo`..`hi`. Branch-free.
+clamp_in :: func(p: pos, h: half, lo: pos, hi: pos) -> pos {
+  cx := select(p.x < lo.x + h.x, lo.x + h.x, p.x);
+  cx = select(cx > hi.x - h.x, hi.x - h.x, cx);
+  cy := select(p.y < lo.y + h.y, lo.y + h.y, p.y);
+  cy = select(cy > hi.y - h.y, hi.y - h.y, cy);
+  return vec.mk(cx, cy);
+}
+
+/// Collision pass, phase 1: for every body, sum the minimum-translation vectors that push it out of all
+/// others (self-pairs are `(0,0)`), halved so a pair splits the separation, into its `push` accumulator.
+/// A self-join `reduce` — branch-free and data-parallel. Reads pre-resolve positions only (writes `push`,
+/// not `pos`), so all bodies see the same snapshot; `shift` applies it.
+collide :: system (query { pos, half } as All) {
+  map (query { pos, half, push } as me)(push) {
+    push = reduce(+, mtv(me.pos, me.half, All.pos, All.half)) * 0.5;
+  };
+}
+
+/// Collision pass, phase 2: apply the accumulated `push` to every body's centre.
+shift :: map (query { pos, push })(pos) {
+  pos = pos + push;
+}
