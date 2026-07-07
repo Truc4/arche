@@ -1,6 +1,7 @@
 #include "compile.h"
 #include "../cli/resource.h"
 #include "../codegen/codegen.h"
+#include "../codegen/wasmgen.h"
 #include "../codegen/gpu_embed.h"
 #include "../codegen/gpu_glsl.h"
 #include "../lexer/lexer.h"
@@ -14,7 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/resource.h>
+#ifndef __wasi__
+#include <sys/resource.h> /* native only: RLIMIT_AS tweak around the clang child (unreachable on wasm) */
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -770,6 +773,16 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	char temp_ir[512] = "", opt_file[512] = "", asm_file[512] = "";
 	char workdir[] = "/tmp/arche_XXXXXX";
 	int have_workdir = 0;
+
+	/* DIRECT wasm backend (ARCHE_WASMGEN=1): lower HIR straight to a self-contained `.wasm` — no LLVM IR,
+	 * no clang/wasm-ld. Bypasses the whole opt→llc→clang chain below. Env-gated for now (a `--backend=wasm`
+	 * flag can replace it). Placed after the temp-file state is initialized so `goto cleanup` is well-defined. */
+	if (target_wasm && getenv("ARCHE_WASMGEN")) {
+		rc = wasmgen_generate(ast, sem_ctx, out_path) ? 0 : 1;
+		if (!quiet && rc == 0)
+			printf("Generated wasm (direct backend): %s\n", out_path);
+		goto cleanup;
+	}
 	/* Per-unit codegen needs a work dir for the per-unit `.ll` modules even when the final deliverable
 	 * is raw IR (it llvm-links them into out_path). */
 	int per_unit_build = codegen_per_unit_enabled();
@@ -1103,6 +1116,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		 * stacks under that cap → a std::system_error abort on exit (harmless — the .wasm is already written and
 		 * clang returns 0 — but it prints a scary "report a bug to LLVM"). Lift the soft cap to the hard limit
 		 * for this process (arche is done compiling; only the child link remains) so clang runs clean. */
+#ifndef __wasi__
 		{
 			struct rlimit rl;
 			if (getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != rl.rlim_max) {
@@ -1110,6 +1124,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 				setrlimit(RLIMIT_AS, &rl);
 			}
 		}
+#endif
 		if (system(cmd) != 0) {
 			fprintf(stderr, "Failed to build wasm module — need a WASI sysroot (set ARCHE_WASI_SDK to a "
 			                "wasi-sdk, or install wasi-libc)\n");
