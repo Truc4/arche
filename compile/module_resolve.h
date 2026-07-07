@@ -39,6 +39,12 @@ typedef struct ModuleResolver {
 	 * C glue is collected only by the compiler. Like the variant overlay, this is automatically
 	 * variant-aware: it fires for the top-level folder and the SELECTED variant subfolder only. */
 	void (*add_c_shim)(void *ctx, const char *path);
+
+	/* A browser host file (`.js`) found in a device folder (or its selected variant subfolder) — the wasm/dom
+	 * backend's glue, the browser twin of the `.c` shim. Optional — NULL for the analyzer and for native links
+	 * (only the wasm build emits them). Variant-aware exactly like add_c_shim: top-level folder + SELECTED
+	 * variant subfolder only. So a device SHIPS its browser host next to `backend.arche`; the build collects it. */
+	void (*add_js_host)(void *ctx, const char *path);
 } ModuleResolver;
 
 /* `#import { name }` — a device/module imported by bare name: searched in stdlib, then the

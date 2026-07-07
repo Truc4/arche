@@ -88,7 +88,7 @@ INSPECT_TEST_OBJS = $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/unit/runtime/ins
 # Default target
 # `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
 # arche-analyzer (LSP) + arche-syntax-tokens stay for editor integration.
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/runtime/gpu_runtime.o $(WASM_RT_SRCS)
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/runtime/gpu_runtime.o $(WASM_RT_SRCS) $(BUILD_DIR)/runtime/arche-web.js $(BUILD_DIR)/runtime/arche-web.js
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/syntax $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -159,6 +159,12 @@ $(BUILD_DIR)/%.pic.o: %.c | $(BUILD_DIR)
 
 # Stage runtime SOURCES into the resource dir for the wasm backend (compiled by clang at wasm-build time).
 $(BUILD_DIR)/runtime/%.c: runtime/%.c | $(BUILD_DIR)
+	mkdir -p $(dir $@)
+	cp $< $@
+
+# The browser runtime (arche-web.js) is staged into the runtime resource dir so `arche build --arch=wasm32`
+# can drop it next to the emitted `.wasm` (alongside the device hosts).
+$(BUILD_DIR)/runtime/arche-web.js: runtime/arche-web.js | $(BUILD_DIR)
 	mkdir -p $(dir $@)
 	cp $< $@
 
