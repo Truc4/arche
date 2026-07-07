@@ -1,0 +1,10 @@
+/// WASM/DOM backend for the `text` device — merged under `ARCHE_SELECT=text=wasm` (or `[select] text =
+/// "wasm"`). Like gfx/wasm there is NO C shim and no `#link`: the wasm link drops device C shims, so these
+/// `text_be_*` stay undefined and become wasm IMPORTS the JS host (www/text.js) fulfils by creating
+/// positioned `<span>`s. Byte-identical `#foreign` contract shape to gfx/wasm/backend.arche. The seams are
+/// `#module`-private, so importers see only the public `text.*` wrappers. Not a standalone test.
+// RUN: true
+#module
+#foreign
+text_be_draw  :: proc(x: int, y: int, own s: []char, n: int, size: int, color: int);
+text_be_clear :: proc();

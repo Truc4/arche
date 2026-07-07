@@ -1,0 +1,12 @@
+/// Datasheet for the `text` device — overlay/HUD text drawn by the HOST, not rasterized in-engine.
+///
+/// Unlike `gfx` (which owns every pixel of a software framebuffer), `text` delegates glyph rendering to the
+/// backend's native text stack. Its sole backend today is the browser DOM (extras/text/wasm): a `text.draw`
+/// crosses to the JS host, which creates one absolutely-positioned `<span>` per call in a `#text-layer` div
+/// layered above the gfx `<canvas>`. There is no font rasterizer here and no shared component/type — the
+/// draw surface is host-global, so `draw` takes no handle.
+///
+/// Coordinate contract: (x, y) is the run's TOP-LEFT in gfx RENDER pixels (the same space as the framebuffer
+/// the driver sizes); `size` is a pixel font-size; `color` is 0xRRGGBB. The backend maps render pixels to
+/// on-screen units. Select the backend with `[select] text = "wasm"` (or `ARCHE_SELECT=text=wasm`).
+// RUN: true

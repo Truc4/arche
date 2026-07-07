@@ -1,0 +1,15 @@
+/// Public surface of the `text` device. Import `{ text }` and call `text.draw` / `text.clear`; the selected
+/// backend (extras/text/<variant>) decides the sink. Both forward to the backend seams `text_be_draw` /
+/// `text_be_clear`, so a driver's text code is identical across backends. Like `log`'s `msg`, the string is
+/// `own` (moved into the FFI write) and its `.length` is read before the move to satisfy the extern-array
+/// borrow rule; a `[]char` lowers to a bare pointer with the length passed explicitly.
+
+/// Draw one run of text with its TOP-LEFT at render-pixel (x, y), `size`px tall, colour 0xRRGGBB.
+draw :: func(x: int, y: int, own s: []char, size: int, color: int) -> Eff() {
+  return text_be_draw(x, y, s, s.length, size, color);
+}
+
+/// Remove every previously drawn run (for a redraw / animated HUD).
+clear :: func() -> Eff() {
+  return text_be_clear();
+}
