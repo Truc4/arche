@@ -5,6 +5,8 @@ target = "linux"
 [target.linux]
 platform = "linux"
 gfx = "wayland"
+log = "terminal"
 
 [target.windows]
 platform = "windows"
+log = "terminal"

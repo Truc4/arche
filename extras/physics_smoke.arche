@@ -1,0 +1,23 @@
+// Driver smoke test for the `physics` device: the two-phase collision pipeline (which internally uses
+// `overlaps` and `mtv`). Two bodies at x=10 and x=12 (half 5 each) overlap by 8 on x; collide+shift splits
+// the separation so their centres end up 10 apart (exactly touching). Confirms the device resolves and
+// composes with the shared `vec` `pos`.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "x=6.0 16.0"
+#import { physics vec fmt }
+
+[8]Body(2);
+
+seed :: system {
+  Body.pos.x  = { 10.0, 12.0 };
+  Body.pos.y  = { 10.0, 10.0 };
+  Body.half.x = { 5.0, 5.0 };
+  Body.half.y = { 5.0, 5.0 };
+  Body.vel.x  = { 0.0, 0.0 };
+  Body.vel.y  = { 0.0, 0.0 };
+}
+
+show :: system eff {
+  fmt.printf("x=%.1f %.1f\n", Body.pos.x[0], Body.pos.x[1]);
+}
+
+#run seq({ seed, physics.collide, physics.shift, physics.integrate, show })

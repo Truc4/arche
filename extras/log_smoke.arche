@@ -1,0 +1,14 @@
+/// Smoke test for the `log` device: emit one line per level through the selected backend. Default
+/// (`log=terminal`) splits info/debug → stdout, warn/error → stderr. `ARCHE_SELECT=log=file` sends all four
+/// to ./arche.log (or $LOG_FILE) instead. Exercised by the harness; RUN drives it and checks a line lands.
+// RUN: %arche build -o %t %s && %t 2>&1 | grep -qF "info: hello"
+#import { log }
+
+entry :: system eff {
+  log.debug("debug: quiet\n")();
+  log.info("info: hello\n")();
+  log.warn("warn: careful\n")();
+  log.err("error: boom\n")();
+}
+
+#run entry

@@ -1,0 +1,13 @@
+// A hex integer literal used as an array-constant element must lower to its integer VALUE. Regression:
+// array-literal codegen emitted the raw source lexeme (`0x18`) straight into the LLVM IR, where `0x..`
+// denotes a FLOAT constant — so a `[N x i32]` initializer with hex elements failed to compile at all
+// ("floating point constant invalid for type"). A bitmap-font table (0x18, 0x7C, …) is the motivating case.
+// RUN: %arche build -o %t %s && %t | grep -x "24 124 255"
+#import { fmt }
+XS :: { 0x18, 0x7C, 0xFF }
+
+entry :: system eff {
+  fmt.printf("%d %d %d\n", XS[0], XS[1], XS[2]);
+}
+
+#run entry

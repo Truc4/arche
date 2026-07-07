@@ -205,6 +205,32 @@ Each is covered in depth in the [language reference](docs/language.md).
 - [Grammar](docs/GRAMMAR.peg) - the formal PEG grammar
 - [Design analysis](design_analysis/README.md) - layout experiments and full cross-engine benchmarks
 
+## Examples & extras
+
+**Example projects** — larger programs built on `extras`:
+
+- [**arche-rpg**](https://github.com/Truc4/arche-rpg) — a native RPG/game.
+- [**arche-web-server**](https://github.com/Truc4/arche-web-server) — an HTTP server.
+- [**arche-wasm**](https://github.com/Truc4/arche-wasm) — Arche compiled to WebAssembly and run in the
+  browser: a `gfx`+`camera`+`text` side-scroller (the browser counterpart to the two above).
+
+**In this repo:**
+
+- **[`examples/`](examples/)** — small standalone programs (`hello_world`, `simple`, `archetype`,
+  `with_params`, `simple_with_print`), each demonstrating one idea.
+- **[`extras/`](extras/)** — a small **device** library: pluggable-backend modules a program `#import`s
+  while the build selects a backend (`[select] <device> = "<variant>"`). Includes **`gfx`** (a
+  software-framebuffer windowing device with `x11` / `wayland` / `headless` / `wasm` backends),
+  **`text`** (bitmap-font `framebuffer` and browser-`dom` display backends), **`camera`**, **`physics`**,
+  **`log`**, **`vec`**, and **`platform`**. Each device's contract lives in its
+  `extras/<device>/<device>.ds.arche` datasheet.
+
+> ⚠️ **Note on code quality.** Much of the code in the example projects, `examples/`, and `extras/` is
+> **AI-generated** and does **not** yet represent the idiomatic way to write Arche. It compiles and passes
+> its tests, but it has **not** been hand-audited for style. It **will soon be properly audited and
+> rewritten** to reflect real, idiomatic Arche — until then, treat it as a working reference, not a style
+> guide.
+
 ## Status
 
 🚧 **Alpha - core infrastructure working.**

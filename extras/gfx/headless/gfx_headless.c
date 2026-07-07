@@ -84,6 +84,12 @@ int gfx_be_poll(void *handle) {
 	return g->frames_left > 0; /* 0 once the budget is spent → a `while (poll)` loop exits */
 }
 
+/* Headless has no input device — the horizontal axis is always 0. */
+int gfx_be_axis_x(void *handle) {
+	(void)handle;
+	return 0;
+}
+
 void gfx_be_close(void *handle) {
 	GfxHL *g = handle;
 	if (!g)

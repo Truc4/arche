@@ -1,0 +1,29 @@
+/// Behavior for the `camera` device — a 2D camera over the shared `vec` world. Pure branch-free tuple
+/// algebra (the boids `steer` shape): world↔screen transforms and an easing follow. Coordinates are
+/// `float`; the driver rounds screen positions to integer pixels for `gfx`.
+#import { vec }
+
+/// A camera: `eye` is its centre in world units, `zoom` is pixels per world unit. Driver-owned singleton.
+Camera :: arche { eye, zoom }
+
+/// World point → screen point: `(world − eye) * zoom + centre`, where `centre` is the viewport centre in
+/// pixels (e.g. `(W/2, H/2)`). Returns float screen coordinates; round to int for `gfx`.
+to_screen :: func(world: pos, e: eye, z: float, centre: pos) -> pos {
+  return (world - e) * z + centre;
+}
+
+/// Screen point → world point (the inverse of `to_screen`, for picking): `(screen − centre) / zoom + eye`.
+to_world :: func(screen: pos, e: eye, z: float, centre: pos) -> pos {
+  return (screen - centre) * (1.0 / z) + e;
+}
+
+/// A world length in pixels at the current zoom (for sizing a projected rectangle).
+span :: func(world_len: float, z: float) -> float {
+  return world_len * z;
+}
+
+/// Ease the eye a fraction `k` (0..1) toward `target` each frame — a simple follow-cam. `k = 1` snaps,
+/// smaller trails. `eye = eye + (target − eye) * k`.
+follow :: func(e: eye, target: pos, k: float) -> eye {
+  return e + (target - e) * k;
+}

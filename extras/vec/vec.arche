@@ -1,0 +1,21 @@
+/// Behavior for `vec` — small branch-free helpers over the shared `pos` 2-vector.
+
+/// Absolute value of a float (no `abs` builtin — `select` on the sign).
+absf :: func(v: float) -> float {
+  return select(v < 0.0, 0.0 - v, v);
+}
+
+/// Build a 2-vector from two scalar components.
+mk :: func(a: float, b: float) -> pos {
+  return XHAT * a + YHAT * b;
+}
+
+/// Dot product.
+dot :: func(a: pos, b: pos) -> float {
+  return a.x * b.x + a.y * b.y;
+}
+
+/// Euclidean length.
+len :: func(a: pos) -> float {
+  return sqrt(a.x * a.x + a.y * a.y);
+}

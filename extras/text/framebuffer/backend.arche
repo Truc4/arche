@@ -1,0 +1,86 @@
+/// FRAMEBUFFER backend for the `text` device — merged under `[select] text = "framebuffer"`. The on-screen
+/// renderer: it blits a built-in 8×8 bitmap font straight into the DRIVER's `{ framebuffer }` (the same buffer
+/// gfx renders into), so text composites into the image on every gfx target — native window, web canvas, and
+/// headless — with NO host seam and no JS. This is a pure raster system exactly like gfx's `rect`/`circle`.
+///
+/// It reads the driver's projected display run `{ tx, ty, tstr, tlen, tsz, tcol }` (the driver owns/positions
+/// it) and draws it; `tx,ty` are render-pixel top-left, `tsz` the pixel height (→ integer scale tsz/8), `tcol`
+/// the colour, `tstr[0..tlen]` the chars. Not a standalone test.
+#import { gfx }
+
+// 8×8 glyphs, one hex byte per row (MSB = leftmost pixel); 26 glyphs A–Z, indexed `char - 'A'`. arche has no
+// bitwise ops, so each row is scanned MSB-first: bit 7 is set iff `b >= 128`; after a hit drop it (`b - 128`)
+// and `b*2` to bring the next bit into the top slot. Only A–Z are drawn; any other char (space, punctuation)
+// is a blank advance. Uppercase-only for now — a full ASCII table is a later step.
+GLYPHS :: {
+  0x18,0x3C,0x66,0x66,0x7E,0x66,0x66,0x00,  // A
+  0x7C,0x66,0x66,0x7C,0x66,0x66,0x7C,0x00,  // B
+  0x3C,0x66,0x60,0x60,0x60,0x66,0x3C,0x00,  // C
+  0x78,0x6C,0x66,0x66,0x66,0x6C,0x78,0x00,  // D
+  0x7E,0x60,0x60,0x7C,0x60,0x60,0x7E,0x00,  // E
+  0x7E,0x60,0x60,0x7C,0x60,0x60,0x60,0x00,  // F
+  0x3C,0x66,0x60,0x6E,0x66,0x66,0x3C,0x00,  // G
+  0x66,0x66,0x66,0x7E,0x66,0x66,0x66,0x00,  // H
+  0x3C,0x18,0x18,0x18,0x18,0x18,0x3C,0x00,  // I
+  0x1E,0x0C,0x0C,0x0C,0x0C,0x6C,0x38,0x00,  // J
+  0x66,0x6C,0x78,0x70,0x78,0x6C,0x66,0x00,  // K
+  0x60,0x60,0x60,0x60,0x60,0x60,0x7E,0x00,  // L
+  0x63,0x77,0x7F,0x6B,0x63,0x63,0x63,0x00,  // M
+  0x63,0x73,0x7B,0x6F,0x67,0x63,0x63,0x00,  // N
+  0x3C,0x66,0x66,0x66,0x66,0x66,0x3C,0x00,  // O
+  0x7C,0x66,0x66,0x7C,0x60,0x60,0x60,0x00,  // P
+  0x3C,0x66,0x66,0x66,0x6E,0x6C,0x36,0x00,  // Q
+  0x7C,0x66,0x66,0x7C,0x78,0x6C,0x66,0x00,  // R
+  0x3C,0x66,0x60,0x3C,0x06,0x66,0x3C,0x00,  // S
+  0x7E,0x18,0x18,0x18,0x18,0x18,0x18,0x00,  // T
+  0x66,0x66,0x66,0x66,0x66,0x66,0x3C,0x00,  // U
+  0x66,0x66,0x66,0x66,0x66,0x3C,0x18,0x00,  // V
+  0x63,0x63,0x63,0x6B,0x7F,0x77,0x63,0x00,  // W
+  0x66,0x66,0x3C,0x18,0x3C,0x66,0x66,0x00,  // X
+  0x66,0x66,0x66,0x3C,0x18,0x18,0x18,0x00,  // Y
+  0x7E,0x06,0x0C,0x18,0x30,0x60,0x7E,0x00,  // Z
+};
+
+/// Blit every display run into the shared framebuffer as scaled bitmap glyphs, clamped to the window.
+render :: system (query { framebuffer })(framebuffer) eff {
+  map (query { handle }) eff {
+    gfx.dims(handle)(vw:, vh:);
+    map (query { tx, ty, tstr, tlen, tsz, tcol }) eff {
+      s := tsz / 8;                            // integer upscale (pixel height → 8×8 cell scale)
+      i := 0;
+      for (; i < tlen; i += 1) {
+        c  := tstr[i];
+        ox := tx + i * 8 * s;                  // one 8-px cell per char (empty left column = the gap)
+        if (c >= 'A' && c <= 'Z') {            // only A–Z have glyphs; anything else is a blank advance
+          gi  := c - 'A';
+          row := 0;
+          for (; row < 8; row += 1) {
+            b   := GLYPHS[gi * 8 + row];
+            col := 0;
+            for (; col < 8; col += 1) {
+              if (b >= 128) {                  // top bit set → this pixel is on
+                x0 := ox + col * s;
+                x1 := x0 + s;
+                y0 := ty + row * s;
+                y1 := y0 + s;
+                if (x0 < 0)  { x0 = 0;  }
+                if (x1 > vw) { x1 = vw; }
+                if (y0 < 0)  { y0 = 0;  }
+                if (y1 > vh) { y1 = vh; }
+                yy := y0;
+                for (; yy < y1; yy += 1) {
+                  xx := x0;
+                  for (; xx < x1; xx += 1) {
+                    framebuffer[yy * vw + xx] = tcol;
+                  }
+                }
+                b = b - 128;                   // clear the tested bit before shifting
+              }
+              b = b * 2;                       // shift left: next bit into the bit-7 slot
+            }
+          }
+        }
+      }
+    };
+  };
+}

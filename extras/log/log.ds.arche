@@ -1,0 +1,11 @@
+//! `log` device — leveled application logging with pluggable backends. This datasheet's presence marks
+//! `log/` a device; interchangeable `terminal/`, `file/`, and `wasm/` backends supply the sink, and the
+//! build selects which one merges (arche.toml `[target.<name>] log = "..."` / `[select] log = "..."`, or
+//! `ARCHE_SELECT=log=...`). The public surface (log.arche: debug/info/warn/err) forwards to the backend's
+//! `log_be_emit(level, msg, len)`, so a driver's logging code is identical across backends.
+//!
+//! Levels are the contract shared with the C seam and core's panic path: 0 debug, 1 info, 2 warn, 3 error.
+//! A selected backend's STRONG `log_be_emit` also overrides the weak default (runtime/log.c) that backs
+//! core's abort policies — so `log=file` captures panics in the file too, while a bare program still
+//! aborts to stderr with zero setup (the Rust `std`-provides-the-default model).
+// RUN: true

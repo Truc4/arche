@@ -1,0 +1,17 @@
+/// Public surface of the `log` device. Import `{ log }` and call log.debug/info/warn/err; the selected
+/// backend (extras/log/<variant>) decides the sink. Each level forwards to the one backend seam
+/// `log_be_emit(level, msg, len)` — the same seam (weak-defaulted in runtime/log.c) that backs core's
+/// panic policies, so a selected backend captures panics too. `msg` is `own` (moved into the write) to
+/// satisfy the extern-array borrow rule; its length is read before the move.
+debug :: func(own msg: []char) -> Eff() {
+  return log_be_emit(0, msg, msg.length);
+}
+info :: func(own msg: []char) -> Eff() {
+  return log_be_emit(1, msg, msg.length);
+}
+warn :: func(own msg: []char) -> Eff() {
+  return log_be_emit(2, msg, msg.length);
+}
+err :: func(own msg: []char) -> Eff() {
+  return log_be_emit(3, msg, msg.length);
+}

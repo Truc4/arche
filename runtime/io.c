@@ -26,6 +26,9 @@ float os_now_sec(void) {
 	return (float)(ts.tv_sec + ts.tv_nsec * 1e-9);
 }
 
+/* The panic-path print (formerly arche_eputs here) now lives behind the `log_be_emit` seam — a weak
+ * default in runtime/log.c, overridable by a selected `log` device backend. See runtime/log.c. */
+
 /* The file/stdio family (stdin/stdout/stderr, fopen/fread/fwrite/fclose, fread_line,
  * csv_read_chunk) now lives in core.arche as pure-Arche syscall wrappers — a `file` is a raw
  * fd. Only the mmap-based file map, the clock, and argv remain here (they need a language

@@ -8,8 +8,10 @@
  * GfxX11* pointer; pixels are 0xRRGGBB ints, presented inline via XPutImage (no MIT-SHM). */
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct {
 	Display *dpy;
@@ -20,6 +22,7 @@ typedef struct {
 	int w, h;
 	Atom wm_delete;
 	int open;
+	int left, right; /* ←/→ arrow key held state, updated in poll, read by gfx_be_axis_x */
 } GfxX11;
 
 /* (Re)allocate the framebuffer + XImage to w x h. No-op if already that size. */
@@ -69,7 +72,7 @@ void *gfx_be_open(int w, int h, char *title) {
 			XFree(sh);
 		}
 	}
-	XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
+	XSelectInput(dpy, win, ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask);
 	Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	XSetWMProtocols(dpy, win, &wm_delete, 1);
 	XMapWindow(dpy, win);
@@ -110,6 +113,23 @@ void gfx_be_present(void *handle, int *px, int w, int h) {
 	memcpy(g->buf, px, nbytes);
 	XPutImage(g->dpy, g->win, g->gc, g->img, 0, 0, 0, 0, (unsigned)g->w, (unsigned)g->h);
 	XFlush(g->dpy);
+
+	/* Frame limiter: cap to ~60 FPS. XPutImage/XFlush do NOT block on vsync, so without this the reactor's
+	 * `forever` loop spins as fast as the CPU allows and everything moves absurdly fast. arche gfx programs
+	 * step per-frame assuming ~60 Hz (that's what the browser's requestAnimationFrame gives), so pace the
+	 * native loop to the same cadence: sleep out the remainder of a 1/60 s budget since the last present. */
+	static const long FRAME_NS = 16666667L; /* 1e9 / 60 */
+	static struct timespec last = {0, 0};
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (last.tv_sec || last.tv_nsec) {
+		long dt = (long)(now.tv_sec - last.tv_sec) * 1000000000L + (now.tv_nsec - last.tv_nsec);
+		if (dt >= 0 && dt < FRAME_NS) {
+			struct timespec sl = {0, FRAME_NS - dt};
+			nanosleep(&sl, NULL);
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &last); /* stamp AFTER the sleep — the frame boundary */
 }
 
 int gfx_be_poll(void *handle) {
@@ -124,11 +144,29 @@ int gfx_be_poll(void *handle) {
 			ensure_size(g, ev.xconfigure.width, ev.xconfigure.height);
 		} else if (ev.type == ClientMessage && (Atom)ev.xclient.data.l[0] == g->wm_delete) {
 			g->open = 0;
-		} else if (ev.type == KeyPress) {
-			g->open = 0;
+		} else if (ev.type == KeyPress || ev.type == KeyRelease) {
+			/* Track the ←/→ arrows for gfx_be_axis_x; Escape closes the window (a plain key no longer
+			 * does — the window is now interactive). Auto-repeat sends Release+Press pairs, which is fine:
+			 * a held key keeps re-setting its flag each poll. */
+			int down = (ev.type == KeyPress);
+			KeySym ks = XLookupKeysym(&ev.xkey, 0);
+			if (ks == XK_Left)
+				g->left = down;
+			else if (ks == XK_Right)
+				g->right = down;
+			else if (down && ks == XK_Escape)
+				g->open = 0;
 		}
 	}
 	return g->open;
+}
+
+/* Horizontal input axis: +1 while → is held, -1 while ← is held, 0 for neither or both. */
+int gfx_be_axis_x(void *handle) {
+	GfxX11 *g = handle;
+	if (!g)
+		return 0;
+	return (g->right ? 1 : 0) - (g->left ? 1 : 0);
 }
 
 void gfx_be_close(void *handle) {

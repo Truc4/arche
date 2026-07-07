@@ -1,0 +1,9 @@
+/// Datasheet for the `camera` device — a 2D camera mapping world coordinates to screen pixels.
+///
+/// Requirements only: a `Camera` (defined in camera.arche) is an `eye` (its centre, in world units) and a
+/// `zoom` (pixels per world unit). The driver owns the singleton pool; `[1]Camera` is the minimum. The
+/// transform funcs take the viewport centre as an argument, so this device has no dependency on `gfx`.
+eye(x, y) :: float;
+zoom      :: float;
+
+[1]Camera;
