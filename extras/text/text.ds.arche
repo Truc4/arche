@@ -1,12 +1,21 @@
-/// Datasheet for the `text` device — overlay/HUD text drawn by the HOST, not rasterized in-engine.
+/// Datasheet for the `text` device — a DUMB text-display library. It renders a SCREEN-SPACE text run that the
+/// DRIVER hands it; it owns no text logic. What to say, where in the WORLD, how it projects to the screen,
+/// parallax, layout — all live in the driver. The device only turns a projected run into pixels or DOM.
 ///
-/// Unlike `gfx` (which owns every pixel of a software framebuffer), `text` delegates glyph rendering to the
-/// backend's native text stack. Its sole backend today is the browser DOM (extras/text/wasm): a `text.draw`
-/// crosses to the JS host, which creates one absolutely-positioned `<span>` per call in a `#text-layer` div
-/// layered above the gfx `<canvas>`. There is no font rasterizer here and no shared component/type — the
-/// draw surface is host-global, so `draw` takes no handle.
+/// A backend `render` system reads the driver-provided display-run columns (the driver declares these types
+/// and puts them on its own archetype, exactly as gfx's `rect` reads the driver's `rx/ry/rw/rh/rcolor`):
+///   tx, ty  — the run's TOP-LEFT in RENDER pixels (already projected by the driver)
+///   tstr    — a fixed `[N]char` buffer holding the text; tlen — its live char count
+///   tsz     — pixel height of the text; tcol — colour 0xRRGGBB
 ///
-/// Coordinate contract: (x, y) is the run's TOP-LEFT in gfx RENDER pixels (the same space as the framebuffer
-/// the driver sizes); `size` is a pixel font-size; `color` is 0xRRGGBB. The backend maps render pixels to
-/// on-screen units. Select the backend with `[select] text = "wasm"` (or `ARCHE_SELECT=text=wasm`).
+/// Backends (interchangeable variants of this ONE lib; pick with `[select] text = "..."`, never both):
+///   framebuffer — blits a bitmap font into the driver's `{ framebuffer }` (shared, DRIVER-owned, the same
+///                 buffer gfx renders into), so text composites into the image on EVERY gfx target (native
+///                 window, web canvas, headless). No host seam.
+///   dom         — emits one positioned <span> per run over the web canvas (real browser fonts); the JS host
+///                 (www/text.js) fulfils its `text_be_*` seams.
+///
+/// A HUD label is just a run whose `tx/ty` the driver seeds fixed (no projection); a world sign is one whose
+/// `tx/ty` the driver fills each frame from a world anchor via `camera.to_screen`. The device can't tell them
+/// apart — it only ever draws the projected run.
 // RUN: true

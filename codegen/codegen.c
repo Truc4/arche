@@ -426,12 +426,26 @@ static void buffer_append(CodegenContext *ctx, const char *str) {
 static void buffer_append_fmt(CodegenContext *ctx, const char *fmt, ...) {
 	va_list args;
 	va_start(args, fmt);
-
 	char temp[1024];
-	vsnprintf(temp, sizeof(temp), fmt, args);
+	int n = vsnprintf(temp, sizeof(temp), fmt, args);
 	va_end(args);
-
-	buffer_append(ctx, temp);
+	if (n < 0)
+		return;
+	if ((size_t)n < sizeof(temp)) {
+		buffer_append(ctx, temp);
+		return;
+	}
+	/* Output exceeds the stack buffer — format again into an exactly-sized heap buffer instead of
+	 * silently truncating. Matters for large single-line emissions like a big `[N x T]` const-array
+	 * global initializer (a bitmap-font table), which would otherwise be cut off into invalid IR. */
+	char *heap = malloc((size_t)n + 1);
+	if (!heap)
+		return;
+	va_start(args, fmt);
+	vsnprintf(heap, (size_t)n + 1, fmt, args);
+	va_end(args);
+	buffer_append(ctx, heap);
+	free(heap);
 }
 
 static void emit_alloca(CodegenContext *ctx, const char *fmt, ...) {
@@ -870,6 +884,12 @@ static void emit_array_init_elems(char *buf, size_t bufsz, int *pos, int *count,
 		const char *lx = e->data.literal.lexeme;
 		if (lx[0] == '\'') {
 			snprintf(vb, sizeof(vb), "%d", char_literal_value(lx));
+			v = vb;
+		} else if (lx[0] == '0' && (lx[1] == 'x' || lx[1] == 'X')) {
+			/* Emit the integer VALUE, not the source lexeme: LLVM reads a `0x..` array-element token
+			 * as a FLOAT constant, so a hex int literal (e.g. a 0x18 font-table byte) would fail to
+			 * build. strtoll(base 0) parses the 0x form; the value re-emits as decimal. */
+			snprintf(vb, sizeof(vb), "%lld", strtoll(lx, NULL, 0));
 			v = vb;
 		} else {
 			v = lx;
@@ -5682,6 +5702,24 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		const char *scalar_type = "i32"; /* default */
 		const char *arche_type = NULL;
 
+		/* Is the base a char[] value-const — a string const (`PIX :: "ARCH"`) or a char array const? Its
+		 * elements are i8 and its base pointer is already i8*. Detect it so the element type below is i8,
+		 * not the i32 default — which GEP'd by 4 and loaded 4 packed bytes (`PIX[0]` → "ARCH", not 'A'). */
+		int base_is_char_const = 0;
+		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
+			const char *bcv = semantic_get_const_value(ctx->sem_ctx, expr->data.index.base->data.name.name);
+			if (bcv && bcv[0] == '"') {
+				base_is_char_const = 1;
+			} else {
+				HirStaticDecl *csa = codegen_find_static_array(ctx, expr->data.index.base->data.name.name);
+				if (csa && csa->kind == HIR_STATIC_ARRAY) {
+					const char *cet = field_base_type_name(csa->array.element_type);
+					if (cet && strcmp(cet, "char") == 0)
+						base_is_char_const = 1;
+				}
+			}
+		}
+
 		if (type6_elem_type) {
 			arche_type = type6_elem_type;
 			scalar_type = llvm_type_from_arche(type6_elem_type);
@@ -5700,6 +5738,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			if (expr->resolved.tag == HIR_TYPE_UNKNOWN &&
 			    (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0))
 				expr->resolved.tag = HIR_TYPE_FLOAT;
+		} else if (base_is_char_const) {
+			/* A char[] value-const indexes to one char (i8) — see base_is_char_const above. */
+			arche_type = "char";
+			scalar_type = "i8";
 		} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 			arche_type = hir_resolved_type_name(expr);
 			scalar_type = llvm_type_from_arche(arche_type);
