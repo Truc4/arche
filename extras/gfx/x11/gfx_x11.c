@@ -11,6 +11,7 @@
 #include <X11/keysym.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct {
 	Display *dpy;
@@ -112,6 +113,23 @@ void gfx_be_present(void *handle, int *px, int w, int h) {
 	memcpy(g->buf, px, nbytes);
 	XPutImage(g->dpy, g->win, g->gc, g->img, 0, 0, 0, 0, (unsigned)g->w, (unsigned)g->h);
 	XFlush(g->dpy);
+
+	/* Frame limiter: cap to ~60 FPS. XPutImage/XFlush do NOT block on vsync, so without this the reactor's
+	 * `forever` loop spins as fast as the CPU allows and everything moves absurdly fast. arche gfx programs
+	 * step per-frame assuming ~60 Hz (that's what the browser's requestAnimationFrame gives), so pace the
+	 * native loop to the same cadence: sleep out the remainder of a 1/60 s budget since the last present. */
+	static const long FRAME_NS = 16666667L; /* 1e9 / 60 */
+	static struct timespec last = {0, 0};
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (last.tv_sec || last.tv_nsec) {
+		long dt = (long)(now.tv_sec - last.tv_sec) * 1000000000L + (now.tv_nsec - last.tv_nsec);
+		if (dt >= 0 && dt < FRAME_NS) {
+			struct timespec sl = {0, FRAME_NS - dt};
+			nanosleep(&sl, NULL);
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &last); /* stamp AFTER the sleep — the frame boundary */
 }
 
 int gfx_be_poll(void *handle) {

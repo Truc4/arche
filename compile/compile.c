@@ -912,9 +912,9 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			}
 			char cc_cmd[1 << 16];
 			int cl = snprintf(cc_cmd, sizeof(cc_cmd),
-			                  "cc -rdynamic -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o "
+			                  "cc -rdynamic -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/log.o %s/net.o "
 			                  "%s/term.o %s/hotreload.o %s/inspect.o -ldl -lc",
-			                  out_path, u0_obj, rt, rt, rt, rt, rt, rt);
+			                  out_path, u0_obj, rt, rt, rt, rt, rt, rt, rt);
 			if (cl < 0 || cl >= (int)sizeof(cc_cmd)) {
 				fprintf(stderr, "link command too long\n");
 				rc = 1;
@@ -994,7 +994,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 				cl += m;
 			}
 			int m = snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl,
-			                 " %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc", rt, rt, rt, rt);
+			                 " %s/stack_check.o %s/io.o %s/log.o %s/net.o %s/term.o -lc", rt, rt, rt, rt, rt);
 			if (m < 0 || m >= (int)sizeof(cc_cmd) - cl) {
 				fprintf(stderr, "link command too long\n");
 				rc = 1;
@@ -1271,8 +1271,8 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		char cc_cmd[8192];
 		const char *gc = codegen_per_unit_enabled() ? "-Wl,--gc-sections " : "";
 		int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
-		                      "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
-		                      gc, out_path, asm_file, rt, rt, rt, rt);
+		                      "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/log.o %s/net.o %s/term.o -lc",
+		                      gc, out_path, asm_file, rt, rt, rt, rt, rt);
 		if (cc_len < 0 || cc_len >= (int)sizeof(cc_cmd)) {
 			fprintf(stderr, "link command too long\n");
 			goto cleanup;

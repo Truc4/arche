@@ -1,0 +1,6 @@
+/// File backend for the `log` device — merged under `log = "file"`. Appends every emit to a log file via
+/// the log_file.c shim (auto-discovered from this folder; pure libc, no `#link`). Its STRONG `log_be_emit`
+/// overrides the weak default, so a program built with `log=file` sends BOTH its app logs and its panics to
+/// the file instead of the terminal. The seam is declared once in core, so this variant only supplies the
+/// C definition — no arche re-declaration. Not a standalone test.
+// RUN: true

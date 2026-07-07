@@ -26,13 +26,8 @@ float os_now_sec(void) {
 	return (float)(ts.tv_sec + ts.tv_nsec * 1e-9);
 }
 
-/* Write a NUL-terminated string to a raw fd — the panic-path print for core.arche's abort policies.
- * A non-variadic replacement for libc `dprintf`: on wasm32 the strict-signature link rejects calling
- * variadic `dprintf` with a fixed `(fd, fmt)` prototype (it compiles to `(i32,i32,i32)`), so use plain
- * `write` instead. Returns the byte count so it matches the arche `(r: int)` result. */
-int arche_eputs(int fd, const char *s) {
-	return (int)write(fd, s, strlen(s));
-}
+/* The panic-path print (formerly arche_eputs here) now lives behind the `log_be_emit` seam — a weak
+ * default in runtime/log.c, overridable by a selected `log` device backend. See runtime/log.c. */
 
 /* The file/stdio family (stdin/stdout/stderr, fopen/fread/fwrite/fclose, fread_line,
  * csv_read_chunk) now lives in core.arche as pure-Arche syscall wrappers — a `file` is a raw

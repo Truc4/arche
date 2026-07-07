@@ -21,15 +21,22 @@ streq :: func(a: []char, b: []char) -> bool {
   return true;
 }
 
+LOG_ERR : int : 3;   // shared level contract (0 debug .. 3 error); the `log` device reuses it.
+
 #foreign {
   _exit      :: proc(code: int);
-  arche_eputs :: proc(fd: int, own msg: []char)(r: int);
+  // The diagnostic seam: panics below and the pluggable `log` device (extras/log) both emit here. A weak
+  // default lives in runtime/log.c (stderr); a selected log backend's strong symbol overrides it. `[]char`
+  // lowers to a bare pointer across the FFI, so the length is passed explicitly (as `os.write` does) —
+  // length-based, no strlen wart.
+  log_be_emit :: proc(level: int, own msg: []char, n: int);
 }
 
 @policy(bounds)
 abort :: policy(len: int, i: int) {
   if (i < 0 || i >= len) {
-    arche_eputs(2, "arche: index out of bounds\n")(_:);
+    m := "arche: index out of bounds\n";
+    log_be_emit(LOG_ERR, m, m.length)(_:);
     _exit(134);
   }
 }
@@ -63,7 +70,8 @@ zero :: policy(a: int, b: int) {
 @policy(divide)
 abort :: policy(a: int, b: int) {
   if (b == 0) {
-    arche_eputs(2, "arche: divide by zero\n")(_:);
+    m := "arche: divide by zero\n";
+    log_be_emit(LOG_ERR, m, m.length)(_:);
     _exit(134);
   }
 }
@@ -81,7 +89,8 @@ reject :: policy(count: int, cap: int, ok: int) {
 @policy(pool)
 abort :: policy(count: int, cap: int) {
   if (count >= cap) {
-    arche_eputs(2, "arche: pool full\n")(_:);
+    m := "arche: pool full\n";
+    log_be_emit(LOG_ERR, m, m.length)(_:);
     _exit(134);
   }
 }

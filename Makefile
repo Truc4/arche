@@ -52,11 +52,11 @@ ifeq ($(HAVE_VULKAN),1)
 CFLAGS += -DARCHE_HAVE_VULKAN
 endif
 
-RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/net.c runtime/term.c runtime/inspect.c
+RUNTIME_SRCS = runtime/stack_check.c runtime/io.c runtime/log.c runtime/net.c runtime/term.c runtime/inspect.c
 RUNTIME_OBJS = $(RUNTIME_SRCS:.c=.o)
 # Position-independent copies of the runtime, linked into `--emit=shared` (.so) builds. Kept SEPARATE
 # from the non-PIC `.o` set so the executable link (-no-pie -mcmodel=large) stays byte-identical.
-RUNTIME_PIC_OBJS = $(BUILD_DIR)/runtime/stack_check.pic.o $(BUILD_DIR)/runtime/io.pic.o $(BUILD_DIR)/runtime/net.pic.o $(BUILD_DIR)/runtime/term.pic.o
+RUNTIME_PIC_OBJS = $(BUILD_DIR)/runtime/stack_check.pic.o $(BUILD_DIR)/runtime/io.pic.o $(BUILD_DIR)/runtime/log.pic.o $(BUILD_DIR)/runtime/net.pic.o $(BUILD_DIR)/runtime/term.pic.o
 # The wasm backend (`arche build --arch=wasm32`) compiles these runtime SOURCES with clang at wasm-build
 # time (they need the wasi-libc/target that isn't present when arche itself is built), so we stage the
 # `.c` alongside the native `.o` in the runtime resource dir instead of prebuilding an object.
@@ -88,7 +88,7 @@ INSPECT_TEST_OBJS = $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/unit/runtime/ins
 # Default target
 # `arche fmt` replaces the standalone arche-fmt (its target is still defined, buildable on demand).
 # arche-analyzer (LSP) + arche-syntax-tokens stay for editor integration.
-all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/runtime/gpu_runtime.o $(WASM_RT_SRCS)
+all: $(BUILD_DIR) $(TARGET) $(LEXER_BIN) $(SYNTAX_TOKENS_BIN) $(ANALYZER_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(LOWER_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(LIBARCH) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(RUNTIME_PIC_OBJS) $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o $(BUILD_DIR)/runtime/gpu_runtime.o $(WASM_RT_SRCS)
 
 $(BUILD_DIR):
 	mkdir -p $(BUILD_DIR)/lexer $(BUILD_DIR)/syntax $(BUILD_DIR)/hir $(BUILD_DIR)/lower $(BUILD_DIR)/parser $(BUILD_DIR)/compile $(BUILD_DIR)/doctest $(BUILD_DIR)/semantic $(BUILD_DIR)/codegen $(BUILD_DIR)/cli $(BUILD_DIR)/unit/compiler $(BUILD_DIR)/runtime
@@ -204,7 +204,7 @@ test-e2e: $(TARGET) $(BUILD_DIR)/runtime/hotreload.o
 	python3 tests/integration/e2e_hot_reload/run_e2e.py
 
 # Run all tests with LIT
-test: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	lit -v tests/ extras/
 	$(MAKE) test-doc
 	$(MAKE) verify-fmt
@@ -218,7 +218,7 @@ test: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODE
 # incremental_cache). This full-suite run is kept out of CI only to avoid ~2x suite time; run it by
 # hand to re-validate the whole language under per-unit. Whole-program (no inlining loss) stays the
 # default build.
-test-per-unit: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test-per-unit: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	ARCHE_PER_UNIT=1 lit -v tests/ extras/
 
 # Run doctests over the real source tree: ```arche examples in /// doc comments (.arche) AND in
@@ -228,7 +228,7 @@ test-per-unit: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BI
 # docs/*.md are listed explicitly (not docs/...): docs/devices.md is deliberately excluded — its
 # examples are inherently multi-file (datasheet + impl + driver) and cannot run as standalone
 # .md doctests (see docs/DOCTESTS.md "Markdown doctests").
-test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
+test-doc: $(TARGET) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
 	./$(TARGET) test core/... stdlib/... examples/... README.md docs/language.md docs/patterns.md docs/DOCTESTS.md
 
 # Corpus lint gate: compile every stdlib + extras module IN CONTEXT with `-Werror`, failing on any
@@ -663,7 +663,7 @@ install: all
 	install -m 0755 $(ANALYZER_BIN) "$(ARCHE_BINDIR)/arche-analyzer"
 	install -m 0644 core/core.arche "$(ARCHE_LIBDIR)/core/"
 	cp -R stdlib/. "$(ARCHE_LIBDIR)/stdlib/"
-	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(BUILD_DIR)/runtime/gpu_runtime.o $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o "$(ARCHE_LIBDIR)/runtime/"
+	install -m 0644 $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o $(BUILD_DIR)/runtime/gpu_runtime.o $(BUILD_DIR)/runtime/hotreload.o $(BUILD_DIR)/runtime/inspect.o "$(ARCHE_LIBDIR)/runtime/"
 	install -m 0644 $(WASM_RT_SRCS) "$(ARCHE_LIBDIR)/runtime/"
 	@[ -d docs/explain ] && cp -R docs/explain/. "$(ARCHE_LIBDIR)/explain/" || true
 	@# `cp -R` preserves source-tree modes (and leaves a pre-existing dest file's mode untouched on

@@ -1,0 +1,6 @@
+/// Terminal backend for the `log` device — merged under `log = "terminal"` (the default). Leveled writes
+/// to the process's standard streams via the log_term.c shim (auto-discovered from this folder; pure libc,
+/// no `#link`): warn/error (>=2) → stderr, info/debug → stdout. The shim's STRONG `log_be_emit` overrides
+/// the weak default in runtime/log.c. The seam is declared once in core (core.arche), so this variant only
+/// supplies the C definition — no arche re-declaration. Not a standalone test.
+// RUN: true
