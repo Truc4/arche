@@ -9,13 +9,16 @@
 /// crosses as a bare pointer; `tlen` is the live length.
 #module
 #foreign
-text_be_draw  :: proc(x: int, y: int, own s: []char, n: int, size: int, color: int);
+// `s` is borrowed in-out (the host only reads it to build a <span>), not `own` — the same FFI borrow idiom
+// gfx uses for the framebuffer in `gfx_be_present`, so a queried `[N]char` column (`tstr`) can be passed
+// without moving/copying it. The host receives (x, y, sPtr, n, size, color); `n` is the live length.
+text_be_draw  :: proc(x: int, y: int, s: []char, n: int, size: int, color: int)(s: []char);
 text_be_clear :: proc();
 
 /// Clear last frame's spans, then emit one <span> per display run at its projected (tx,ty).
 render :: system eff {
   text_be_clear()();
   map (query { tx, ty, tstr, tlen, tsz, tcol }) eff {
-    text_be_draw(tx, ty, tstr, tlen, tsz, tcol)();
+    text_be_draw(tx, ty, tstr, tlen, tsz, tcol)(_:);
   };
 }
