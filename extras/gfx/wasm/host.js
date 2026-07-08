@@ -100,6 +100,10 @@
       this.scroll = 0;
       const scaleX = () => { const r = c.getBoundingClientRect(); return c.width / (r.width || 1); };
       let lastTouchX = 0;
+      let touchVel = 0;       // release velocity (render px / frame) for the fling
+      let momFrac = 0;        // fractional scroll carry so a slow glide's sub-pixel steps don't round away
+      let momentumRAF = null; // the active fling animation, if any
+      const stopMomentum = () => { if (momentumRAF !== null) { cancelAnimationFrame(momentumRAF); momentumRAF = null; } touchVel = 0; momFrac = 0; };
       if (typeof c.addEventListener === "function") {
         c.addEventListener("wheel", (e) => {
           // A vertical wheel scrolls the horizontal world; ~1 notch (deltaY≈100) → ~200px, matching x11's Button4/5.
@@ -107,6 +111,7 @@
           e.preventDefault();
         }, { passive: false });
         c.addEventListener("touchstart", (e) => {
+          stopMomentum(); // a fresh touch grabs the world — kill any in-flight fling
           if (e.touches.length) { const r = c.getBoundingClientRect(); lastTouchX = (e.touches[0].clientX - r.left) * scaleX(); }
         }, { passive: false });
         c.addEventListener("touchmove", (e) => {
@@ -114,10 +119,29 @@
             const r = c.getBoundingClientRect();
             const tx = (e.touches[0].clientX - r.left) * scaleX();
             // Direct manipulation: dragging the content left (tx decreasing) moves the camera right (positive).
-            this.scroll += Math.round(lastTouchX - tx);
+            const d = lastTouchX - tx;
+            this.scroll += Math.round(d);
+            touchVel = 0.6 * touchVel + 0.4 * d; // recent per-frame swipe velocity (light smoothing)
             lastTouchX = tx;
           }
           e.preventDefault();
+        }, { passive: false });
+        c.addEventListener("touchend", () => {
+          // Momentum via CONSTANT FRICTION: velocity eases LINEARLY to exactly 0, so glide DURATION scales with
+          // flick strength (a small flick barely glides; a hard flick glides far) and it settles smoothly with no
+          // cutoff — unlike exponential decay, which glides a near-constant time for every flick. FRICTION
+          // (px/frame², the deceleration) is the one knob: bigger = shorter, snappier glide.
+          const FRICTION = 1.5;
+          const step = () => {
+            if (touchVel === 0) { momentumRAF = null; return; }
+            momFrac += touchVel;
+            const w = Math.trunc(momFrac);
+            this.scroll += w; momFrac -= w;
+            touchVel = touchVel > 0 ? Math.max(0, touchVel - FRICTION) : Math.min(0, touchVel + FRICTION);
+            momentumRAF = requestAnimationFrame(step);
+          };
+          // Only fling if there's real speed (≥ a couple friction steps); a slow drag-and-release just stops.
+          if (typeof requestAnimationFrame === "function" && Math.abs(touchVel) >= 2 * FRICTION) momentumRAF = requestAnimationFrame(step);
         }, { passive: false });
       }
       c.dataset.status = "running";
