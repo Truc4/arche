@@ -18,5 +18,6 @@ gfx_be_key    :: proc(win: window)(k: int);
 gfx_be_mouse_x    :: proc(win: window)(x: int);
 gfx_be_mouse_y    :: proc(win: window)(y: int);
 gfx_be_mouse_down :: proc(win: window)(down: int);
+gfx_be_scroll     :: proc(win: window)(d: int);
 @drop(window)
 gfx_be_close :: proc(own win: window);

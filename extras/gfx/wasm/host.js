@@ -93,6 +93,33 @@
         c.addEventListener("mousedown", (e) => { toRender(e); if (e.button === 0) this.mdown = 1; });
         addEventListener("mouseup", (e) => { if (e.button === 0) this.mdown = 0; });
       }
+
+      // Horizontal scroll accumulator (render px), drained by gfx_be_scroll — fed by the mouse WHEEL and a TOUCH
+      // swipe. Positive = scroll the world right. Listeners are on the canvas only, so a wheel/touch over a DOM
+      // panel (editor <textarea> / output <pre> / RUN button) scrolls THAT panel, not the world — they self-gate.
+      this.scroll = 0;
+      const scaleX = () => { const r = c.getBoundingClientRect(); return c.width / (r.width || 1); };
+      let lastTouchX = 0;
+      if (typeof c.addEventListener === "function") {
+        c.addEventListener("wheel", (e) => {
+          // A vertical wheel scrolls the horizontal world; ~1 notch (deltaY≈100) → ~200px, matching x11's Button4/5.
+          this.scroll += Math.round((e.deltaX || e.deltaY) * 2.0);
+          e.preventDefault();
+        }, { passive: false });
+        c.addEventListener("touchstart", (e) => {
+          if (e.touches.length) { const r = c.getBoundingClientRect(); lastTouchX = (e.touches[0].clientX - r.left) * scaleX(); }
+        }, { passive: false });
+        c.addEventListener("touchmove", (e) => {
+          if (e.touches.length) {
+            const r = c.getBoundingClientRect();
+            const tx = (e.touches[0].clientX - r.left) * scaleX();
+            // Direct manipulation: dragging the content left (tx decreasing) moves the camera right (positive).
+            this.scroll += Math.round(lastTouchX - tx);
+            lastTouchX = tx;
+          }
+          e.preventDefault();
+        }, { passive: false });
+      }
       c.dataset.status = "running";
     },
 
@@ -184,6 +211,7 @@
         gfx_be_mouse_x() { return self.mx; },
         gfx_be_mouse_y() { return self.my; },
         gfx_be_mouse_down() { return self.mdown; },
+        gfx_be_scroll() { const s = self.scroll; self.scroll = 0; return s; }, // drain-and-clear
         gfx_be_close() {},
       };
     },

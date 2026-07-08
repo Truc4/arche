@@ -38,6 +38,13 @@ mouse_down :: func(h: window) -> Eff(int) {
   return gfx_be_mouse_down(h);
 }
 
+/// The horizontal scroll delta accumulated since the last read (drain-and-clear like `key`), fed by the mouse
+/// wheel and a touch swipe. A step system folds it into a scroll position — `gfx.scroll(handle)(d:)`. Positive
+/// = scroll the world right. Backends with no wheel/touch (headless) report 0.
+scroll :: func(h: window) -> Eff(int) {
+  return gfx_be_scroll(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {

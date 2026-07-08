@@ -28,6 +28,7 @@ typedef struct {
 	int keyq[64];
 	int keyq_head, keyq_tail;
 	int mx, my, mdown; /* pointer position (window px) + left-button held state, for gfx_be_mouse_* */
+	int scroll;        /* wheel accumulator (Button4/Button5), drained by gfx_be_scroll */
 } GfxX11;
 
 /* Non-ASCII key sentinels returned by gfx_be_key — MUST match the browser host (gfx.js / wasm/host.js). */
@@ -193,6 +194,11 @@ int gfx_be_poll(void *handle) {
 			g->my = ev.xbutton.y;
 			if (ev.xbutton.button == Button1)
 				g->mdown = (ev.type == ButtonPress);
+			/* X11 delivers wheel scroll as Button4 (up) / Button5 (down) presses; accumulate ~200px per notch. */
+			else if (ev.type == ButtonPress && ev.xbutton.button == Button5)
+				g->scroll += 200;
+			else if (ev.type == ButtonPress && ev.xbutton.button == Button4)
+				g->scroll -= 200;
 		}
 	}
 	return g->open;
@@ -229,6 +235,16 @@ int gfx_be_mouse_y(void *handle) {
 int gfx_be_mouse_down(void *handle) {
 	GfxX11 *g = handle;
 	return g ? g->mdown : 0;
+}
+
+/* Horizontal scroll delta accumulated since the last read (wheel), then cleared — drain-and-clear like the key queue. */
+int gfx_be_scroll(void *handle) {
+	GfxX11 *g = handle;
+	if (!g)
+		return 0;
+	int s = g->scroll;
+	g->scroll = 0;
+	return s;
 }
 
 void gfx_be_close(void *handle) {

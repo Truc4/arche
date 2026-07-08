@@ -102,3 +102,4 @@ int gfx_be_key(void *handle) { (void)handle; return 0; }
 int gfx_be_mouse_x(void *handle) { (void)handle; return 0; }
 int gfx_be_mouse_y(void *handle) { (void)handle; return 0; }
 int gfx_be_mouse_down(void *handle) { (void)handle; return 0; }
+int gfx_be_scroll(void *handle) { (void)handle; return 0; }
