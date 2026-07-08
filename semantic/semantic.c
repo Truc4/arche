@@ -1390,10 +1390,18 @@ static TypeId sem_literal_type_id(SemanticContext *ctx, SyntaxView v) {
 			r = tyid_of_prim(ctx->ty_arena, PRIM_STR);
 		else if (lex[0] == '\'')
 			r = tyid_of_prim(ctx->ty_arena, PRIM_CHAR);
-		else if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E'))
-			r = tyid_of_prim(ctx->ty_arena, PRIM_FLOAT);
-		else
-			r = tyid_of_prim(ctx->ty_arena, PRIM_INT); /* `i32` canonical; rendered "i32" by tyid_display */
+		else {
+			/* Int-ness is decided by the ONE integer grammar (arche_int_lit) FIRST — a hex literal like
+			 * 0xE0E0E0 carries 'E' digits that are NOT a decimal exponent. Only a value arche_int_lit
+			 * rejects yet that carries a '.'/'e'/'E' (e.g. 1.5, 1e3) is a float. */
+			long long iv;
+			if (arche_int_lit(lex, &iv))
+				r = tyid_of_prim(ctx->ty_arena, PRIM_INT); /* `i32` canonical; rendered "i32" by tyid_display */
+			else if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E'))
+				r = tyid_of_prim(ctx->ty_arena, PRIM_FLOAT);
+			else
+				r = tyid_of_prim(ctx->ty_arena, PRIM_INT);
+		}
 		free(lex);
 		return r;
 	}

@@ -18,6 +18,13 @@ axis_x :: func(h: window) -> Eff(int) {
   return gfx_be_axis_x(h);
 }
 
+/// The next discrete key press as one Eff — the typed ASCII byte (Enter=13, Backspace=8, Tab=9…) or a
+/// GFX_KEY_* sentinel (arrows: left=1000, right=1001, up=1002, down=1003), or 0 when nothing is queued. A
+/// step system drains it each frame — `gfx.key(handle)(k:)` — to feed an editor/text field. Non-blocking.
+key :: func(h: window) -> Eff(int) {
+  return gfx_be_key(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {

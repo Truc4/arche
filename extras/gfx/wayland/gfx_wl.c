@@ -254,3 +254,6 @@ void gfx_be_close(void *handle) {
 		wl_display_disconnect(g->dpy);
 	free(g);
 }
+
+/* No discrete key input wired for this backend. */
+int gfx_be_key(void *handle) { (void)handle; return 0; }

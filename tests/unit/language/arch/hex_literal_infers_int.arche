@@ -1,0 +1,14 @@
+// RUN: %arche build -o %t %s && %t | grep -q "^x=14737632 y=255$"
+// Regression: a bare hex integer literal `x := 0xNNN` (no type annotation) must infer type `int`, NOT float.
+// It was inferred as float, so native codegen emitted `store float <intval>` and clang aborted with
+// "integer constant must have integer type". Decimals inferred `int` correctly; only hex literals defaulted
+// to float. This bit every framebuffer colour constant (e.g. `tcol := 0xE0E0E0`).
+#import { fmt }
+
+show :: system eff {
+  x := 0xE0E0E0; // 14737632 — must be int
+  y := 0xFF;     // 255 — must be int
+  fmt.printf("x=%d y=%d\n", x, y);
+}
+
+#run seq({ show })

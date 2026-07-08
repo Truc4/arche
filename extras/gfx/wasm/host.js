@@ -59,10 +59,18 @@
       this.handle = 1n; // opaque window handle: arche `window` lowers to i64 → crosses as BigInt
       this.tex = null; this.frames = 0;
       this.keys = { left: false, right: false }; // ←/→ (or A/D) held state, read by gfx_be_axis_x
+      this.keyQueue = [];                          // discrete presses, drained by gfx_be_key
+      // Named-key → code map; MUST match gfx_x11.c's XLookupString bytes + GFX_KEY_* sentinels.
+      const NAMED = { Enter: 13, Backspace: 8, Tab: 9, Escape: 27, ArrowLeft: 1000, ArrowRight: 1001, ArrowUp: 1002, ArrowDown: 1003 };
       const set = (down) => (e) => {
         const k = e.key;
-        if (k === "ArrowLeft" || k === "a" || k === "A") { this.keys.left = down; e.preventDefault(); }
-        else if (k === "ArrowRight" || k === "d" || k === "D") { this.keys.right = down; e.preventDefault(); }
+        if (k === "ArrowLeft" || k === "a" || k === "A") this.keys.left = down;
+        else if (k === "ArrowRight" || k === "d" || k === "D") this.keys.right = down;
+        if (down) {
+          let code = NAMED[k];
+          if (code === undefined && k.length === 1) code = k.charCodeAt(0);
+          if (code !== undefined) { this.keyQueue.push(code); e.preventDefault(); }
+        }
       };
       if (typeof addEventListener === "function") {
         addEventListener("keydown", set(true));
@@ -154,6 +162,7 @@
         },
         gfx_be_poll() { return 1; }, // the tab is always open; native inserts Closed here to exit
         gfx_be_axis_x() { return (self.keys.right ? 1 : 0) - (self.keys.left ? 1 : 0); },
+        gfx_be_key() { return self.keyQueue.length ? self.keyQueue.shift() : 0; },
         gfx_be_close() {},
       };
     },

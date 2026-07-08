@@ -23,7 +23,22 @@ typedef struct {
 	Atom wm_delete;
 	int open;
 	int left, right; /* ←/→ arrow key held state, updated in poll, read by gfx_be_axis_x */
+	/* Discrete key FIFO for gfx_be_key (an editor needs each keypress, not held state). Printable keys are
+	 * their ASCII byte; special keys use the sentinels below. */
+	int keyq[64];
+	int keyq_head, keyq_tail;
 } GfxX11;
+
+/* Non-ASCII key sentinels returned by gfx_be_key — MUST match the browser host (gfx.js / wasm/host.js). */
+enum { GFX_KEY_LEFT = 1000, GFX_KEY_RIGHT = 1001, GFX_KEY_UP = 1002, GFX_KEY_DOWN = 1003 };
+
+static void keyq_push(GfxX11 *g, int k) {
+	int next = (g->keyq_tail + 1) % (int)(sizeof(g->keyq) / sizeof(g->keyq[0]));
+	if (next == g->keyq_head)
+		return; /* full — drop */
+	g->keyq[g->keyq_tail] = k;
+	g->keyq_tail = next;
+}
 
 /* (Re)allocate the framebuffer + XImage to w x h. No-op if already that size. */
 static void ensure_size(GfxX11 *g, int w, int h) {
@@ -145,17 +160,29 @@ int gfx_be_poll(void *handle) {
 		} else if (ev.type == ClientMessage && (Atom)ev.xclient.data.l[0] == g->wm_delete) {
 			g->open = 0;
 		} else if (ev.type == KeyPress || ev.type == KeyRelease) {
-			/* Track the ←/→ arrows for gfx_be_axis_x; Escape closes the window (a plain key no longer
-			 * does — the window is now interactive). Auto-repeat sends Release+Press pairs, which is fine:
-			 * a held key keeps re-setting its flag each poll. */
+			/* Track the ←/→ arrows for gfx_be_axis_x AND enqueue discrete presses for gfx_be_key (an editor
+			 * needs each keystroke). Auto-repeat sends Release+Press pairs. Escape closes the window. */
 			int down = (ev.type == KeyPress);
-			KeySym ks = XLookupKeysym(&ev.xkey, 0);
-			if (ks == XK_Left)
+			char buf[16];
+			KeySym ks;
+			int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+			if (ks == XK_Left) {
 				g->left = down;
-			else if (ks == XK_Right)
+				if (down) keyq_push(g, GFX_KEY_LEFT);
+			} else if (ks == XK_Right) {
 				g->right = down;
-			else if (down && ks == XK_Escape)
-				g->open = 0;
+				if (down) keyq_push(g, GFX_KEY_RIGHT);
+			} else if (ks == XK_Up) {
+				if (down) keyq_push(g, GFX_KEY_UP);
+			} else if (ks == XK_Down) {
+				if (down) keyq_push(g, GFX_KEY_DOWN);
+			} else if (ks == XK_Escape) {
+				if (down) g->open = 0;
+			} else if (down) {
+				/* Printable + control (Enter=13, Backspace=8, Tab=9…) come through XLookupString. */
+				for (int i = 0; i < n; i++)
+					keyq_push(g, (unsigned char)buf[i]);
+			}
 		}
 	}
 	return g->open;
@@ -167,6 +194,17 @@ int gfx_be_axis_x(void *handle) {
 	if (!g)
 		return 0;
 	return (g->right ? 1 : 0) - (g->left ? 1 : 0);
+}
+
+/* Next discrete key press (ASCII byte, or a GFX_KEY_* sentinel), or 0 if the queue is empty. Non-blocking:
+ * call once per frame after gfx_be_poll to drain input for an editor/text field. */
+int gfx_be_key(void *handle) {
+	GfxX11 *g = handle;
+	if (!g || g->keyq_head == g->keyq_tail)
+		return 0;
+	int k = g->keyq[g->keyq_head];
+	g->keyq_head = (g->keyq_head + 1) % (int)(sizeof(g->keyq) / sizeof(g->keyq[0]));
+	return k;
 }
 
 void gfx_be_close(void *handle) {
