@@ -328,7 +328,7 @@ static void wg_emit_elem_addr(Wg *g, WgArray *a, const HirExpr *index) {
 	if (a->elem_size != 1) {
 		emit_const(&g->body, a->elem_size);
 		wb_byte(&g->body, 0x6c);
-	}                        // i32.mul
+	} // i32.mul
 	wb_byte(&g->body, 0x6a); // i32.add
 }
 
