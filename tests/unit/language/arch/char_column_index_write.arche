@@ -1,0 +1,23 @@
+// RUN: %arche build -o %t %s && %t | grep -q "^buf=hi len=2$"
+// Regression: a RUNTIME-indexed store `buf[len] = k` into a query-bound `[N]char` column must stride by
+// ONE byte per char (the element is i8), not four. The generic indexed-assign path derived the element
+// type from the column's resolved type, which collapses `char` to its backing `int` (i32) — so the write
+// strided 4 bytes/char and "hi" landed as "h\0\0\0i", the stride-4 signature. This is the exact shape the
+// single-line editor edits (`tstr[tlen] = k`).
+#import { fmt }
+
+Line :: arche { buf :: [8]char, len :: int }
+[1]Line(1) ?abort;
+
+fill :: map (query { buf, len })(buf, len) eff {
+  buf[len] = 104; // 'h' — runtime index at len==0
+  len      = len + 1;
+  buf[len] = 105; // 'i' — runtime index at len==1; must land at byte 1, not byte 4
+  len      = len + 1;
+}
+
+show :: map (query { buf, len }) eff {
+  fmt.printf("buf=%s len=%d\n", buf, len);
+}
+
+#run seq({ fill, show })

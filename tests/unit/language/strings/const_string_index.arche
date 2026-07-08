@@ -3,7 +3,7 @@
 // instead of 'A' (65); const-array indexing ignores the i8 element width. A local `s := "ARCH"; s[0]` is 65.
 // RUN: %arche build -o %t %s && %t | grep -x "65 82 67 72"
 #import { fmt }
-PIX :: "ARCH";
+PIX   :: "ARCH";
 entry :: system eff {
   fmt.printf("%d %d %d %d\n", PIX[0], PIX[1], PIX[2], PIX[3]); // 'A' 'R' 'C' 'H'
 }

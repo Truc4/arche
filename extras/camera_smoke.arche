@@ -14,9 +14,9 @@ seed :: system {
 
 go :: system eff {
   map (query { eye, zoom }) eff {
-    c := vec.mk(240.0, 180.0);
-    w := vec.mk(110.0, 50.0);
-    s := camera.to_screen(w, eye, zoom, c);
+    c  := vec.mk(240.0, 180.0);
+    w  := vec.mk(110.0, 50.0);
+    s  := camera.to_screen(w, eye, zoom, c);
     e2 := camera.follow(eye, vec.mk(200.0, 50.0), 0.5);
     fmt.printf("s=%.1f %.1f eyex=%.1f\n", s.x, s.y, e2.x);
   };

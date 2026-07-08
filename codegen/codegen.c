@@ -2995,6 +2995,22 @@ static int resolve_collective_query(CodegenContext *ctx, const char *name, const
  * FLOAT column isn't mis-defaulted to i32 (G4/G5): the store path previously only consulted `find_value`,
  * missing a directly-named global pool the way the read path already handled. */
 static const char *indexed_col_arche_type(CodegenContext *ctx, HirExpr *base_expr) {
+	/* A bare-name column bound by a `map (query { col })` / fan (`col[i]`): the value is a type-4 column
+	 * whose element type lives in the archetype field decl — NOT the value's resolved type, which collapses
+	 * a component column to its backing (`char`→`int`). Resolve it here so both the read and store paths
+	 * stride by the real element width (an `[N]char` column is i8, not i32). */
+	if (base_expr && base_expr->kind == HIR_EXPR_NAME) {
+		ValueInfo *bv = find_value(ctx, base_expr->data.name.name);
+		if (bv && bv->type == 4 && bv->arch_name) {
+			HirArchetypeDecl *ba = find_archetype_decl(ctx, bv->arch_name);
+			if (ba)
+				for (int i = 0; i < ba->field_count; i++)
+					if (ba->fields[i]->kind == FIELD_COLUMN && ba->fields[i]->name &&
+					    strcmp(ba->fields[i]->name, base_expr->data.name.name) == 0)
+						return field_base_type_name(ba->fields[i]->type);
+		}
+		return NULL;
+	}
 	if (!base_expr || base_expr->kind != HIR_EXPR_FIELD || !base_expr->data.field.base ||
 	    base_expr->data.field.base->kind != HIR_EXPR_NAME)
 		return NULL;
@@ -10507,23 +10523,33 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			const char *scalar_type = "i32"; /* default */
 			const char *arche_type = NULL;
 
-			/* Try to get element type from resolved type info */
+			/* Prefer the pool-column's DECLARED element type (incl. a flattened tuple sub-column
+			 * `P.pos.x`→`pos_x`, and a bare-name query-bound column) over the base's resolved type: a
+			 * component column collapses to its backing (`char`→`int`), which would stride an `[N]char`
+			 * column by 4 and store i32 — the stride-4 corruption. The read path already prefers this. */
 			HirExpr *base_expr = stmt->data.assign_stmt.target->data.index.base;
-			if (base_expr->resolved.tag != HIR_TYPE_UNKNOWN) {
+			const char *col_et = indexed_col_arche_type(ctx, base_expr);
+			if (col_et) {
+				arche_type = col_et;
+				scalar_type = llvm_type_from_arche(col_et);
+			} else if (base_expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				arche_type = hir_resolved_type_name(base_expr);
 				scalar_type = llvm_type_from_arche(arche_type);
-			} else {
-				/* Fallback: resolve the pool-column element type (incl. a flattened tuple sub-column
-				 * `P.pos.x`→`pos_x`). Shared with the read path so a FLOAT column isn't defaulted to i32. */
-				const char *at = indexed_col_arche_type(ctx, base_expr);
-				if (at) {
-					arche_type = at;
-					scalar_type = llvm_type_from_arche(at);
-				}
 			}
 
 			/* In vector mode, load/store use vector type; GEP uses scalar pointer */
 			const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
+
+			/* A byte/short-width element (a `[N]char` column, `byte`, …): the RHS is carried at i32, so
+			 * truncate it to the element width before storing — a literal lands directly, a wider SSA truncs.
+			 * Without this an `i32` value stored into an `i8` slot is an IR type error. */
+			const char *store_val = value_buf;
+			char narrow_val[256];
+			if (ctx->vector_lanes == 0 && (strcmp(load_type, "i8") == 0 || strcmp(load_type, "i16") == 0)) {
+				int w = (load_type[1] == '8') ? 8 : 16;
+				emit_int_convert(ctx, value_buf, &stmt->data.assign_stmt.value->resolved, w, narrow_val);
+				store_val = narrow_val;
+			}
 
 			/* Ensure index is i64 for getelementptr; the pool policy below operates on this i64 index. */
 			const char *final_idx = idx_buf;
@@ -10546,13 +10572,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 			/* Store or compound operation */
 			if (stmt->data.assign_stmt.op == OP_NONE) {
-				int align = ctx->vector_lanes > 0 ? 8 : 4;
-				buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", load_type, value_buf, scalar_type,
+				int align = ctx->vector_lanes > 0 ? 8 : llvm_type_sizeof(scalar_type);
+				buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", load_type, store_val, scalar_type,
 				                  target_addr, align);
 			} else {
 				/* Compound assignment: load, compute, store */
 				char *loaded = gen_value_name(ctx);
-				int align = ctx->vector_lanes > 0 ? 8 : 4;
+				int align = ctx->vector_lanes > 0 ? 8 : llvm_type_sizeof(scalar_type);
 				buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, scalar_type,
 				                  target_addr, align);
 
@@ -10582,9 +10608,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 				char *result = gen_value_name(ctx);
 				if (!is_float && (stmt->data.assign_stmt.op == OP_DIV || stmt->data.assign_stmt.op == OP_MOD))
-					emit_int_divmod(ctx, op, load_type, loaded, value_buf, NULL, result);
+					emit_int_divmod(ctx, op, load_type, loaded, store_val, NULL, result);
 				else
-					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, load_type, loaded, value_buf);
+					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, load_type, loaded, store_val);
 				buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", load_type, result, scalar_type, target_addr,
 				                  align);
 			}

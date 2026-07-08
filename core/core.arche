@@ -21,10 +21,10 @@ streq :: func(a: []char, b: []char) -> bool {
   return true;
 }
 
-LOG_ERR : int : 3;   // shared level contract (0 debug .. 3 error); the `log` device reuses it.
+LOG_ERR: int: 3; // shared level contract (0 debug .. 3 error); the `log` device reuses it.
 
 #foreign {
-  _exit      :: proc(code: int);
+  _exit :: proc(code: int);
   // The diagnostic seam: panics below and the pluggable `log` device (extras/log) both emit here. A weak
   // default lives in runtime/log.c (stderr); a selected log backend's strong symbol overrides it. `[]char`
   // lowers to a bare pointer across the FFI, so the length is passed explicitly (as `os.write` does) —

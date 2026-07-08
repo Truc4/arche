@@ -1,9 +1,9 @@
 #include "compile.h"
 #include "../cli/resource.h"
 #include "../codegen/codegen.h"
-#include "../codegen/wasmgen.h"
 #include "../codegen/gpu_embed.h"
 #include "../codegen/gpu_glsl.h"
+#include "../codegen/wasmgen.h"
 #include "../lexer/lexer.h"
 #include "../lower/lower.h"
 #include "../parser/parser.h"
@@ -513,8 +513,13 @@ static const char *compile_select_variant(void *ctx, const char *mod_name) {
 }
 
 static const ModuleResolver g_compile_resolver = {
-    NULL,       compile_mark_seen,      compile_register_file, compile_mark_device,
-    compile_select_variant, compile_add_c_shim, compile_add_js_host,
+    NULL,
+    compile_mark_seen,
+    compile_register_file,
+    compile_mark_device,
+    compile_select_variant,
+    compile_add_c_shim,
+    compile_add_js_host,
 };
 
 /* Load a plain MODULE imported by PATH (`#import { "./util" }`). */
@@ -1368,9 +1373,10 @@ int compile_source(const char *user_source, const char *source_path, const char 
 
 		char cc_cmd[8192];
 		const char *gc = codegen_per_unit_enabled() ? "-Wl,--gc-sections " : "";
-		int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
-		                      "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/log.o %s/net.o %s/term.o -lc",
-		                      gc, out_path, asm_file, rt, rt, rt, rt, rt);
+		int cc_len =
+		    snprintf(cc_cmd, sizeof(cc_cmd),
+		             "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/log.o %s/net.o %s/term.o -lc",
+		             gc, out_path, asm_file, rt, rt, rt, rt, rt);
 		if (cc_len < 0 || cc_len >= (int)sizeof(cc_cmd)) {
 			fprintf(stderr, "link command too long\n");
 			goto cleanup;

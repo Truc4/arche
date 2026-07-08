@@ -10,8 +10,8 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ex=9.0"
 #import { fmt }
 
-ex :: float;
-px :: float;
+ex   :: float;
+px   :: float;
 hero :: int;
 Cam  :: arche { ex }
 Prop :: arche { px, hero }
@@ -20,8 +20,8 @@ Prop :: arche { px, hero }
 [2]Prop(2);
 
 seed :: system {
-  Cam.ex = { 0.0 };
-  Prop.px = { 5.0, 9.0 };
+  Cam.ex    = { 0.0 };
+  Prop.px   = { 5.0, 9.0 };
   Prop.hero = { 0, 1 };
 }
 

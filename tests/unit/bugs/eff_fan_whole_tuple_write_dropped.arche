@@ -12,13 +12,15 @@
 
 pos(x, y) :: float;
 vel(x, y) :: float;
-P :: arche { pos, vel }
+P         :: arche { pos, vel }
 
 [1]P(1);
 
 seed :: system {
-  P.pos.x = { 5.0 }; P.pos.y = { 0.0 };
-  P.vel.x = { 3.0 }; P.vel.y = { 0.0 };
+  P.pos.x = { 5.0 };
+  P.pos.y = { 0.0 };
+  P.vel.x = { 3.0 };
+  P.vel.y = { 0.0 };
 }
 
 adv :: system eff {

@@ -9,26 +9,33 @@
 #include <string.h>
 
 static char *slurp(const char *path) {
-  FILE *f = fopen(path, "rb");
-  if (!f) return NULL;
-  fseek(f, 0, SEEK_END);
-  long n = ftell(f);
-  fseek(f, 0, SEEK_SET);
-  char *buf = (char *)malloc((size_t)n + 1);
-  if (!buf) { fclose(f); return NULL; }
-  size_t got = fread(buf, 1, (size_t)n, f);
-  buf[got] = 0;
-  fclose(f);
-  return buf;
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return NULL;
+	fseek(f, 0, SEEK_END);
+	long n = ftell(f);
+	fseek(f, 0, SEEK_SET);
+	char *buf = (char *)malloc((size_t)n + 1);
+	if (!buf) {
+		fclose(f);
+		return NULL;
+	}
+	size_t got = fread(buf, 1, (size_t)n, f);
+	buf[got] = 0;
+	fclose(f);
+	return buf;
 }
 
 int main(void) {
-  char *src = slurp("/work/in.arche");
-  if (!src) { fprintf(stderr, "arche-wasm: cannot read /work/in.arche\n"); return 2; }
-  CompileOpts opts;
-  memset(&opts, 0, sizeof(opts));
-  opts.target = TARGET_WASM32; // wasmgen fires via ARCHE_WASMGEN (set in the host env)
-  int rc = compile_source(src, "/work/in.arche", "/work/out.wasm", &opts);
-  free(src);
-  return rc;
+	char *src = slurp("/work/in.arche");
+	if (!src) {
+		fprintf(stderr, "arche-wasm: cannot read /work/in.arche\n");
+		return 2;
+	}
+	CompileOpts opts;
+	memset(&opts, 0, sizeof(opts));
+	opts.target = TARGET_WASM32; // wasmgen fires via ARCHE_WASMGEN (set in the host env)
+	int rc = compile_source(src, "/work/in.arche", "/work/out.wasm", &opts);
+	free(src);
+	return rc;
 }

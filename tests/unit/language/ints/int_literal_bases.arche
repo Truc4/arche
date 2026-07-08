@@ -27,7 +27,7 @@ entry :: system eff {
   fmt.assert(s == 2500, "underscore local\n")();
 
   N.v = { 0x10, 0b100, 0o7, 1_0, 0x7E, 0xFACE }; // 16, 4, 7, 10, 126, 64206 — mixed bases + hex `E` digit,
-                                                 // all scattered into an `int` column (rejects a float)
+  // all scattered into an `int` column (rejects a float)
   fmt.assert(N.v[0] == 16, "scatter hex\n")();
   fmt.assert(N.v[1] == 4, "scatter bin\n")();
   fmt.assert(N.v[2] == 7, "scatter oct\n")();

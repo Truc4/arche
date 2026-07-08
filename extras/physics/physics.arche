@@ -40,15 +40,15 @@ contains :: func(p: pos, h: half, pt: pos) -> int {
 /// along the axis of least penetration. `(0,0)` if disjoint or coincident (so a body's self-pair adds
 /// nothing to a `reduce`). The 2-axis separating-axis test.
 mtv :: func(ap: pos, ah: half, bp: pos, bh: half) -> pos {
-  d  := ap - bp;
-  ox := (ah.x + bh.x) - vec.absf(d.x);
-  oy := (ah.y + bh.y) - vec.absf(d.y);
-  sx := select(d.x < 0.0, 0.0 - ox, ox);
-  sy := select(d.y < 0.0, 0.0 - oy, oy);
-  d2 := d.x * d.x + d.y * d.y;
+  d   := ap - bp;
+  ox  := (ah.x + bh.x) - vec.absf(d.x);
+  oy  := (ah.y + bh.y) - vec.absf(d.y);
+  sx  := select(d.x < 0.0, 0.0 - ox, ox);
+  sy  := select(d.y < 0.0, 0.0 - oy, oy);
+  d2  := d.x * d.x + d.y * d.y;
   hit := select(ox > 0.0 && oy > 0.0 && d2 > 0.0, 1.0, 0.0);
-  mx := select(ox < oy, sx, 0.0) * hit;
-  my := select(ox < oy, 0.0, sy) * hit;
+  mx  := select(ox < oy, sx, 0.0) * hit;
+  my  := select(ox < oy, 0.0, sy) * hit;
   return vec.mk(mx, my);
 }
 
