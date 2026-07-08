@@ -63,6 +63,10 @@
       // Named-key → code map; MUST match gfx_x11.c's XLookupString bytes + GFX_KEY_* sentinels.
       const NAMED = { Enter: 13, Backspace: 8, Tab: 9, Escape: 27, ArrowLeft: 1000, ArrowRight: 1001, ArrowUp: 1002, ArrowDown: 1003 };
       const set = (down) => (e) => {
+        // If a text field is focused (e.g. an embedded editor <textarea>), let it own the keyboard — don't
+        // steal a/d/arrows for movement or preventDefault typing. Movement resumes when the canvas/body is focused.
+        const ae = document.activeElement;
+        if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable)) return;
         const k = e.key;
         if (k === "ArrowLeft" || k === "a" || k === "A") this.keys.left = down;
         else if (k === "ArrowRight" || k === "d" || k === "D") this.keys.right = down;
@@ -75,6 +79,19 @@
       if (typeof addEventListener === "function") {
         addEventListener("keydown", set(true));
         addEventListener("keyup", set(false));
+      }
+      // Pointer state in RENDER px (canvas backing store), read by gfx_be_mouse_*. Mouse events give CSS coords,
+      // so scale by the backing/CSS ratio — hit-tests then line up with the framebuffer the app draws into.
+      this.mx = 0; this.my = 0; this.mdown = 0;
+      const toRender = (e) => {
+        const r = c.getBoundingClientRect();
+        this.mx = Math.round((e.clientX - r.left) * (c.width / (r.width || 1)));
+        this.my = Math.round((e.clientY - r.top) * (c.height / (r.height || 1)));
+      };
+      if (typeof c.addEventListener === "function") {
+        c.addEventListener("mousemove", toRender);
+        c.addEventListener("mousedown", (e) => { toRender(e); if (e.button === 0) this.mdown = 1; });
+        addEventListener("mouseup", (e) => { if (e.button === 0) this.mdown = 0; });
       }
       c.dataset.status = "running";
     },
@@ -149,6 +166,7 @@
         // `h` is the fixed render height; width derives from the window aspect (no bars). title []char ignored.
         gfx_be_open(_w, h, _titlePtr) {
           self.renderH = h;
+          rt.renderH = h; // share the render-height scale reference with other hosts (editor/screen place seams)
           sizeToWindow();
           initGL(self.w, self.h);
           return self.handle;
@@ -163,6 +181,9 @@
         gfx_be_poll() { return 1; }, // the tab is always open; native inserts Closed here to exit
         gfx_be_axis_x() { return (self.keys.right ? 1 : 0) - (self.keys.left ? 1 : 0); },
         gfx_be_key() { return self.keyQueue.length ? self.keyQueue.shift() : 0; },
+        gfx_be_mouse_x() { return self.mx; },
+        gfx_be_mouse_y() { return self.my; },
+        gfx_be_mouse_down() { return self.mdown; },
         gfx_be_close() {},
       };
     },

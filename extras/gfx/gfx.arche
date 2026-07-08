@@ -25,6 +25,19 @@ key :: func(h: window) -> Eff(int) {
   return gfx_be_key(h);
 }
 
+/// The pointer as three Effs: window-pixel x/y, and 1 while the left button is held (0 otherwise). A step system
+/// binds them — `gfx.mouse_x(handle)(mx:); gfx.mouse_y(handle)(my:); gfx.mouse_down(handle)(down:)` — so e.g. a
+/// button device can hit-test its rect. Backends with no pointer (headless) report 0.
+mouse_x :: func(h: window) -> Eff(int) {
+  return gfx_be_mouse_x(h);
+}
+mouse_y :: func(h: window) -> Eff(int) {
+  return gfx_be_mouse_y(h);
+}
+mouse_down :: func(h: window) -> Eff(int) {
+  return gfx_be_mouse_down(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {

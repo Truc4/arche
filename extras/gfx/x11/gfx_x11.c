@@ -27,6 +27,7 @@ typedef struct {
 	 * their ASCII byte; special keys use the sentinels below. */
 	int keyq[64];
 	int keyq_head, keyq_tail;
+	int mx, my, mdown; /* pointer position (window px) + left-button held state, for gfx_be_mouse_* */
 } GfxX11;
 
 /* Non-ASCII key sentinels returned by gfx_be_key — MUST match the browser host (gfx.js / wasm/host.js). */
@@ -87,7 +88,8 @@ void *gfx_be_open(int w, int h, char *title) {
 			XFree(sh);
 		}
 	}
-	XSelectInput(dpy, win, ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask);
+	XSelectInput(dpy, win, ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | ButtonPressMask |
+	                           ButtonReleaseMask | PointerMotionMask);
 	Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	XSetWMProtocols(dpy, win, &wm_delete, 1);
 	XMapWindow(dpy, win);
@@ -183,6 +185,14 @@ int gfx_be_poll(void *handle) {
 				for (int i = 0; i < n; i++)
 					keyq_push(g, (unsigned char)buf[i]);
 			}
+		} else if (ev.type == MotionNotify) {
+			g->mx = ev.xmotion.x;
+			g->my = ev.xmotion.y;
+		} else if (ev.type == ButtonPress || ev.type == ButtonRelease) {
+			g->mx = ev.xbutton.x;
+			g->my = ev.xbutton.y;
+			if (ev.xbutton.button == Button1)
+				g->mdown = (ev.type == ButtonPress);
 		}
 	}
 	return g->open;
@@ -205,6 +215,20 @@ int gfx_be_key(void *handle) {
 	int k = g->keyq[g->keyq_head];
 	g->keyq_head = (g->keyq_head + 1) % (int)(sizeof(g->keyq) / sizeof(g->keyq[0]));
 	return k;
+}
+
+/* Pointer position (window pixels) + left-button held state, all updated in gfx_be_poll. */
+int gfx_be_mouse_x(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->mx : 0;
+}
+int gfx_be_mouse_y(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->my : 0;
+}
+int gfx_be_mouse_down(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->mdown : 0;
 }
 
 void gfx_be_close(void *handle) {

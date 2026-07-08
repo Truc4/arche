@@ -61,7 +61,9 @@
           let rec = self.spans[self._cursor];
           if (!rec) {
             const el = document.createElement("span");
-            el.style.position = "absolute";
+            // Absolutely positioned; the layer is pointer-events:none so empty areas pass through to the canvas,
+            // but each span opts back IN so the text is highlightable/selectable (whitespace:pre keeps spaces).
+            el.style.cssText = "position:absolute;pointer-events:auto;user-select:text;-webkit-user-select:text;cursor:text;white-space:pre;";
             self.layer.appendChild(el);
             rec = { x: 0, y: 0, size: 0, text: null, el };
             self.spans[self._cursor] = rec;
