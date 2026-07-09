@@ -1,0 +1,12 @@
+/// Datasheet for the `textview` element device — a read-only multi-line text panel (the arche playground's
+/// program-output view). The device owns NO storage; the DRIVER owns the columns and the selected backend
+/// renders them. Decoupled from `gfx`: the window backend blits into the shared `{framebuffer}` (reading the
+/// viewport from driver columns), the dom backend fills a `<pre>`. Columns the driver provides:
+///   {obuf, olen}          the text buffer + its live length (multi-line; `\n` breaks a line)
+///   {ovx, ovy, ovw, ovh}  the view's screen rect (render px)
+///   {vpw, vph}            the live viewport size (render px) for framebuffer stride/clip
+///
+/// Backends: `window` (framebuffer raster, pure arche) and `dom` (a `<pre>`). Uniform interface: `render`.
+/// Pick with `[select] textview = "window" | "dom"`. Part of the `ui` element family; builds on the shared `ui`
+/// core (extras/ui/ui/) for its font.
+// RUN: true

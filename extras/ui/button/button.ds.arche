@@ -1,0 +1,15 @@
+/// Datasheet for the `button` element device — a clickable control. The device owns NO storage; the DRIVER
+/// owns the columns and the selected backend renders + reports clicks. Decoupled from `gfx`: the window backend
+/// draws into the shared `{framebuffer}` and hit-tests a driver-provided pointer (`{umx, umy, umd}`), never gfx;
+/// the dom backend is a real `<button>`. Columns the driver provides:
+///   {bx, by, bw, bh}       the button's screen rect (render px)
+///   {blabel, blen}         its label text
+///   {bclicked}             set to 1 for the one frame a click lands, else 0 — the driver reads + reacts
+///   {bwasdown}             backend-private edge state (window only)
+///   {umx, umy, umd}        pointer x/y + left-button-down (window hit-test; the driver fills from gfx)
+///   {vpw, vph}             viewport size for framebuffer stride/clip (window only)
+///
+/// Backends: `window` (framebuffer raster + pointer hit-test) and `dom` (a `<button>`). Interface: `render`
+/// (draw / set label) + `poll` (click → `{bclicked}`). Pick with `[select] button = "window" | "dom"`. Part of
+/// the `ui` element family; builds on the shared `ui` core (extras/ui/ui/) for its font.
+// RUN: true

@@ -1,0 +1,12 @@
+/// DOM backend for `textview` — merged under `[select] textview = "dom"`. No C shim: `textview_be_render` is a
+/// wasm import the JS host fulfils with a `<pre>` that mounts inside the panel frame (#ui-panel). Same `{obuf}`
+/// the window backend blits into the framebuffer.
+#module
+#foreign
+textview_be_render :: proc(buf: []char, n: int)(buf: []char);
+
+render :: system eff {
+  map (query { obuf, olen }) eff {
+    textview_be_render(obuf, olen)(_:);
+  };
+}

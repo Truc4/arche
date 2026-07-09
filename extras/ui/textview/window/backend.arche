@@ -1,0 +1,59 @@
+/// WINDOW backend for `textview` — merged under `[select] textview = "window"`. Pure-arche raster: fills its
+/// panel background then blits `{obuf}` (multi-line, `\n` breaks a line) into the shared `{framebuffer}` with the
+/// shared `ui.GLYPHS` font, clipped to its rect ∩ the viewport. No `gfx` import — the viewport arrives as the
+/// driver's `{vpw, vph}` columns. The dom backend renders the same buffer in a `<pre>`.
+#import { ui }
+
+OUT_BG  :: 0x11151f; // output panel background (a touch lighter than the frame)
+OUT_COL :: 0xa6e3a1; // output text (soft green)
+OUT_TSZ :: 18;       // text pixel height (8×8 glyphs scaled by OUT_TSZ/8)
+
+render :: system (query { framebuffer })(framebuffer) eff {
+  map (query { obuf, olen, ovx, ovy, ovw, ovh, vpw, vph }) eff {
+    // Panel background, clipped to the view rect ∩ viewport.
+    bx0 := ovx;       by0 := ovy;       bx1 := ovx + ovw;   by1 := ovy + ovh;
+    if (bx0 < 0) { bx0 = 0; }
+    if (by0 < 0) { by0 = 0; }
+    if (bx1 > vpw) { bx1 = vpw; }
+    if (by1 > vph) { by1 = vph; }
+    for (yy := by0; yy < by1; yy += 1) {
+      for (xx := bx0; xx < bx1; xx += 1) {
+        framebuffer[yy * vpw + xx] = OUT_BG;
+      }
+    }
+    // A pen walks the buffer: '\n' starts a new line; printable chars blit + advance. Clip to the view rect.
+    s     := OUT_TSZ / 8;
+    adv   := 8 * s;
+    pitch := OUT_TSZ + 4;
+    penx  := ovx + 6;
+    peny  := ovy + 4;
+    for (i := 0; i < olen; i += 1) {
+      c := obuf[i];
+      if (c == 10) { penx = ovx + 6; peny = peny + pitch; continue; }
+      if (c >= 32 && c <= 126) {
+        gi := c - 32;
+        for (row := 0; row < 8; row += 1) {
+          b := ui.GLYPHS[gi * 8 + row];
+          for (col := 0; col < 8; col += 1) {
+            if (b >= 128) {
+              gx0 := penx + col * s;
+              gy0 := peny + row * s;
+              for (py := gy0; py < gy0 + s; py += 1) {
+                if (py >= by0 && py < by1) {
+                  for (px := gx0; px < gx0 + s; px += 1) {
+                    if (px >= bx0 && px < bx1) {
+                      framebuffer[py * vpw + px] = OUT_COL;
+                    }
+                  }
+                }
+              }
+              b = b - 128;
+            }
+            b = b * 2;
+          }
+        }
+        penx = penx + adv;
+      }
+    }
+  };
+}

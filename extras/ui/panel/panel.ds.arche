@@ -9,5 +9,6 @@
 ///
 /// Backends: `window` (framebuffer raster, pure arche) and `dom` (a real `<div>`). Uniform interface: a single
 /// `render` system. Pick with `[select] panel = "window" | "dom"`. The two are interchangeable — a driver
-/// schedules `panel.render` regardless of backend.
+/// schedules `panel.render` regardless of backend. Part of the `ui` element family (extras/ui/); builds on the
+/// shared `ui` core (extras/ui/ui/) for its layout constants + font.
 // RUN: true

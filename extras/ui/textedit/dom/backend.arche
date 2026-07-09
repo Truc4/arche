@@ -1,0 +1,39 @@
+/// DOM backend for `textedit` — merged under `[select] textedit = "dom"`. No C shim: the `textedit_be_*` seams
+/// are wasm imports the JS host fulfils with a real `<textarea>` (browser editing/selection/IME/undo for free).
+/// `open` mounts it in the panel frame + seeds it from the driver's `{ebuf}` (so the starter program comes from
+/// the driver, not hardcoded); `text` pulls the textarea value back into `{ebuf}` + rescans `{elen}`; `poll_run`
+/// reports ⌘/Ctrl-Enter into `{submit}`. `step`/`render` are no-ops (the widget edits + draws itself).
+#module
+#foreign
+textedit_be_open     :: proc(buf: []char, n: int)(buf: []char); // seed + focus from the driver's buffer
+#foreign
+textedit_be_text     :: proc(buf: []char, cap: int)(buf: []char); // textarea value → buffer (NUL-terminated)
+#foreign
+textedit_be_poll_run :: proc()(r: int);                          // 1 once after ⌘/Ctrl-Enter
+
+open :: system eff {
+  map (query { ebuf }) eff {
+    textedit_be_open(ebuf, ebuf.length)(_:);
+  };
+}
+
+text :: system eff {
+  map (query { ebuf, elen })(ebuf, elen) eff {
+    textedit_be_text(_, ebuf.length)(ebuf);
+    elen = 0;
+    for (; elen < ebuf.length && ebuf[elen] != 0; elen += 1) {
+    }
+  };
+}
+
+poll_run :: system eff {
+  map (query { submit })(submit) eff {
+    textedit_be_poll_run()(r:);
+    if (r == 1) { submit = 1; }
+  };
+}
+
+step :: system eff {
+}
+render :: system eff {
+}
