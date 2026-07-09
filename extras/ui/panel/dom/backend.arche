@@ -1,16 +1,10 @@
-/// DOM backend for the `panel` element — merged under `[select] panel = "dom"`. No C shim: the `panel_be_render`
-/// seam stays undefined and becomes a wasm IMPORT the JS host (dom/host.js) fulfils with a real framed `<div>`
-/// (#ui-panel) + a title bar. Same driver columns as the window backend, so the two are interchangeable. The
-/// editor/output/button dom elements append INTO this frame (they find `#ui-panel`), so the panel is the shared
-/// container — the browser twin of the window backend's framebuffer rect + title.
 #module
 #foreign
-panel_be_render :: proc(x: int, y: int, w: int, h: int, title: []char, n: int)(title: []char);
+panel_be_render :: proc(x: int, y: int, width: int, height: int, title: []char, n: int)(title: []char);
 
-/// Position + size the frame and set its title from the driver's projected columns (the host scales render-px
-/// to CSS-px by innerHeight/renderH, matching the text/editor panels).
 render :: system eff {
-  map (query { pnx, pny, pnw, pnh, ptitle, ptlen }) eff {
-    panel_be_render(pnx, pny, pnw, pnh, ptitle, ptlen)(_:);
+  map (query { screen, size, title, len }) eff {
+    x := screen.x; y := screen.y; w := size.w; h := size.h;
+    panel_be_render(x, y, w, h, title, len)(_:);
   };
 }

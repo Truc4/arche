@@ -1,6 +1,3 @@
-// Browser host for `button`'s dom backend — SHIPS WITH THE DEVICE. Fulfils button_be_label/poll with a real
-// <button> (#ui-button) that mounts inside the panel frame (#ui-panel); its click raises a flag `poll` drains
-// (edge-triggered, once per click). The window twin draws a rect + hit-tests the pointer.
 (function () {
   (globalThis.archeHosts ??= []).push({
     bind(rt) {
@@ -22,7 +19,6 @@
     seams(rt) {
       const self = this;
       return {
-        // Mount into the panel frame once it exists, then set the label (only on change, to preserve focus/press).
         button_be_label(ptr, n) {
           const f = document.getElementById("ui-panel");
           if (f && self.b.parentNode !== f) f.appendChild(self.b);

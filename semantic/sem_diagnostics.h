@@ -173,6 +173,7 @@ typedef enum {
 	SEM_DIAG_wrong_arity,
 	SEM_DIAG_non_exhaustive_match,
 	SEM_DIAG_callable_in_archetype,
+	SEM_DIAG_unknown_component,
 	SEM_DIAG_wildcard_in_enum_match,
 
 	/* Query (`map(Name)` / `run`) — E0215+ */
@@ -325,6 +326,7 @@ SemDiag *sem_emit_meta_type_invalid_position(SemanticContext *ctx, SourceLoc loc
 SemDiag *sem_emit_non_exhaustive_match(SemanticContext *ctx, SourceLoc loc, const char *missing);
 SemDiag *sem_emit_wildcard_in_enum_match(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_unknown_component(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 SemDiag *sem_emit_opaque_not_consumed(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_cannot_copy_opaque(SemanticContext *ctx, SourceLoc loc, const char *name);

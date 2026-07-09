@@ -3955,6 +3955,18 @@ static void analyze_archetype_decl(SemanticContext *ctx, DeclSummary *arch) {
 	for (int i = 0; i < arch->field_count; i++)
 		reject_meta_type(ctx, arch->fields[i].type_id, arch->fields[i].loc, "archetype component type");
 
+	/* Every bare component must resolve to a real type. An undeclared name (or a component whose
+	 * declaring device was not imported) interns as a dangling nominal — it otherwise reaches codegen
+	 * as an empty `%struct.<name>` and crashes the LLVM optimizer ("invalid type for function
+	 * argument"). Reject it here with a clean diagnostic. Mirrors the extern-proc bad-type check:
+	 * a nominal name that is neither primitive, an archetype, nor a registered type/component/alias
+	 * (enums register as aliases; tuple/scalar/array components aren't nominal) is unresolved. */
+	for (int i = 0; i < arch->field_count; i++) {
+		const char *tn = tyid_nominal_name(ctx->ty_arena, arch->fields[i].type_id);
+		if (tn && !is_primitive_type_name(tn) && !find_archetype(ctx, tn) && !is_type_alias(ctx, tn))
+			sem_emit_unknown_component(ctx, arch->fields[i].loc, arch->fields[i].name);
+	}
+
 	/* proc/func types can't be archetype components — archetypes are data; per-row behavior
 	 * dispatch is the anti-pattern (Stage D dropped). Use `match` or a map instead. */
 	for (int i = 0; i < arch->field_count; i++) {

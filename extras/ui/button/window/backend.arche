@@ -1,34 +1,28 @@
-/// WINDOW backend for `button` — merged under `[select] button = "window"`. Pure-arche raster: fills the button
-/// rect + blits a centred label into the shared `{framebuffer}` (shared `ui.GLYPHS` font), and hit-tests the
-/// driver-provided pointer `{umx, umy, umd}` to raise `{bclicked}` (edge-triggered via `{bwasdown}`). No `gfx`
-/// import. The dom backend is a real `<button>`; the two are interchangeable.
 #import { ui }
 
-BTN_BG    :: 0xe4694e; // button fill (warm coral)
-BTN_LABEL :: 0x160d0a; // label text (near-black)
-BTN_TSZ   :: 16;       // label pixel height
+BTN_BG    :: 0xe4694e;
+BTN_LABEL :: 0x160d0a;
+BTN_TSZ   :: 16;
 
-/// Fill the rect + centre the label.
 render :: system (query { framebuffer })(framebuffer) eff {
-  map (query { bx, by, bw, bh, blabel, blen, vpw, vph }) eff {
-    fx0 := bx;        fy0 := by;        fx1 := bx + bw;   fy1 := by + bh;
+  map (query { screen, size, label, len, view }) eff {
+    fx0 := screen.x;        fy0 := screen.y;        fx1 := screen.x + size.w;    fy1 := screen.y + size.h;
     if (fx0 < 0) { fx0 = 0; }
     if (fy0 < 0) { fy0 = 0; }
-    if (fx1 > vpw) { fx1 = vpw; }
-    if (fy1 > vph) { fy1 = vph; }
+    if (fx1 > view.w) { fx1 = view.w; }
+    if (fy1 > view.h) { fy1 = view.h; }
     for (yy := fy0; yy < fy1; yy += 1) {
       for (xx := fx0; xx < fx1; xx += 1) {
-        framebuffer[yy * vpw + xx] = BTN_BG;
+        framebuffer[yy * view.w + xx] = BTN_BG;
       }
     }
-    // Centred label.
     s   := BTN_TSZ / 8;
     adv := 8 * s;
-    lw  := blen * adv;
-    lx  := bx + (bw - lw) / 2;
-    ly  := by + (bh - BTN_TSZ) / 2;
-    for (i := 0; i < blen; i += 1) {
-      c := blabel[i];
+    lw  := len * adv;
+    lx  := screen.x + (size.w - lw) / 2;
+    ly  := screen.y + (size.h - BTN_TSZ) / 2;
+    for (i := 0; i < len; i += 1) {
+      c := label[i];
       if (c >= 32 && c <= 126) {
         gi := c - 32;
         for (row := 0; row < 8; row += 1) {
@@ -41,7 +35,7 @@ render :: system (query { framebuffer })(framebuffer) eff {
                 if (py >= fy0 && py < fy1) {
                   for (px := gx0; px < gx0 + s; px += 1) {
                     if (px >= fx0 && px < fx1) {
-                      framebuffer[py * vpw + px] = BTN_LABEL;
+                      framebuffer[py * view.w + px] = BTN_LABEL;
                     }
                   }
                 }
@@ -56,13 +50,12 @@ render :: system (query { framebuffer })(framebuffer) eff {
   };
 }
 
-/// Hit-test the driver-provided pointer; raise `{bclicked}` on the press EDGE (down this frame, up last).
 poll :: system eff {
-  map (query { bx, by, bw, bh, bclicked, bwasdown, umx, umy, umd })(bclicked, bwasdown) eff {
-    bclicked = 0;
-    if (umd == 1 && bwasdown == 0 && umx >= bx && umx < bx + bw && umy >= by && umy < by + bh) {
-      bclicked = 1;
+  map (query { screen, size, clicked, wasdown, mouse, mouse_down })(clicked, wasdown) eff {
+    clicked = 0;
+    if (mouse_down == 1 && wasdown == 0 && mouse.x >= screen.x && mouse.x < screen.x + size.w && mouse.y >= screen.y && mouse.y < screen.y + size.h) {
+      clicked = 1;
     }
-    bwasdown = umd;
+    wasdown = mouse_down;
   };
 }

@@ -1,89 +1,81 @@
-/// WINDOW backend for `textedit` — merged under `[select] textedit = "window"`. The framebuffer twin of a
-/// `<textarea>`: it does the editing ITSELF from the driver-provided `{ukey}` (no `gfx` import), mutating the
-/// buffer `{ebuf, elen, ecur}` at the cursor, and blits the text + a cursor block into the shared
-/// `{framebuffer}` with the shared `ui.GLYPHS` font. `{ukey}` uses the same key sentinels gfx emits (←=1000,
-/// →=1001, ↑=1002, ↓=1003; Enter=13, Backspace=8, Ctrl-R=18); the driver fills it from `gfx.key`.
 #import { ui }
 
-EDIT_BG   :: 0x0e121b; // editor panel background
-EDIT_COL  :: 0xe0e0e0; // text + cursor
-EDIT_TSZ  :: 16;       // text pixel height
+EDIT_BG  :: 0x0e121b;
+EDIT_COL :: 0xe0e0e0;
+EDIT_TSZ :: 16;
 
-/// Apply one key from `{ukey}` to the buffer at the cursor: Ctrl-R → submit; arrows move; Backspace deletes;
-/// a printable / Enter inserts. One key per frame keeps pace at 60 fps.
 step :: system eff {
-  map (query { ebuf, elen, ecur, submit, ukey })(ebuf, elen, ecur, submit) eff {
-    k := ukey;
-    if (k == 18) { submit = 1; }                       // Ctrl-R
-    if (k == 1000 && ecur > 0) { ecur = ecur - 1; }    // Left
-    if (k == 1001 && ecur < elen) { ecur = ecur + 1; } // Right
-    if (k == 1002) { // Up → same column on the previous line
-      ls := ecur;
-      for (; ls > 0 && ebuf[ls - 1] != 10; ls -= 1) { }
-      col := ecur - ls;
+  map (query { source, len, cursor, submit, key })(source, len, cursor, submit) eff {
+    k := key;
+    if (k == 18) { submit = 1; }
+    if (k == 1000 && cursor > 0) { cursor = cursor - 1; }
+    if (k == 1001 && cursor < len) { cursor = cursor + 1; }
+    if (k == 1002) {
+      ls := cursor;
+      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) { }
+      c := cursor - ls;
       if (ls > 0) {
         ps := ls - 1;
-        for (; ps > 0 && ebuf[ps - 1] != 10; ps -= 1) { }
+        for (; ps > 0 && source[ps - 1] != 10; ps -= 1) { }
         plen := ls - 1 - ps;
-        if (col > plen) { ecur = ls - 1; } else { ecur = ps + col; }
+        if (c > plen) { cursor = ls - 1; } else { cursor = ps + c; }
       }
     }
-    if (k == 1003) { // Down → same column on the next line
-      ls := ecur;
-      for (; ls > 0 && ebuf[ls - 1] != 10; ls -= 1) { }
-      col := ecur - ls;
-      le := ecur;
-      for (; le < elen && ebuf[le] != 10; le += 1) { }
-      if (le < elen) {
+    if (k == 1003) {
+      ls := cursor;
+      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) { }
+      c := cursor - ls;
+      le := cursor;
+      for (; le < len && source[le] != 10; le += 1) { }
+      if (le < len) {
         ns := le + 1;
         ne := ns;
-        for (; ne < elen && ebuf[ne] != 10; ne += 1) { }
+        for (; ne < len && source[ne] != 10; ne += 1) { }
         nlen := ne - ns;
-        if (col > nlen) { ecur = ne; } else { ecur = ns + col; }
+        if (c > nlen) { cursor = ne; } else { cursor = ns + c; }
       }
     }
-    if (k == 8 && ecur > 0) { // Backspace
-      for (j := ecur - 1; j < elen - 1; j += 1) { ebuf[j] = ebuf[j + 1]; }
-      elen = elen - 1;
-      ecur = ecur - 1;
+    if (k == 8 && cursor > 0) {
+      for (j := cursor - 1; j < len - 1; j += 1) { source[j] = source[j + 1]; }
+      len = len - 1;
+      cursor = cursor - 1;
     }
     ch := 0;
     if (k >= 32 && k < 127) { ch = k; }
-    if (k == 13) { ch = 10; } // Enter → newline
-    if (ch > 0 && elen < ebuf.length - 1) {
-      for (j := elen; j > ecur; j -= 1) { ebuf[j] = ebuf[j - 1]; }
-      ebuf[ecur] = ch;
-      elen = elen + 1;
-      ecur = ecur + 1;
+    if (k == 13) { ch = 10; }
+    if (ch > 0 && len < source.length - 1) {
+      for (j := len; j > cursor; j -= 1) { source[j] = source[j - 1]; }
+      source[cursor] = ch;
+      len = len + 1;
+      cursor = cursor + 1;
     }
   };
 }
 
-/// Blit the buffer (multi-line) + a cursor bar at `ecur` into the framebuffer, clipped to the editor rect.
 render :: system (query { framebuffer })(framebuffer) eff {
-  map (query { ebuf, elen, ecur, evx, evy, evw, evh, vpw, vph }) eff {
-    bx0 := evx;       by0 := evy;       bx1 := evx + evw;   by1 := evy + evh;
+  map (query { source, len, cursor, screen, size, view }) eff {
+    bx0 := screen.x;       by0 := screen.y;       bx1 := screen.x + size.w;   by1 := screen.y + size.h;
     if (bx0 < 0) { bx0 = 0; }
     if (by0 < 0) { by0 = 0; }
-    if (bx1 > vpw) { bx1 = vpw; }
-    if (by1 > vph) { by1 = vph; }
+    if (bx1 > view.w) { bx1 = view.w; }
+    if (by1 > view.h) { by1 = view.h; }
     for (yy := by0; yy < by1; yy += 1) {
       for (xx := bx0; xx < bx1; xx += 1) {
-        framebuffer[yy * vpw + xx] = EDIT_BG;
+        framebuffer[yy * view.w + xx] = EDIT_BG;
       }
     }
     s     := EDIT_TSZ / 8;
     adv   := 8 * s;
     pitch := EDIT_TSZ + 4;
-    left  := evx + 8;
-    top   := evy + 6;
+    left  := screen.x + 8;
+    top   := screen.y + 6;
     penx  := left;
     peny  := top;
     curx  := left;
     cury  := top;
-    for (i := 0; i < elen; i += 1) {
-      if (i == ecur) { curx = penx; cury = peny; }
-      c := ebuf[i];
+    for (i := 0; i < len; i += 1) {
+      if (i == cursor) { curx = penx; cury = peny; }
+      c := source[i];
       if (c == 10) { penx = left; peny = peny + pitch; continue; }
       if (c >= 32 && c <= 126) {
         gi := c - 32;
@@ -97,7 +89,7 @@ render :: system (query { framebuffer })(framebuffer) eff {
                 if (py >= by0 && py < by1) {
                   for (px := gx0; px < gx0 + s; px += 1) {
                     if (px >= bx0 && px < bx1) {
-                      framebuffer[py * vpw + px] = EDIT_COL;
+                      framebuffer[py * view.w + px] = EDIT_COL;
                     }
                   }
                 }
@@ -110,13 +102,12 @@ render :: system (query { framebuffer })(framebuffer) eff {
         penx = penx + adv;
       }
     }
-    if (ecur >= elen) { curx = penx; cury = peny; }
-    // Cursor: a 2-px bar the cell height, clipped to the editor rect.
+    if (cursor >= len) { curx = penx; cury = peny; }
     for (cyy := cury; cyy < cury + EDIT_TSZ; cyy += 1) {
       if (cyy >= by0 && cyy < by1) {
         for (cxx := curx; cxx < curx + 2; cxx += 1) {
           if (cxx >= bx0 && cxx < bx1) {
-            framebuffer[cyy * vpw + cxx] = EDIT_COL;
+            framebuffer[cyy * view.w + cxx] = EDIT_COL;
           }
         }
       }
@@ -124,13 +115,9 @@ render :: system (query { framebuffer })(framebuffer) eff {
   };
 }
 
-/// The editing + submit already live in the world (edited by `step` from `{ukey}`), so `open`/`text`/`poll_run`
-/// are no-ops here — they exist only so a driver schedules one uniform set of systems across both backends
-/// (the dom backend pulls text from a `<textarea>` + reads a JS run-flag instead).
 open :: system eff {
 }
 text :: system eff {
 }
 poll_run :: system eff {
 }
-

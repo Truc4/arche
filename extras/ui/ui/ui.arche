@@ -1,14 +1,7 @@
-/// Behavior for `ui` — pure, branch-free LAYOUT helpers over the shared metrics in `ui.ds.arche`. The driver
-/// places a panel's frame rect, then walks a cursor `cy` down the frame, asking `content_top` for the first row
-/// and `next` to advance past each element. All pure `func`s (no pool, no effects) — layout is data the driver
-/// computes and writes into each element's rect columns, then the element backends render from those columns.
-
-/// The first content row inside a framed panel whose top edge is at `py` — below the padding + title bar.
 content_top :: func(py: int) -> int {
   return py + PAD + TITLE_H;
 }
 
-/// The content x / width inside a panel at `px` of width `pw` — inset by the padding on both sides.
 content_x :: func(px: int) -> int {
   return px + PAD;
 }
@@ -16,7 +9,6 @@ content_w :: func(pw: int) -> int {
   return pw - PAD - PAD;
 }
 
-/// The cursor y after placing an element of height `h` at the current `cy` (advance past it + one gap).
 next :: func(cy: int, h: int) -> int {
   return cy + h + GAP;
 }

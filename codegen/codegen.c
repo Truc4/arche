@@ -12790,11 +12790,25 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 			continue; /* singleton column — broadcast, not a loop driver */
 		cols[ncol++] = params[p]->name;
 	}
-	/* A query over ONLY singletons (a join of `[1]` pools) has no broadcast counterpart — drive over the
-	 * FIRST singleton (one row); the rest broadcast as usual. */
-	if (ncol == 0 && param_count > 0)
-		cols[ncol++] = params[0]->name;
+	/* A query over ONLY singletons has no non-singleton driver. Prefer an archetype that owns EVERY query
+	 * column (a self-contained singleton, e.g. a UI element) and fan just it — do NOT fall back to the
+	 * first column alone, which would also match a SIBLING singleton that shares that column but lacks the
+	 * others; fanning the sibling then binds those others (incl. array columns) from the wrong pool via
+	 * bind_singleton_col → a scalar load of an array → invalid IR. Only if no single archetype has all
+	 * columns is this a genuine cross-pool singleton JOIN: drive over the first column, broadcast the rest. */
 	const char *archs[16];
+	if (ncol == 0 && param_count > 0) {
+		const char *allc[256];
+		int nall = 0;
+		for (int p = 0; p < param_count && nall < 256; p++)
+			allc[nall++] = params[p]->name;
+		const char *tmp[16];
+		if (query_match_archs(ctx, allc, nall, tmp, 16) > 0)
+			for (int p = 0; p < param_count && ncol < 256; p++)
+				cols[ncol++] = params[p]->name;
+		else
+			cols[ncol++] = params[0]->name;
+	}
 	int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
 	for (int ai = 0; ai < na; ai++) {
 		const char *arch_name = archs[ai];

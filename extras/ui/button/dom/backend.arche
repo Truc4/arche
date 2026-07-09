@@ -1,21 +1,18 @@
-/// DOM backend for `button` — merged under `[select] button = "dom"`. No C shim: the `button_be_*` seams are
-/// wasm imports the JS host fulfils with a real `<button>` that mounts inside the panel frame. Same interface as
-/// the window backend (`render` sets the label, `poll` drains the click), so the two are interchangeable.
 #module
 #foreign
-button_be_label :: proc(s: []char, n: int)(s: []char); // set the button's text
+button_be_label :: proc(s: []char, n: int)(s: []char);
 #foreign
-button_be_poll  :: proc()(clicked: int);               // 1 once per click, else 0
+button_be_poll  :: proc()(clicked: int);
 
 render :: system eff {
-  map (query { blabel, blen }) eff {
-    button_be_label(blabel, blen)(_:);
+  map (query { label, len }) eff {
+    button_be_label(label, len)(_:);
   };
 }
 
 poll :: system eff {
-  map (query { bclicked })(bclicked) eff {
+  map (query { clicked })(clicked) eff {
     button_be_poll()(c:);
-    bclicked = c;
+    clicked = c;
   };
 }

@@ -1,6 +1,3 @@
-// Browser host for `textview`'s dom backend — SHIPS WITH THE DEVICE. Fulfils `textview_be_render` with a <pre>
-// that mounts inside the panel frame (#ui-panel) and shows the driver's output buffer. The window twin blits the
-// same buffer into the framebuffer.
 (function () {
   (globalThis.archeHosts ??= []).push({
     bind(rt) {
@@ -19,7 +16,6 @@
     seams(rt) {
       const self = this;
       return {
-        // Mount into the panel frame once it exists (find-and-move), then set the text.
         textview_be_render(ptr, n) {
           const f = document.getElementById("ui-panel");
           if (f && self.el.parentNode !== f) f.appendChild(self.el);

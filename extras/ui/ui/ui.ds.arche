@@ -1,10 +1,16 @@
-/// Datasheet for `ui` — the pure LAYOUT vocabulary shared by the ui element family (panel / textedit /
-/// textview / button). A "vocabulary device" like `vec`: no storage, no `gfx` — just constants + branch-free
-/// helpers a DRIVER uses to stack elements inside a panel. Each element device reads its computed screen rect
-/// from driver-owned columns; this module computes those rects. The dom backends scale the same render-px
-/// metrics by `innerHeight/renderH` to CSS px, so native and browser lay out identically.
+screen(x, y) :: int;
+size(w, h)   :: int;
+view(w, h)   :: int;
+mouse(x, y)  :: int;
 
-/// Layout metrics, render px (the panel is authored at native/render scale; the DOM scales them per viewport).
-PAD     :: 18;   // frame inner padding (gap between the frame edge and its content)
-GAP     :: 14;   // vertical gap between stacked elements
-TITLE_H :: 34;   // title-bar height
+len        :: int;
+cursor     :: int;
+submit     :: int;
+key        :: int;
+clicked    :: int;
+wasdown    :: int;
+mouse_down :: int;
+
+PAD     :: 18;
+GAP     :: 14;
+TITLE_H :: 34;

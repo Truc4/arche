@@ -1,68 +1,57 @@
-/// WINDOW backend for the `panel` element — merged under `[select] panel = "window"`. Pure-arche raster: it
-/// draws the frame (a 2-px border around a dark fill) + a title bar into the DRIVER's shared `{framebuffer}`,
-/// exactly the model `gfx.rect`/`raster.circle` use. NO `gfx` import — the viewport size arrives as the
-/// driver-provided `{vpw, vph}` columns (stride + clip), so the element is pure UI data over a pixel buffer.
-/// The title glyphs come from the shared `ui.GLYPHS` font. The dom backend renders the same columns as a
-/// framed `<div>`; the two are interchangeable.
 #import { ui }
 
-FRAME_BG     :: 0x0b0e14; // dark panel fill
-FRAME_BORDER :: 0x232838; // 1-shade-lighter border + title separator
-TITLE_COL    :: 0xcdd6f4; // title text
-TITLE_TSZ    :: 24;       // title pixel height (8×8 glyphs scaled by TITLE_TSZ/8)
+FRAME_BG     :: 0x0b0e14;
+FRAME_BORDER :: 0x232838;
+TITLE_COL    :: 0xcdd6f4;
+TITLE_TSZ    :: 24;
 
-/// Draw the framed panel: border rect, inner fill, a separator under the title bar, then the title text.
 render :: system (query { framebuffer })(framebuffer) eff {
-  map (query { pnx, pny, pnw, pnh, ptitle, ptlen, vpw, vph }) eff {
-    // Border = fill the WHOLE rect with the border colour, then the inner rect (inset 2 px) with the bg —
-    // the 2-px margin left showing IS the frame border. Every fill is clipped to the live viewport.
-    bx0 := pnx;         by0 := pny;         bx1 := pnx + pnw;     by1 := pny + pnh;
+  map (query { screen, size, title, len, view }) eff {
+    bx0 := screen.x;         by0 := screen.y;         bx1 := screen.x + size.w;     by1 := screen.y + size.h;
     if (bx0 < 0) { bx0 = 0; }
     if (by0 < 0) { by0 = 0; }
-    if (bx1 > vpw) { bx1 = vpw; }
-    if (by1 > vph) { by1 = vph; }
+    if (bx1 > view.w) { bx1 = view.w; }
+    if (by1 > view.h) { by1 = view.h; }
     for (yy := by0; yy < by1; yy += 1) {
       for (xx := bx0; xx < bx1; xx += 1) {
-        framebuffer[yy * vpw + xx] = FRAME_BORDER;
+        framebuffer[yy * view.w + xx] = FRAME_BORDER;
       }
     }
-    ix0 := pnx + 2;     iy0 := pny + 2;     ix1 := pnx + pnw - 2; iy1 := pny + pnh - 2;
+    ix0 := screen.x + 2;     iy0 := screen.y + 2;     ix1 := screen.x + size.w - 2; iy1 := screen.y + size.h - 2;
     if (ix0 < 0) { ix0 = 0; }
     if (iy0 < 0) { iy0 = 0; }
-    if (ix1 > vpw) { ix1 = vpw; }
-    if (iy1 > vph) { iy1 = vph; }
+    if (ix1 > view.w) { ix1 = view.w; }
+    if (iy1 > view.h) { iy1 = view.h; }
     for (yy := iy0; yy < iy1; yy += 1) {
       for (xx := ix0; xx < ix1; xx += 1) {
-        framebuffer[yy * vpw + xx] = FRAME_BG;
+        framebuffer[yy * view.w + xx] = FRAME_BG;
       }
     }
-    // Title separator: a 1-px line across the inner width just below the title bar.
-    sy := pny + ui.PAD + ui.TITLE_H;
-    if (sy >= 0 && sy < vph) {
+    sepy := screen.y + ui.PAD + ui.TITLE_H;
+    if (sepy >= 0 && sepy < view.h) {
       for (xx := ix0; xx < ix1; xx += 1) {
-        framebuffer[sy * vpw + xx] = FRAME_BORDER;
+        framebuffer[sepy * view.w + xx] = FRAME_BORDER;
       }
     }
-    // Title text at (pnx+PAD, pny+PAD), scaled cp850 glyphs from the shared ui font.
-    s   := TITLE_TSZ / 8;
-    adv := 8 * s;
-    tx  := pnx + ui.PAD;
-    ty  := pny + ui.PAD;
-    for (i := 0; i < ptlen; i += 1) {
-      c := ptitle[i];
+    scale := TITLE_TSZ / 8;
+    adv := 8 * scale;
+    tx  := screen.x + ui.PAD;
+    ty  := screen.y + ui.PAD;
+    for (i := 0; i < len; i += 1) {
+      c := title[i];
       if (c >= 32 && c <= 126) {
         gi := c - 32;
         for (row := 0; row < 8; row += 1) {
           b := ui.GLYPHS[gi * 8 + row];
           for (col := 0; col < 8; col += 1) {
             if (b >= 128) {
-              gx0 := tx + i * adv + col * s;
-              gy0 := ty + row * s;
-              for (py := gy0; py < gy0 + s; py += 1) {
-                if (py >= 0 && py < vph) {
-                  for (px := gx0; px < gx0 + s; px += 1) {
-                    if (px >= 0 && px < vpw) {
-                      framebuffer[py * vpw + px] = TITLE_COL;
+              gx0 := tx + i * adv + col * scale;
+              gy0 := ty + row * scale;
+              for (py := gy0; py < gy0 + scale; py += 1) {
+                if (py >= 0 && py < view.h) {
+                  for (px := gx0; px < gx0 + scale; px += 1) {
+                    if (px >= 0 && px < view.w) {
+                      framebuffer[py * view.w + px] = TITLE_COL;
                     }
                   }
                 }

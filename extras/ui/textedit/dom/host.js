@@ -1,7 +1,3 @@
-// Browser host for `textedit`'s dom backend — SHIPS WITH THE DEVICE. Fulfils textedit_be_* with a real
-// <textarea> (#ui-textedit) that mounts inside the panel frame (#ui-panel). `open` seeds it from the driver's
-// buffer + focuses; `text` copies its value into the driver buffer; `poll_run` reports ⌘/Ctrl-Enter. The window
-// twin edits + draws the same buffer in the framebuffer.
 (function () {
   (globalThis.archeHosts ??= []).push({
     bind(rt) {
@@ -27,7 +23,6 @@
     seams(rt) {
       const self = this;
       return {
-        // Mount into the panel frame; seed the textarea from the driver's buffer once (read to the NUL); focus.
         textedit_be_open(ptr, n) {
           const f = document.getElementById("ui-panel");
           if (f && self.ta.parentNode !== f) f.appendChild(self.ta);
@@ -39,7 +34,6 @@
           }
           self.ta.focus();
         },
-        // textarea value → the driver buffer, NUL-terminated (the arche side rescans elen).
         textedit_be_text(bufPtr, cap) {
           const bytes = self.enc.encode(self.ta.value);
           const k = Math.min(bytes.length, cap - 1);

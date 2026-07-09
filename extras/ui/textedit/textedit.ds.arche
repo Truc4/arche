@@ -1,14 +1,1 @@
-/// Datasheet for the `textedit` element device — a multi-line code editor. The device owns NO storage; the
-/// DRIVER owns the columns and the selected backend edits + renders them. Decoupled from `gfx`: the window
-/// backend does the editing ITSELF from a driver-provided key (`{ukey}`, filled from gfx.key) and blits into the
-/// shared `{framebuffer}`; the dom backend is a real `<textarea>`. Columns the driver provides:
-///   {ebuf, elen, ecur}     the edit buffer, its live length, and the cursor index
-///   {submit}               raised to 1 on Ctrl-R / ⌘-Enter — the driver reads it to run/act
-///   {evx, evy, evw, evh}   the editor's screen rect (render px)
-///   {ukey}                 one key per frame (ASCII or a gfx sentinel; the driver fills from gfx.key)
-///   {vpw, vph}             viewport size for framebuffer stride/clip (window only)
-///
-/// Backends: `window` (framebuffer editor: `step` edits, `render` blits text + cursor) and `dom` (a `<textarea>`:
-/// `text` pulls its value into `{ebuf}`, `poll_run` reports ⌘-Enter). Pick with `[select] textedit =
-/// "window" | "dom"`. Part of the `ui` element family; builds on the shared `ui` core (extras/ui/ui/).
-// RUN: true
+

@@ -1,0 +1,18 @@
+// A vec/tuple component field (`pos2.x`) passed as an argument to a `#foreign` proc must be LOADED to an SSA
+// value, not emitted as the bare field name. Regression: the foreign-call argument path emitted
+// `call void @sink_be(i32 x, i32 y)` — the literal field names — producing invalid LLVM IR ("expected value
+// token"). A normal func/proc call already lowered `pos2.x` correctly; only the extern-call arg path did not.
+// RUN: %arche build --emit llvm-ir -o %t.ll %s
+// RUN: grep -q "call void @sink_be(i32 %" %t.ll
+// RUN: not grep -q "call void @sink_be(i32 x" %t.ll
+#foreign
+sink_be :: proc(x: int, y: int)();
+
+pos2(x, y) :: int;
+Thing :: arche { pos2 }
+[1]Thing ?abort;
+
+seed :: system eff { insert(Thing { pos2: (3, 4) })(_:, _ok:); }
+go :: system eff { map (query { pos2 }) eff { sink_be(pos2.x, pos2.y)(); }; }
+
+#run seq({ seed, go })
