@@ -1,0 +1,13 @@
+/// Datasheet for the `panel` element device — a dark framed container with a title bar, the "chrome" a
+/// composed UI (like the arche playground) draws its editor/output/button inside. The device owns NO storage;
+/// the DRIVER owns the columns and the selected backend renders them. Decoupled from `gfx`: the window backend
+/// draws into the shared `{framebuffer}` (reading the viewport size from driver-provided columns, never gfx),
+/// the dom backend builds a framed `<div>`. Columns the driver provides:
+///   {pnx, pny, pnw, pnh}  the frame's screen rect (render px; the driver projects/places it)
+///   {ptitle, ptlen}       the title-bar text
+///   {vpw, vph}            the live viewport size (render px), so no gfx import is needed to clip/stride
+///
+/// Backends: `window` (framebuffer raster, pure arche) and `dom` (a real `<div>`). Uniform interface: a single
+/// `render` system. Pick with `[select] panel = "window" | "dom"`. The two are interchangeable — a driver
+/// schedules `panel.render` regardless of backend.
+// RUN: true

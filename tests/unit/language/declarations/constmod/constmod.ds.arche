@@ -1,0 +1,3 @@
+/// Datasheet for the `constmod` support device — exists only so `constmod` is importable by name (a module
+/// with no datasheet must be imported by path). No storage, no behavior of its own.
+// RUN: true

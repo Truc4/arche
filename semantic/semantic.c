@@ -1485,6 +1485,16 @@ static void analyze_base_chain(SemanticContext *ctx, SyntaxView v, SourceLoc fie
 	char *idnt = sv_resolved_name(ctx, v);
 	int nf = sv_count(v, SN_FIELD_NAME);
 
+	/* A module-qualified array CONST (`constmod.TBL`) folds to a WHOLE name even though the AST kept a
+	 * field segment (nf>=1). It is a whole const reference, not a value field-access — and a same-named
+	 * element-typed VariableInfo the import registers would otherwise send it down the value-field path and
+	 * mis-error ("type 'i32' has no field 'TBL'"). Accept it here, mirroring the scalar value-const
+	 * acceptance in the field path below. (A local array const has nf==0 and never reaches that path.) */
+	if (nf >= 1 && name_is_const_static_array(ctx, idnt)) {
+		free(idnt);
+		return;
+	}
+
 	/* `Flock.<col>` — the system query binder names the whole queried column. Resolve field access as if the
 	 * base were the query's matched archetype, so `Flock.pos`/`Flock.pos.x` check against its columns. */
 	if (nf > 0 && idnt && ctx->system_binder && ctx->system_binder_arch && strcmp(idnt, ctx->system_binder) == 0) {
@@ -1827,6 +1837,19 @@ static TypeId index_base_type_id(SemanticContext *ctx, SyntaxView v) {
 	char *idnt = sv_resolved_name(ctx, v);
 	if (!idnt)
 		return TYID_UNKNOWN;
+	/* A module-qualified array CONST index (`constmod.TBL[i]`): the fold gives the whole name while the AST
+	 * keeps a field segment (nf>=1), so the `nf>=1` archetype-column path below would misread it. Resolve it
+	 * as the array const directly — the same lookup the nf==0 (local) branch does. */
+	if (nf >= 1)
+		for (int i = 0; i < ctx->decl_count; i++) {
+			DeclSummary *d = ctx->decls[i];
+			if (d->kind == DECL_STATIC && d->static_kind == STATIC_KIND_ARRAY && d->name &&
+			    strcmp(d->name, idnt) == 0) {
+				TypeId t = array_const_type_id(ctx, d);
+				free(idnt);
+				return t;
+			}
+		}
 	TypeId bt = TYID_UNKNOWN;
 	if (nf >= 1) {
 		/* `Arch.col[i]` / `var.col[i]` — the base is an archetype COLUMN: a `[]scalar` whose element is
