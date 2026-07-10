@@ -1,0 +1,17 @@
+// An archetype field must name a declared component/type. An undeclared field (`ghost`) used to lower to an
+// empty `%struct.ghost` and crash the LLVM optimizer with "invalid type for function argument"; the analyzer
+// must instead reject it with a clean semantic error (E0230) *before* codegen. Same root cause as using a
+// component whose declaring device (e.g. `vec`'s `pos`) was not imported.
+// RUN: not %arche build -o %t %s
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qF "unknown component 'ghost'" %t.out
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; not grep -qF "invalid type for function argument" %t.out
+#import { fmt }
+
+Ghosted :: arche { ghost }
+[1]Ghosted(1);
+
+go :: system eff {
+  map (query { ghost }) eff {
+  };
+}
+#run seq({ go })

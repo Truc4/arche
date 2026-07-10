@@ -1,0 +1,89 @@
+#import { ui }
+
+FRAME_BG     :: 0x0b0e14;
+FRAME_BORDER :: 0x232838;
+TITLE_COL    :: 0xcdd6f4;
+TITLE_TSZ    :: 24;
+
+render :: system (query { framebuffer })(framebuffer) eff {
+  map (query { screen, size, title, len, view }) eff {
+    bx0 := screen.x;
+    by0 := screen.y;
+    bx1 := screen.x + size.w;
+    by1 := screen.y + size.h;
+    if (bx0 < 0) {
+      bx0 = 0;
+    }
+    if (by0 < 0) {
+      by0 = 0;
+    }
+    if (bx1 > view.w) {
+      bx1 = view.w;
+    }
+    if (by1 > view.h) {
+      by1 = view.h;
+    }
+    for (yy := by0; yy < by1; yy += 1) {
+      for (xx := bx0; xx < bx1; xx += 1) {
+        framebuffer[yy * view.w + xx] = FRAME_BORDER;
+      }
+    }
+    ix0 := screen.x + 2;
+    iy0 := screen.y + 2;
+    ix1 := screen.x + size.w - 2;
+    iy1 := screen.y + size.h - 2;
+    if (ix0 < 0) {
+      ix0 = 0;
+    }
+    if (iy0 < 0) {
+      iy0 = 0;
+    }
+    if (ix1 > view.w) {
+      ix1 = view.w;
+    }
+    if (iy1 > view.h) {
+      iy1 = view.h;
+    }
+    for (yy := iy0; yy < iy1; yy += 1) {
+      for (xx := ix0; xx < ix1; xx += 1) {
+        framebuffer[yy * view.w + xx] = FRAME_BG;
+      }
+    }
+    sepy := screen.y + ui.PAD + ui.TITLE_H;
+    if (sepy >= 0 && sepy < view.h) {
+      for (xx := ix0; xx < ix1; xx += 1) {
+        framebuffer[sepy * view.w + xx] = FRAME_BORDER;
+      }
+    }
+    scale := TITLE_TSZ / 8;
+    adv   := 8 * scale;
+    tx    := screen.x + ui.PAD;
+    ty    := screen.y + ui.PAD;
+    for (i := 0; i < len; i += 1) {
+      c := title[i];
+      if (c >= 32 && c <= 126) {
+        gi := c - 32;
+        for (row := 0; row < 8; row += 1) {
+          b := ui.GLYPHS[gi * 8 + row];
+          for (col := 0; col < 8; col += 1) {
+            if (b >= 128) {
+              gx0 := tx + i * adv + col * scale;
+              gy0 := ty + row * scale;
+              for (py := gy0; py < gy0 + scale; py += 1) {
+                if (py >= 0 && py < view.h) {
+                  for (px := gx0; px < gx0 + scale; px += 1) {
+                    if (px >= 0 && px < view.w) {
+                      framebuffer[py * view.w + px] = TITLE_COL;
+                    }
+                  }
+                }
+              }
+              b = b - 128;
+            }
+            b = b * 2;
+          }
+        }
+      }
+    }
+  };
+}

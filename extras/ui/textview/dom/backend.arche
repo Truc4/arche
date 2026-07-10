@@ -1,0 +1,9 @@
+#module
+#foreign
+textview_be_render :: proc(buf: []char, n: int)(buf: []char);
+
+render :: system eff {
+  map (query { output, len }) eff {
+    textview_be_render(output, len)(_:);
+  };
+}

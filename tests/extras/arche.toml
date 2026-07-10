@@ -1,0 +1,16 @@
+# Fixture manifest for the extras showcase smoke tests. The device LIBRARIES live in `extras/` (added to the
+# module search path below); this file supplies the `[target]` variant selection those drivers need (the
+# `platform`/`log` devices pick a backend per target), mirroring extras/arche.toml.
+target = "linux"
+
+[lib]
+paths = ["../../extras"]
+
+[target.linux]
+platform = "linux"
+gfx = "wayland"
+log = "terminal"
+
+[target.windows]
+platform = "windows"
+log = "terminal"

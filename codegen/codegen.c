@@ -426,12 +426,26 @@ static void buffer_append(CodegenContext *ctx, const char *str) {
 static void buffer_append_fmt(CodegenContext *ctx, const char *fmt, ...) {
 	va_list args;
 	va_start(args, fmt);
-
 	char temp[1024];
-	vsnprintf(temp, sizeof(temp), fmt, args);
+	int n = vsnprintf(temp, sizeof(temp), fmt, args);
 	va_end(args);
-
-	buffer_append(ctx, temp);
+	if (n < 0)
+		return;
+	if ((size_t)n < sizeof(temp)) {
+		buffer_append(ctx, temp);
+		return;
+	}
+	/* Output exceeds the stack buffer — format again into an exactly-sized heap buffer instead of
+	 * silently truncating. Matters for large single-line emissions like a big `[N x T]` const-array
+	 * global initializer (a bitmap-font table), which would otherwise be cut off into invalid IR. */
+	char *heap = malloc((size_t)n + 1);
+	if (!heap)
+		return;
+	va_start(args, fmt);
+	vsnprintf(heap, (size_t)n + 1, fmt, args);
+	va_end(args);
+	buffer_append(ctx, heap);
+	free(heap);
 }
 
 static void emit_alloca(CodegenContext *ctx, const char *fmt, ...) {
@@ -870,6 +884,12 @@ static void emit_array_init_elems(char *buf, size_t bufsz, int *pos, int *count,
 		const char *lx = e->data.literal.lexeme;
 		if (lx[0] == '\'') {
 			snprintf(vb, sizeof(vb), "%d", char_literal_value(lx));
+			v = vb;
+		} else if (lx[0] == '0' && (lx[1] == 'x' || lx[1] == 'X')) {
+			/* Emit the integer VALUE, not the source lexeme: LLVM reads a `0x..` array-element token
+			 * as a FLOAT constant, so a hex int literal (e.g. a 0x18 font-table byte) would fail to
+			 * build. strtoll(base 0) parses the 0x form; the value re-emits as decimal. */
+			snprintf(vb, sizeof(vb), "%lld", strtoll(lx, NULL, 0));
 			v = vb;
 		} else {
 			v = lx;
@@ -2975,6 +2995,22 @@ static int resolve_collective_query(CodegenContext *ctx, const char *name, const
  * FLOAT column isn't mis-defaulted to i32 (G4/G5): the store path previously only consulted `find_value`,
  * missing a directly-named global pool the way the read path already handled. */
 static const char *indexed_col_arche_type(CodegenContext *ctx, HirExpr *base_expr) {
+	/* A bare-name column bound by a `map (query { col })` / fan (`col[i]`): the value is a type-4 column
+	 * whose element type lives in the archetype field decl — NOT the value's resolved type, which collapses
+	 * a component column to its backing (`char`→`int`). Resolve it here so both the read and store paths
+	 * stride by the real element width (an `[N]char` column is i8, not i32). */
+	if (base_expr && base_expr->kind == HIR_EXPR_NAME) {
+		ValueInfo *bv = find_value(ctx, base_expr->data.name.name);
+		if (bv && bv->type == 4 && bv->arch_name) {
+			HirArchetypeDecl *ba = find_archetype_decl(ctx, bv->arch_name);
+			if (ba)
+				for (int i = 0; i < ba->field_count; i++)
+					if (ba->fields[i]->kind == FIELD_COLUMN && ba->fields[i]->name &&
+					    strcmp(ba->fields[i]->name, base_expr->data.name.name) == 0)
+						return field_base_type_name(ba->fields[i]->type);
+		}
+		return NULL;
+	}
 	if (!base_expr || base_expr->kind != HIR_EXPR_FIELD || !base_expr->data.field.base ||
 	    base_expr->data.field.base->kind != HIR_EXPR_NAME)
 		return NULL;
@@ -4238,16 +4274,37 @@ static void coerce_syscall_arg(CodegenContext *ctx, HirExpr *arg, char *out, int
 	}
 }
 
-/* Emit the raw Linux/x86-64 `syscall` instruction: number + up to 6 args in i64 regs, result in rax;
- * rcx/r11/memory clobbered. `a[0..6]` are pre-coerced i64 operands (a[0] = number). Returns the SSA
- * name of the result into `res_out`. */
+/* `--arch=wasm32`: retarget the module triple/datalayout + syscall lowering to wasm32-wasi. Default 0 =
+ * the historical native x86-64 path, so this is inert unless `arche build --arch=wasm32` sets it. */
+static int g_codegen_target_wasm = 0;
+void codegen_set_target_wasm(int on) {
+	g_codegen_target_wasm = on;
+}
+
+/* Reactor split verdict, set during entry emission and read by the wasm link (compile.c) to choose
+ * `-mexec-model=reactor` + the `arche_run`/`arche_frame` exports. Set only when a wasm build had a
+ * top-level `forever` in its #run schedule. */
+static int g_codegen_was_reactor = 0;
+int codegen_was_reactor(void) {
+	return g_codegen_was_reactor;
+}
+
+/* Emit a system call. NATIVE: the raw Linux/x86-64 `syscall` instruction — number + up to 6 args in i64
+ * regs, result in rax; rcx/r11/memory clobbered. WASM32: a call to the portable `@arche_syscall` shim
+ * (runtime/arche_syscall.c) which maps the Linux number to a wasi-libc call — wasm has no `syscall`
+ * opcode. `a[0..6]` are pre-coerced i64 operands (a[0] = number). Result SSA name → `res_out`. */
 static void emit_syscall_asm(CodegenContext *ctx, char a[7][256], char *res_out) {
 	char *res = gen_value_name(ctx);
-	buffer_append_fmt(ctx,
-	                  "  %s = call i64 asm sideeffect \"syscall\", "
-	                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
-	                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
-	                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+	if (g_codegen_target_wasm)
+		buffer_append_fmt(ctx,
+		                  "  %s = call i64 @arche_syscall(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+		                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
+	else
+		buffer_append_fmt(ctx,
+		                  "  %s = call i64 asm sideeffect \"syscall\", "
+		                  "\"={rax},{rax},{rdi},{rsi},{rdx},{r10},{r8},{r9},~{rcx},~{r11},~{memory}\""
+		                  "(i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s, i64 %s)\n",
+		                  res, a[0], a[1], a[2], a[3], a[4], a[5], a[6]);
 	strcpy(res_out, res);
 }
 
@@ -5661,6 +5718,24 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 		const char *scalar_type = "i32"; /* default */
 		const char *arche_type = NULL;
 
+		/* Is the base a char[] value-const — a string const (`PIX :: "ARCH"`) or a char array const? Its
+		 * elements are i8 and its base pointer is already i8*. Detect it so the element type below is i8,
+		 * not the i32 default — which GEP'd by 4 and loaded 4 packed bytes (`PIX[0]` → "ARCH", not 'A'). */
+		int base_is_char_const = 0;
+		if (expr->data.index.base->kind == HIR_EXPR_NAME) {
+			const char *bcv = semantic_get_const_value(ctx->sem_ctx, expr->data.index.base->data.name.name);
+			if (bcv && bcv[0] == '"') {
+				base_is_char_const = 1;
+			} else {
+				HirStaticDecl *csa = codegen_find_static_array(ctx, expr->data.index.base->data.name.name);
+				if (csa && csa->kind == HIR_STATIC_ARRAY) {
+					const char *cet = field_base_type_name(csa->array.element_type);
+					if (cet && strcmp(cet, "char") == 0)
+						base_is_char_const = 1;
+				}
+			}
+		}
+
 		if (type6_elem_type) {
 			arche_type = type6_elem_type;
 			scalar_type = llvm_type_from_arche(type6_elem_type);
@@ -5679,6 +5754,10 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			if (expr->resolved.tag == HIR_TYPE_UNKNOWN &&
 			    (strcmp(arche_type, "float") == 0 || strcmp(arche_type, "double") == 0))
 				expr->resolved.tag = HIR_TYPE_FLOAT;
+		} else if (base_is_char_const) {
+			/* A char[] value-const indexes to one char (i8) — see base_is_char_const above. */
+			arche_type = "char";
+			scalar_type = "i8";
 		} else if (expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 			arche_type = hir_resolved_type_name(expr);
 			scalar_type = llvm_type_from_arche(arche_type);
@@ -6890,6 +6969,26 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 
 		if (elem_count == 0) {
 			strcpy(result_buf, "0");
+			break;
+		}
+
+		/* A tuple VALUE literal `(a, b, …)` (parsed as SN_TUPLE_LIT, lowered through this array-literal node)
+		 * resolves to a `{T,…}` aggregate — NOT a `[N x i8]` char array. Pack it with `insertvalue`, the same
+		 * value the tuple-arithmetic and multi-value-return paths build, so it flows as a first-class tuple. */
+		if (expr->resolved.tag == HIR_TYPE_TUPLE && expr->resolved.field_count == elem_count) {
+			char aggty[256];
+			tuple_llvm_type(&expr->resolved, aggty, sizeof(aggty));
+			char cur[256];
+			strcpy(cur, "undef");
+			for (int i = 0; i < elem_count; i++) {
+				char eb[256];
+				codegen_expression(ctx, elems[i], eb);
+				const char *mt = llvm_type_from_arche(field_base_type_name(expr->resolved.fields[i].type));
+				char *acc = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", acc, aggty, cur, mt, eb, i);
+				strcpy(cur, acc);
+			}
+			strcpy(result_buf, cur);
 			break;
 		}
 
@@ -9992,9 +10091,16 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					if (strcmp(arche_type, "handle") != 0) {
 						const char *st = llvm_type_from_arche(arche_type);
 						int is_flt = strcmp(st, "float") == 0 || strcmp(st, "double") == 0;
+						/* Index by the fan that BOUND this column (`loop_idx`), so an OUTER-fan column written
+						 * from a nested inner fan targets the outer row — not the ambient inner index. A `[1]`
+						 * singleton column has one row and writes at index 0. Mirrors the read path above. */
+						const char *row =
+						    (val->loop_idx && val->loop_idx[0]) ? val->loop_idx : ctx->implicit_loop_index;
+						if (val->arch_name && get_arch_static_capacity(ctx, val->arch_name) == 1)
+							row = "0";
 						char *gep = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, st, st, val->llvm_name,
-						                  ctx->implicit_loop_index);
+						                  row);
 						char rhs_buf[256];
 						codegen_expression(ctx, stmt->data.assign_stmt.value, rhs_buf);
 						if (stmt->data.assign_stmt.op != OP_NONE) {
@@ -10444,23 +10550,33 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 			const char *scalar_type = "i32"; /* default */
 			const char *arche_type = NULL;
 
-			/* Try to get element type from resolved type info */
+			/* Prefer the pool-column's DECLARED element type (incl. a flattened tuple sub-column
+			 * `P.pos.x`→`pos_x`, and a bare-name query-bound column) over the base's resolved type: a
+			 * component column collapses to its backing (`char`→`int`), which would stride an `[N]char`
+			 * column by 4 and store i32 — the stride-4 corruption. The read path already prefers this. */
 			HirExpr *base_expr = stmt->data.assign_stmt.target->data.index.base;
-			if (base_expr->resolved.tag != HIR_TYPE_UNKNOWN) {
+			const char *col_et = indexed_col_arche_type(ctx, base_expr);
+			if (col_et) {
+				arche_type = col_et;
+				scalar_type = llvm_type_from_arche(col_et);
+			} else if (base_expr->resolved.tag != HIR_TYPE_UNKNOWN) {
 				arche_type = hir_resolved_type_name(base_expr);
 				scalar_type = llvm_type_from_arche(arche_type);
-			} else {
-				/* Fallback: resolve the pool-column element type (incl. a flattened tuple sub-column
-				 * `P.pos.x`→`pos_x`). Shared with the read path so a FLOAT column isn't defaulted to i32. */
-				const char *at = indexed_col_arche_type(ctx, base_expr);
-				if (at) {
-					arche_type = at;
-					scalar_type = llvm_type_from_arche(at);
-				}
 			}
 
 			/* In vector mode, load/store use vector type; GEP uses scalar pointer */
 			const char *load_type = arche_type ? elem_llvm_type(ctx, arche_type) : scalar_type;
+
+			/* A byte/short-width element (a `[N]char` column, `byte`, …): the RHS is carried at i32, so
+			 * truncate it to the element width before storing — a literal lands directly, a wider SSA truncs.
+			 * Without this an `i32` value stored into an `i8` slot is an IR type error. */
+			const char *store_val = value_buf;
+			char narrow_val[256];
+			if (ctx->vector_lanes == 0 && (strcmp(load_type, "i8") == 0 || strcmp(load_type, "i16") == 0)) {
+				int w = (load_type[1] == '8') ? 8 : 16;
+				emit_int_convert(ctx, value_buf, &stmt->data.assign_stmt.value->resolved, w, narrow_val);
+				store_val = narrow_val;
+			}
 
 			/* Ensure index is i64 for getelementptr; the pool policy below operates on this i64 index. */
 			const char *final_idx = idx_buf;
@@ -10483,13 +10599,13 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 			/* Store or compound operation */
 			if (stmt->data.assign_stmt.op == OP_NONE) {
-				int align = ctx->vector_lanes > 0 ? 8 : 4;
-				buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", load_type, value_buf, scalar_type,
+				int align = ctx->vector_lanes > 0 ? 8 : llvm_type_sizeof(scalar_type);
+				buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", load_type, store_val, scalar_type,
 				                  target_addr, align);
 			} else {
 				/* Compound assignment: load, compute, store */
 				char *loaded = gen_value_name(ctx);
-				int align = ctx->vector_lanes > 0 ? 8 : 4;
+				int align = ctx->vector_lanes > 0 ? 8 : llvm_type_sizeof(scalar_type);
 				buffer_append_fmt(ctx, "  %s = load %s, %s* %s, align %d\n", loaded, load_type, scalar_type,
 				                  target_addr, align);
 
@@ -10519,9 +10635,9 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 
 				char *result = gen_value_name(ctx);
 				if (!is_float && (stmt->data.assign_stmt.op == OP_DIV || stmt->data.assign_stmt.op == OP_MOD))
-					emit_int_divmod(ctx, op, load_type, loaded, value_buf, NULL, result);
+					emit_int_divmod(ctx, op, load_type, loaded, store_val, NULL, result);
 				else
-					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, load_type, loaded, value_buf);
+					buffer_append_fmt(ctx, "  %s = %s %s %s, %s\n", result, op, load_type, loaded, store_val);
 				buffer_append_fmt(ctx, "  store %s %s, %s* %s, align %d\n", load_type, result, scalar_type, target_addr,
 				                  align);
 			}
@@ -12514,6 +12630,17 @@ static const char *arch_owning_col(CodegenContext *ctx, const char *col) {
 	return NULL;
 }
 
+/// Whether `arch` declares a column named `col` — a driver owns its own column even when another archetype
+/// declared the shared component first (`arch_owning_col` returns only the first owner).
+static int arch_has_col(const HirArchetypeDecl *arch, const char *col) {
+	if (!arch)
+		return 0;
+	for (int f = 0; f < arch->field_count; f++)
+		if (strcmp(arch->fields[f]->name, col) == 0)
+			return 1;
+	return 0;
+}
+
 /* Load a singleton column's value at index 0 (broadcast) as a scalar SSA, binding it to `param_name`. */
 static void bind_singleton_col(CodegenContext *ctx, const char *param_name, const char *arch_name) {
 	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
@@ -12611,7 +12738,7 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 			for (int p = 0; p < sys->param_count; p++) {
 				const char *param_name = sys->params[p]->name;
 				const char *owner = arch_owning_col(ctx, param_name);
-				if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+				if (owner && !arch_has_col(arch, param_name) && get_arch_static_capacity(ctx, owner) == 1) {
 					bind_singleton_col(ctx, param_name, owner);
 					continue;
 				}
@@ -12701,11 +12828,25 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 			continue; /* singleton column — broadcast, not a loop driver */
 		cols[ncol++] = params[p]->name;
 	}
-	/* A query over ONLY singletons (a join of `[1]` pools) has no broadcast counterpart — drive over the
-	 * FIRST singleton (one row); the rest broadcast as usual. */
-	if (ncol == 0 && param_count > 0)
-		cols[ncol++] = params[0]->name;
+	/* A query over ONLY singletons has no non-singleton driver. Prefer an archetype that owns EVERY query
+	 * column (a self-contained singleton, e.g. a UI element) and fan just it — do NOT fall back to the
+	 * first column alone, which would also match a SIBLING singleton that shares that column but lacks the
+	 * others; fanning the sibling then binds those others (incl. array columns) from the wrong pool via
+	 * bind_singleton_col → a scalar load of an array → invalid IR. Only if no single archetype has all
+	 * columns is this a genuine cross-pool singleton JOIN: drive over the first column, broadcast the rest. */
 	const char *archs[16];
+	if (ncol == 0 && param_count > 0) {
+		const char *allc[256];
+		int nall = 0;
+		for (int p = 0; p < param_count && nall < 256; p++)
+			allc[nall++] = params[p]->name;
+		const char *tmp[16];
+		if (query_match_archs(ctx, allc, nall, tmp, 16) > 0)
+			for (int p = 0; p < param_count && ncol < 256; p++)
+				cols[ncol++] = params[p]->name;
+		else
+			cols[ncol++] = params[0]->name;
+	}
 	int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
 	for (int ai = 0; ai < na; ai++) {
 		const char *arch_name = archs[ai];
@@ -12764,7 +12905,7 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		for (int p = 0; p < param_count; p++) {
 			const char *param_name = params[p]->name;
 			const char *owner = arch_owning_col(ctx, param_name);
-			if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+			if (owner && !arch_has_col(arch, param_name) && get_arch_static_capacity(ctx, owner) == 1) {
 				bind_singleton_col(ctx, param_name, owner);
 				continue;
 			}
@@ -13779,20 +13920,46 @@ static void cg_coherence_pass(CodegenContext *ctx, ScheduleTree **tree) {
 	cg_coh_process_slot(ctx, tree, &c);
 }
 
-/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree.
- * Walked at compile time into direct-dispatch control flow; called once from @main. */
-static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
+/* The top-level `forever` (SCHED_LOOP) of a #run schedule, if any — the seam the reactor split cuts at:
+ * everything but this loop is one-shot init; this loop's body is the per-frame schedule. Handles both a
+ * `forever` directly at root and one sitting among a root `seq`/`par`'s children (the usual shape). */
+static ScheduleTree *cg_reactor_top_loop(ScheduleTree *t) {
+	if (!t)
+		return NULL;
+	if (t->kind == SCHED_LOOP)
+		return t;
+	if (t->kind == SCHED_SEQ || t->kind == SCHED_PAR)
+		for (int i = 0; i < t->child_count; i++)
+			if (t->children[i] && t->children[i]->kind == SCHED_LOOP)
+				return t->children[i];
+	return NULL;
+}
+
+/* Emit one exported schedule function `@<name>` from a folded ScheduleTree — walked at compile time into
+ * direct-dispatch control flow. `emit_allocinit` prepends the pool/global alloc-init (+ optional user `init`
+ * proc) into the body: the command model runs that in @main, but the reactor's @arche_run has no @main to
+ * lean on, so it initializes pools itself before the one-shot init schedule runs. */
+static void codegen_sched_fn(CodegenContext *ctx, ScheduleTree *tree, const char *name, int emit_allocinit,
+                             int has_init_proc) {
 	ctx->entity_bind_count = 0;
 	snprintf(ctx->current_return_type_buf, sizeof(ctx->current_return_type_buf), "void");
 	ctx->current_return_types = NULL;
 	ctx->current_return_type_count = 0;
 	ctx->current_return_type = ctx->current_return_type_buf;
 	ctx->current_func = NULL;
-	buffer_append(ctx, "define void @arche_run() {\nentry:\n");
+	buffer_append_fmt(ctx, "define void @%s() {\nentry:\n", name);
 	FunctionBodyState fbs = begin_function_body(ctx);
 	push_value_scope(ctx);
 	ctx->block_terminated = 0;
 	register_static_arrays_in_scope(ctx);
+	if (emit_allocinit) {
+		for (int i = 0; i < ctx->alloc_count; i++)
+			codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+		if (has_init_proc) {
+			char isym[512];
+			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, isym, sizeof(isym)));
+		}
+	}
 	/* Joint placement: cost consecutive-map clusters as a unit (transfer once) and record residency-aware
 	 * per-map CPU/GPU decisions, so the coherence pass + emit below see them. Then derive residency + insert
 	 * coherence syncs before lowering the schedule to control flow. */
@@ -13804,6 +13971,12 @@ static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
 	pop_value_scope(ctx);
 	end_function_body(ctx, fbs);
 	buffer_append(ctx, "}\n\n");
+}
+
+/* `@arche_run` — the program's loop, synthesized from the folded #run ScheduleTree.
+ * Walked at compile time into direct-dispatch control flow; called once from @main. */
+static void codegen_run_decl(CodegenContext *ctx, ScheduleTree *tree) {
+	codegen_sched_fn(ctx, tree, "arche_run", 0, 0);
 }
 
 /* A map body is "flat" — a plain sequence of column transforms (`col = expr`) — when every statement is an
@@ -14891,11 +15064,17 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	/* RAII: build the opaque-type -> destructor registry before emitting any body. */
 	codegen_build_drop_registry(ctx);
 
-	/* Preamble: declare external functions */
-	buffer_append(ctx, "; Target datalayout and triple would go here\n");
-	buffer_append(ctx,
-	              "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
-	buffer_append(ctx, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+	/* Preamble: target triple + datalayout. For wasm we emit NEITHER — clang's `--target=wasm32-wasi` owns
+	 * the exact triple + 32-bit-pointer datalayout, so hardcoding them here only earns an override warning. */
+	if (g_codegen_target_wasm) {
+		/* clang's canonical form for --target=wasm32-wasip1 (WASI preview1) — matching it avoids a
+		 * `-Woverride-module` warning. The datalayout is inferred from the triple (32-bit pointers). */
+		buffer_append(ctx, "target triple = \"wasm32-unknown-wasip1\"\n\n");
+	} else {
+		buffer_append(
+		    ctx, "target datalayout = \"e-m:e-p270:32:32-p271:32:32-p272:64:64-i64:64-f80:128-n8:16:32:64-S128\"\n");
+		buffer_append(ctx, "target triple = \"x86_64-unknown-linux-gnu\"\n\n");
+	}
 
 	/* Declare custom types as opaque structures */
 	buffer_append(ctx, "; Type definitions\n");
@@ -14907,6 +15086,9 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 	buffer_append(ctx, "declare i8* @calloc(i64, i64)\n");
 	buffer_append(ctx, "declare void @free(i8*)\n");
 	buffer_append(ctx, "declare void @abort()\n");
+	/* wasm has no `syscall` opcode: os-level calls lower to this portable shim (runtime/arche_syscall.c). */
+	if (g_codegen_target_wasm)
+		buffer_append(ctx, "declare i64 @arche_syscall(i64, i64, i64, i64, i64, i64, i64)\n");
 	/* The `cores` backend's multicore reduce primitives (runtime/io.c). Declared unconditionally; harmless
 	 * if unused (resolves against io.o, which every program links). */
 	buffer_append(ctx, "declare float @arche_par_reduce_f32(float*, i64, i32)\n");
@@ -15103,68 +15285,92 @@ void codegen_generate(CodegenContext *ctx, FILE *output) {
 		/* Synthesize @arche_run from the folded #run ScheduleTree (the runtime-owned loop), entry unit
 		 * only, before @main — @main calls it (no driver proc). */
 		ScheduleTree *run_tree = NULL;
-		for (int i = 0; i < ctx->ast->decl_count; i++)
-			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN) {
-				run_tree = ctx->ast->decls[i]->data.run->tree;
-				break;
-			}
 		int has_run = 0;
 		for (int i = 0; i < ctx->ast->decl_count; i++)
-			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN)
+			if (ctx->ast->decls[i]->kind == HIR_DECL_RUN) {
+				if (!run_tree)
+					run_tree = ctx->ast->decls[i]->data.run->tree;
 				has_run = 1;
-		if (has_run)
-			codegen_run_decl(ctx, run_tree);
-		buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
-		/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
-		 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
-		int hot_maxu = 0;
-		if (ctx->hot) {
-			for (int i = 0; i < ctx->ast->decl_count; i++)
-				if (ctx->ast->decls[i]->unit > hot_maxu)
-					hot_maxu = ctx->ast->decls[i]->unit;
-			buffer_append(ctx, "declare void @arche_hot_register(i32, i8*)\n");
-			for (int u = 1; u <= hot_maxu; u++)
-				buffer_append_fmt(ctx, "@.hotpath.%d = private unnamed_addr constant [%d x i8] c\"unit_%d.so\\00\"\n",
-				                  u, (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u)), u);
-			/* Dev state inspector: declares + pool/field name constants (module scope, before main). */
-			codegen_emit_inspect_decls(ctx);
-		}
-		buffer_append(ctx, "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
-		buffer_append(ctx, "entry:\n");
-		buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
-		if (ctx->hot)
-			for (int u = 1; u <= hot_maxu; u++) {
-				int plen = (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u));
-				buffer_append_fmt(
-				    ctx,
-				    "  call void @arche_hot_register(i32 %d, i8* getelementptr inbounds ([%d x i8], [%d x "
-				    "i8]* @.hotpath.%d, i64 0, i64 0))\n",
-				    u, plen, plen, u);
 			}
-		/* Dev state inspector: tell runtime/inspect.o where each pool lives and how it is laid out, so
-		 * `arche inspect` can read/edit live state. Hot mode only; release builds emit none of this. */
-		if (ctx->hot)
-			codegen_emit_inspect_calls(ctx);
+		/* Reactor model (wasm + a top-level `forever`): a browser can't block in a wasm loop, so instead of
+		 * one @arche_run that loops forever we split the #run schedule into two exported functions — a
+		 * one-shot @arche_run (everything before the forever, plus the pool alloc-init @main would normally
+		 * do) and @arche_frame (the forever body, one tick). The wasm link then drops @main and uses
+		 * `-mexec-model=reactor`; the JS host calls _initialize, then arche_run once, then arche_frame per
+		 * requestAnimationFrame. Non-wasm builds and wasm builds with no forever keep the command model. */
+		ScheduleTree *rx_loop = (g_codegen_target_wasm && has_run) ? cg_reactor_top_loop(run_tree) : NULL;
+		g_codegen_was_reactor = (rx_loop != NULL);
+		if (rx_loop) {
+			ScheduleTree *frame_tree = (rx_loop->child_count > 0) ? rx_loop->children[0] : NULL;
+			ScheduleTree *init_tree = cg_sched_node(SCHED_SEQ);
+			if (run_tree->kind == SCHED_SEQ || run_tree->kind == SCHED_PAR)
+				for (int i = 0; i < run_tree->child_count; i++)
+					if (run_tree->children[i] != rx_loop)
+						cg_coh_append(&init_tree->children, &init_tree->child_count, run_tree->children[i]);
+			codegen_sched_fn(ctx, init_tree, "arche_run", 1, has_init_proc);
+			codegen_sched_fn(ctx, frame_tree, "arche_frame", 0, 0);
+			(void)has_main_proc;
+			(void)init_sym;
+		} else {
+			if (has_run)
+				codegen_run_decl(ctx, run_tree);
+			buffer_append(ctx, "\ndeclare void @arche_set_args(i32, i8**)\n");
+			/* Dev hot-reload: register each device unit's reloadable `.so` (a name the runtime resolves under
+			 * $ARCHE_HOT_DIR). The host calls these at startup; the per-symbol trampolines then resolve+reload. */
+			int hot_maxu = 0;
+			if (ctx->hot) {
+				for (int i = 0; i < ctx->ast->decl_count; i++)
+					if (ctx->ast->decls[i]->unit > hot_maxu)
+						hot_maxu = ctx->ast->decls[i]->unit;
+				buffer_append(ctx, "declare void @arche_hot_register(i32, i8*)\n");
+				for (int u = 1; u <= hot_maxu; u++)
+					buffer_append_fmt(ctx,
+					                  "@.hotpath.%d = private unnamed_addr constant [%d x i8] c\"unit_%d.so\\00\"\n", u,
+					                  (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u)), u);
+				/* Dev state inspector: declares + pool/field name constants (module scope, before main). */
+				codegen_emit_inspect_decls(ctx);
+			}
+			/* The C-ABI entry. Native: `main`, called by the C `_start`. WASM: `__main_argc_argv` — wasi-libc's
+			 * command crt (`_start`→`__main_void`) calls THAT symbol (the `main` alias is a C-frontend artifact a
+			 * raw-IR module doesn't get), so naming it `main` leaves a weak-undefined `main` stub that traps. */
+			buffer_append(ctx, g_codegen_target_wasm ? "\ndefine i32 @__main_argc_argv(i32 %argc, i8** %argv) {\n"
+			                                         : "\ndefine i32 @main(i32 %argc, i8** %argv) {\n");
+			buffer_append(ctx, "entry:\n");
+			buffer_append(ctx, "  call void @arche_set_args(i32 %argc, i8** %argv)\n");
+			if (ctx->hot)
+				for (int u = 1; u <= hot_maxu; u++) {
+					int plen = (int)(strlen("unit_.so") + 1 + snprintf(NULL, 0, "%d", u));
+					buffer_append_fmt(
+					    ctx,
+					    "  call void @arche_hot_register(i32 %d, i8* getelementptr inbounds ([%d x i8], [%d x "
+					    "i8]* @.hotpath.%d, i64 0, i64 0))\n",
+					    u, plen, plen, u);
+				}
+			/* Dev state inspector: tell runtime/inspect.o where each pool lives and how it is laid out, so
+			 * `arche inspect` can read/edit live state. Hot mode only; release builds emit none of this. */
+			if (ctx->hot)
+				codegen_emit_inspect_calls(ctx);
 
-		/* Emit allocation initialization code (always, regardless of user main) */
-		for (int i = 0; i < ctx->alloc_count; i++) {
-			codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+			/* Emit allocation initialization code (always, regardless of user main) */
+			for (int i = 0; i < ctx->alloc_count; i++) {
+				codegen_emit_alloc_init(ctx, ctx->top_level_allocs[i]);
+			}
+
+			if (has_init_proc)
+				buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, init_sym, sizeof(init_sym)));
+
+			/* `main` is NOT the entry — it is an ordinary name. The program's entry is `#run` → `@arche_run`
+			 * (below). A decl named `main` runs only if `#run` schedules it (or something calls it), like any
+			 * other name. (`has_main_proc` / `main_user` rename is just C-`@main` collision avoidance.) */
+			(void)has_main_proc;
+
+			/* The runtime owns the loop: run the program's #run Schedule (no driver proc). */
+			if (has_run)
+				buffer_append(ctx, "  call void @arche_run()\n");
+
+			buffer_append(ctx, "  ret i32 0\n");
+			buffer_append(ctx, "}\n");
 		}
-
-		if (has_init_proc)
-			buffer_append_fmt(ctx, "  call void @%s()\n", cg_fnsym(ctx, "init", 0, init_sym, sizeof(init_sym)));
-
-		/* `main` is NOT the entry — it is an ordinary name. The program's entry is `#run` → `@arche_run`
-		 * (below). A decl named `main` runs only if `#run` schedules it (or something calls it), like any
-		 * other name. (`has_main_proc` / `main_user` rename is just C-`@main` collision avoidance.) */
-		(void)has_main_proc;
-
-		/* The runtime owns the loop: run the program's #run Schedule (no driver proc). */
-		if (has_run)
-			buffer_append(ctx, "  call void @arche_run()\n");
-
-		buffer_append(ctx, "  ret i32 0\n");
-		buffer_append(ctx, "}\n");
 	}
 
 	/* (No built-in print helpers: printing is NOT a language primitive. Numeric/text printing is

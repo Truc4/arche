@@ -50,6 +50,15 @@ int codegen_hot_enabled(void);
 void codegen_set_gpu(int on);
 int codegen_gpu_enabled(void);
 
+/* `--arch=wasm32`: emit the wasm32-wasi triple and lower `@syscall`/`@intrinsic syscall` to a call to the
+ * portable `@arche_syscall` shim instead of the x86-64 inline `syscall` asm. Off (default) = native. */
+void codegen_set_target_wasm(int on);
+
+/* Whether the last codegen emitted a wasm reactor (a `--arch=wasm32` build whose #run schedule had a
+ * top-level `forever`): @arche_run/@arche_frame exports instead of @main. Read by the wasm link to add
+ * `-mexec-model=reactor` + the exports. Valid after codegen has run. */
+int codegen_was_reactor(void);
+
 /* ===== Derived placement (Slice 4): per-machine cost profile =====
  * Placement (CPU vs GPU per eligible map) is DERIVED from the kernel signature + a per-machine cost
  * profile, decided at build time and FROZEN into the schedule (no runtime scheduler). The profile is

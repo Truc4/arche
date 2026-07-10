@@ -1,0 +1,28 @@
+// A top-level component declaration must accept an ARRAY type (`buf :: [4]char;`), like it accepts a scalar
+// (`n :: int;`) — an inline archetype member (`W :: arche { buf :: [4]char }`) is just SUGAR for a top-level
+// component def + a bare reference, so the top-level form has to carry the same array type through to the
+// column. `buf[0]`='a'(97), `n`=3.
+//
+// EXPECTED-RED until fixed (the feature is unimplemented in two layers): (1) the parser reads the `::` RHS
+// as a value expression, which can't start at `[` ("Expected expression"); the scalar `int` slips through
+// as a name expression semantic reclassifies. (2) Even parsed as a type (or via the `n : type : [4]char`
+// longhand), a top-level component decl registers through the type-ALIAS path, which is keyed on a scalar
+// type NAME and drops the `[4]` — so `buf` becomes a scalar `char` and `buf[0]` is "not indexable". Only the
+// inline archetype-member path mints a real `[N]char` column today.
+// RUN: %arche build -o %t %s && %t | grep -x "97 3"
+#import { fmt }
+buf :: [4]char;
+n   :: int;
+W   :: arche { buf, n }
+[1]W ?abort;
+
+seed :: system eff {
+  insert(W { buf: "abc", n: 3 })(_:, _:);
+}
+show :: map (query { buf, n }) eff {
+  fmt.printf("%d %d\n", buf[0], n);
+}
+
+#run {
+  seq({ seed, show })
+}

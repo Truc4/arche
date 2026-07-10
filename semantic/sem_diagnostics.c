@@ -164,6 +164,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_DIAG_wrong_arity]                   = { "E0203", "wrong_arity",                   CLASS_ERROR, 1 },
 	[SEM_DIAG_non_exhaustive_match]          = { "E0210", "non_exhaustive_match",          CLASS_ERROR, 1 },
 	[SEM_DIAG_callable_in_archetype]         = { "E0211", "callable_in_archetype",         CLASS_ERROR, 1 },
+	[SEM_DIAG_unknown_component]             = { "E0230", "unknown_component",             CLASS_ERROR, 1 },
 	[SEM_DIAG_wildcard_in_enum_match]        = { "E0212", "wildcard_in_enum_match",        CLASS_ERROR, 1 },
 	[SEM_DIAG_unknown_query]                 = { "E0215", "unknown_query",                 CLASS_ERROR, 1 },
 	[SEM_DIAG_run_targets_query]             = { "E0216", "run_targets_query",             CLASS_ERROR, 1 },
@@ -204,6 +205,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_proc_calls_proc]               = { "W0028", "proc_calls_proc",               CLASS_LINT, 1 },
 	[SEM_LINT_pool_index_outside_query]      = { "W0029", "pool_index_outside_query",      CLASS_LINT, 1 },
 	[SEM_LINT_proc_not_primitive]            = { "W0030", "proc_not_primitive",            CLASS_LINT, 1 },
+	[SEM_LINT_dead_write_binding]            = { "W0031", "dead_write_binding",            CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -747,6 +749,14 @@ SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc l
 	                 "opt out with --map-foreign-write=warn|allow",
 	                 name);
 }
+
+SemDiag *sem_emit_lint_dead_write_binding(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_dead_write_binding, loc,
+	                 "write-back column '%s' is declared writable but never written — an out-binder '%s:' "
+	                 "shadows the queried column so the write lands on a throwaway local; drop the ':' "
+	                 "('%s') to write the column, or remove '%s' from the write list",
+	                 name, name, name, name);
+}
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_each_field_filter_type_not_name, loc,
 	                 "each_field filter type must be a primitive type");
@@ -797,6 +807,13 @@ SemDiag *sem_emit_wildcard_in_enum_match(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_wildcard_in_enum_match, loc,
 	                 "an enum `match` may not use `_` — cover every variant explicitly (add a named "
 	                 "case like `not_found` instead of a catch-all)");
+}
+
+SemDiag *sem_emit_unknown_component(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_DIAG_unknown_component, loc,
+	                 "unknown component '%s' in archetype — it is not a declared component or type "
+	                 "(declare it, or import the device whose datasheet declares it)",
+	                 name);
 }
 
 SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name) {

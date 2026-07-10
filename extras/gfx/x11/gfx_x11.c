@@ -8,8 +8,10 @@
  * GfxX11* pointer; pixels are 0xRRGGBB ints, presented inline via XPutImage (no MIT-SHM). */
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
+#include <X11/keysym.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 typedef struct {
 	Display *dpy;
@@ -20,7 +22,25 @@ typedef struct {
 	int w, h;
 	Atom wm_delete;
 	int open;
+	int left, right; /* ←/→ arrow key held state, updated in poll, read by gfx_be_axis_x */
+	/* Discrete key FIFO for gfx_be_key (an editor needs each keypress, not held state). Printable keys are
+	 * their ASCII byte; special keys use the sentinels below. */
+	int keyq[64];
+	int keyq_head, keyq_tail;
+	int mx, my, mdown; /* pointer position (window px) + left-button held state, for gfx_be_mouse_* */
+	int scroll;        /* wheel accumulator (Button4/Button5), drained by gfx_be_scroll */
 } GfxX11;
+
+/* Non-ASCII key sentinels returned by gfx_be_key — MUST match the browser host (gfx.js / wasm/host.js). */
+enum { GFX_KEY_LEFT = 1000, GFX_KEY_RIGHT = 1001, GFX_KEY_UP = 1002, GFX_KEY_DOWN = 1003 };
+
+static void keyq_push(GfxX11 *g, int k) {
+	int next = (g->keyq_tail + 1) % (int)(sizeof(g->keyq) / sizeof(g->keyq[0]));
+	if (next == g->keyq_head)
+		return; /* full — drop */
+	g->keyq[g->keyq_tail] = k;
+	g->keyq_tail = next;
+}
 
 /* (Re)allocate the framebuffer + XImage to w x h. No-op if already that size. */
 static void ensure_size(GfxX11 *g, int w, int h) {
@@ -69,7 +89,9 @@ void *gfx_be_open(int w, int h, char *title) {
 			XFree(sh);
 		}
 	}
-	XSelectInput(dpy, win, ExposureMask | KeyPressMask | StructureNotifyMask);
+	XSelectInput(dpy, win,
+	             ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | ButtonPressMask |
+	                 ButtonReleaseMask | PointerMotionMask);
 	Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	XSetWMProtocols(dpy, win, &wm_delete, 1);
 	XMapWindow(dpy, win);
@@ -110,6 +132,23 @@ void gfx_be_present(void *handle, int *px, int w, int h) {
 	memcpy(g->buf, px, nbytes);
 	XPutImage(g->dpy, g->win, g->gc, g->img, 0, 0, 0, 0, (unsigned)g->w, (unsigned)g->h);
 	XFlush(g->dpy);
+
+	/* Frame limiter: cap to ~60 FPS. XPutImage/XFlush do NOT block on vsync, so without this the reactor's
+	 * `forever` loop spins as fast as the CPU allows and everything moves absurdly fast. arche gfx programs
+	 * step per-frame assuming ~60 Hz (that's what the browser's requestAnimationFrame gives), so pace the
+	 * native loop to the same cadence: sleep out the remainder of a 1/60 s budget since the last present. */
+	static const long FRAME_NS = 16666667L; /* 1e9 / 60 */
+	static struct timespec last = {0, 0};
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	if (last.tv_sec || last.tv_nsec) {
+		long dt = (long)(now.tv_sec - last.tv_sec) * 1000000000L + (now.tv_nsec - last.tv_nsec);
+		if (dt >= 0 && dt < FRAME_NS) {
+			struct timespec sl = {0, FRAME_NS - dt};
+			nanosleep(&sl, NULL);
+		}
+	}
+	clock_gettime(CLOCK_MONOTONIC, &last); /* stamp AFTER the sleep — the frame boundary */
 }
 
 int gfx_be_poll(void *handle) {
@@ -124,11 +163,95 @@ int gfx_be_poll(void *handle) {
 			ensure_size(g, ev.xconfigure.width, ev.xconfigure.height);
 		} else if (ev.type == ClientMessage && (Atom)ev.xclient.data.l[0] == g->wm_delete) {
 			g->open = 0;
-		} else if (ev.type == KeyPress) {
-			g->open = 0;
+		} else if (ev.type == KeyPress || ev.type == KeyRelease) {
+			/* Track the ←/→ arrows for gfx_be_axis_x AND enqueue discrete presses for gfx_be_key (an editor
+			 * needs each keystroke). Auto-repeat sends Release+Press pairs. Escape closes the window. */
+			int down = (ev.type == KeyPress);
+			char buf[16];
+			KeySym ks;
+			int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+			if (ks == XK_Left) {
+				g->left = down;
+				if (down)
+					keyq_push(g, GFX_KEY_LEFT);
+			} else if (ks == XK_Right) {
+				g->right = down;
+				if (down)
+					keyq_push(g, GFX_KEY_RIGHT);
+			} else if (ks == XK_Up) {
+				if (down)
+					keyq_push(g, GFX_KEY_UP);
+			} else if (ks == XK_Down) {
+				if (down)
+					keyq_push(g, GFX_KEY_DOWN);
+			} else if (ks == XK_Escape) {
+				if (down)
+					g->open = 0;
+			} else if (down) {
+				/* Printable + control (Enter=13, Backspace=8, Tab=9…) come through XLookupString. */
+				for (int i = 0; i < n; i++)
+					keyq_push(g, (unsigned char)buf[i]);
+			}
+		} else if (ev.type == MotionNotify) {
+			g->mx = ev.xmotion.x;
+			g->my = ev.xmotion.y;
+		} else if (ev.type == ButtonPress || ev.type == ButtonRelease) {
+			g->mx = ev.xbutton.x;
+			g->my = ev.xbutton.y;
+			if (ev.xbutton.button == Button1)
+				g->mdown = (ev.type == ButtonPress);
+			/* X11 delivers wheel scroll as Button4 (up) / Button5 (down) presses; accumulate ~200px per notch. */
+			else if (ev.type == ButtonPress && ev.xbutton.button == Button5)
+				g->scroll += 200;
+			else if (ev.type == ButtonPress && ev.xbutton.button == Button4)
+				g->scroll -= 200;
 		}
 	}
 	return g->open;
+}
+
+/* Horizontal input axis: +1 while → is held, -1 while ← is held, 0 for neither or both. */
+int gfx_be_axis_x(void *handle) {
+	GfxX11 *g = handle;
+	if (!g)
+		return 0;
+	return (g->right ? 1 : 0) - (g->left ? 1 : 0);
+}
+
+/* Next discrete key press (ASCII byte, or a GFX_KEY_* sentinel), or 0 if the queue is empty. Non-blocking:
+ * call once per frame after gfx_be_poll to drain input for an editor/text field. */
+int gfx_be_key(void *handle) {
+	GfxX11 *g = handle;
+	if (!g || g->keyq_head == g->keyq_tail)
+		return 0;
+	int k = g->keyq[g->keyq_head];
+	g->keyq_head = (g->keyq_head + 1) % (int)(sizeof(g->keyq) / sizeof(g->keyq[0]));
+	return k;
+}
+
+/* Pointer position (window pixels) + left-button held state, all updated in gfx_be_poll. */
+int gfx_be_mouse_x(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->mx : 0;
+}
+int gfx_be_mouse_y(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->my : 0;
+}
+int gfx_be_mouse_down(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->mdown : 0;
+}
+
+/* Horizontal scroll delta accumulated since the last read (wheel), then cleared — drain-and-clear like the key queue.
+ */
+int gfx_be_scroll(void *handle) {
+	GfxX11 *g = handle;
+	if (!g)
+		return 0;
+	int s = g->scroll;
+	g->scroll = 0;
+	return s;
 }
 
 void gfx_be_close(void *handle) {

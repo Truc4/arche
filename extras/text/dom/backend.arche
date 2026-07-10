@@ -1,0 +1,24 @@
+/// DOM backend for the `text` device — merged under `[select] text = "dom"`. The web-overlay renderer: each
+/// display run becomes one absolutely-positioned <span> over the gfx <canvas> (real browser fonts). Like
+/// gfx/wasm there is NO C shim: `text_be_*` stay undefined and become wasm IMPORTS the JS host (www/text.js)
+/// fulfils by creating/positioning <span>s. The seams are `#module`-private. Not a standalone test.
+///
+/// `render` re-emits every run each frame (clear + draw = an idempotent redraw), so world signs whose `tx,ty`
+/// the driver reprojects per frame track the scrolling scene. It reads the same driver display-run columns the
+/// framebuffer backend does, so a driver's text code is identical across backends. `tstr` (a `[N]char` buffer)
+/// crosses as a bare pointer; `tlen` is the live length.
+#module
+#foreign
+// `s` is borrowed in-out (the host only reads it to build a <span>), not `own` — the same FFI borrow idiom
+// gfx uses for the framebuffer in `gfx_be_present`, so a queried `[N]char` column (`tstr`) can be passed
+// without moving/copying it. The host receives (x, y, sPtr, n, size, color); `n` is the live length.
+text_be_draw  :: proc(x: int, y: int, s: []char, n: int, size: int, color: int)(s: []char);
+text_be_clear :: proc();
+
+/// Clear last frame's spans, then emit one <span> per display run at its projected (tx,ty).
+render :: system eff {
+  text_be_clear()();
+  map (query { tx, ty, tstr, tlen, tsz, tcol }) eff {
+    text_be_draw(tx, ty, tstr, tlen, tsz, tcol)(_:);
+  };
+}

@@ -2,15 +2,19 @@
 #include <fcntl.h>
 #include <float.h>
 #include <limits.h>
-#include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <sys/mman.h>
 #include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+/* wasm32-wasi has neither `mmap` nor pthreads — the file map falls back to read-into-buffer and the
+ * `cores` reduce backend degrades to a serial fold (see below). Native keeps both. */
+#ifndef __wasm__
+#include <pthread.h>
+#include <sys/mman.h>
+#endif
 
 /* Returns `float` (f32), not `double`: arche `float` is f32, and the FFI return type must match the
  * caller's ABI or it reads the wrong register bytes (garbage). For sub-second timing prefer `os.now_ms`
@@ -21,6 +25,9 @@ float os_now_sec(void) {
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (float)(ts.tv_sec + ts.tv_nsec * 1e-9);
 }
+
+/* The panic-path print (formerly arche_eputs here) now lives behind the `log_be_emit` seam — a weak
+ * default in runtime/log.c, overridable by a selected `log` device backend. See runtime/log.c. */
 
 /* The file/stdio family (stdin/stdout/stderr, fopen/fread/fwrite/fclose, fread_line,
  * csv_read_chunk) now lives in core.arche as pure-Arche syscall wrappers — a `file` is a raw
@@ -49,6 +56,25 @@ char *arche_file_map(const char *path) {
 		g_arche_map_size = 0;
 		return 0;
 	}
+#ifdef __wasm__
+	/* No mmap under wasm: read the whole file into a malloc'd buffer (freed by arche_file_unmap). */
+	char *data = (st.st_size > 0) ? malloc((size_t)st.st_size) : malloc(1);
+	if (!data) {
+		close(fd);
+		g_arche_map_size = 0;
+		return 0;
+	}
+	long off = 0;
+	while (off < (long)st.st_size) {
+		long r = (long)read(fd, data + off, (size_t)((long)st.st_size - off));
+		if (r <= 0)
+			break;
+		off += r;
+	}
+	close(fd);
+	g_arche_map_size = off;
+	return data;
+#else
 	char *data = mmap(0, st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
 	close(fd);
 	if (data == MAP_FAILED) {
@@ -58,6 +84,7 @@ char *arche_file_map(const char *path) {
 	madvise(data, st.st_size, MADV_SEQUENTIAL);
 	g_arche_map_size = (long)st.st_size;
 	return data;
+#endif
 }
 
 long arche_file_size(void) {
@@ -65,8 +92,13 @@ long arche_file_size(void) {
 }
 
 void arche_file_unmap(char *data, long size) {
+#ifdef __wasm__
+	(void)size;
+	free(data);
+#else
 	if (data)
 		munmap(data, (size_t)size);
+#endif
 }
 
 /* =========================
@@ -114,6 +146,27 @@ enum { PR_ADD = 0, PR_MUL = 1, PR_MIN = 2, PR_MAX = 3 };
 #define PR_MAX_THREADS 16
 #define PR_MIN_PER_THREAD 16384
 
+#ifdef __wasm__
+/* wasm32 has no threads: the `cores` reduce backend is a serial monoid fold. codegen declares
+ * `arche_par_reduce_<T>` unconditionally, so we still define them — just single-threaded. */
+#define PR_GEN(NAME, T, ID_MIN, ID_MAX)                                                                                \
+	T arche_par_reduce_##NAME(const T *col, long long n, int op) {                                                     \
+		T acc = (op == PR_ADD) ? (T)0 : (op == PR_MUL) ? (T)1 : (op == PR_MIN) ? (T)(ID_MIN) : (T)(ID_MAX);            \
+		for (long long i = 0; i < n; i++) {                                                                            \
+			T v = col[i];                                                                                              \
+			if (op == PR_ADD)                                                                                          \
+				acc = acc + v;                                                                                         \
+			else if (op == PR_MUL)                                                                                     \
+				acc = acc * v;                                                                                         \
+			else if (op == PR_MIN) {                                                                                   \
+				if (v < acc)                                                                                           \
+					acc = v;                                                                                           \
+			} else if (v > acc)                                                                                        \
+				acc = v;                                                                                               \
+		}                                                                                                              \
+		return acc;                                                                                                    \
+	}
+#else
 static int pr_nthreads(long long n) {
 	long ncpu = sysconf(_SC_NPROCESSORS_ONLN);
 	if (ncpu < 1)
@@ -193,6 +246,7 @@ static int pr_nthreads(long long n) {
 		}                                                                                                              \
 		return acc;                                                                                                    \
 	}
+#endif /* __wasm__ */
 
 PR_GEN(f32, float, FLT_MAX, -FLT_MAX)
 PR_GEN(i32, int32_t, INT32_MAX, INT32_MIN)

@@ -173,6 +173,7 @@ typedef enum {
 	SEM_DIAG_wrong_arity,
 	SEM_DIAG_non_exhaustive_match,
 	SEM_DIAG_callable_in_archetype,
+	SEM_DIAG_unknown_component,
 	SEM_DIAG_wildcard_in_enum_match,
 
 	/* Query (`map(Name)` / `run`) — E0215+ */
@@ -252,6 +253,10 @@ typedef enum {
 	                                      result-dependent sequence decomposes across systems (producer writes a
 	                                      column, consumer reads it). Default WARN; flip to error once stdlib is
 	                                      converted. W0030. */
+	SEM_LINT_dead_write_binding,       /* a column named in a kernel's `(writes)` list is never actually written
+	                                      in the body (nor any nested fan) — a dead write-back binding, e.g. a
+	                                      `(col:)` out-binder shadows the queried column so the write lands on a
+	                                      throwaway local. W0031. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -325,6 +330,7 @@ SemDiag *sem_emit_meta_type_invalid_position(SemanticContext *ctx, SourceLoc loc
 SemDiag *sem_emit_non_exhaustive_match(SemanticContext *ctx, SourceLoc loc, const char *missing);
 SemDiag *sem_emit_wildcard_in_enum_match(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_callable_in_archetype(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_unknown_component(SemanticContext *ctx, SourceLoc loc, const char *name);
 
 SemDiag *sem_emit_opaque_not_consumed(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_cannot_copy_opaque(SemanticContext *ctx, SourceLoc loc, const char *name);
@@ -363,6 +369,7 @@ SemDiag *sem_emit_proc_under_applied(SemanticContext *ctx, SourceLoc loc, const 
 SemDiag *sem_emit_eff_extern_not_static(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_lint_unused_query(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_dead_write_binding(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_filter_type_not_primitive(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_invalid_rhs(SemanticContext *ctx, SourceLoc loc, const char *name);

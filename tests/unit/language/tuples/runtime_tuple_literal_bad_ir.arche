@@ -1,0 +1,19 @@
+// A runtime tuple literal `return (a, b)` from two computed scalars packs a `{T,…}` aggregate (insertvalue)
+// and returns it — a first-class tuple value, not a `ptr`. The caller binds the result and reads its fields
+// via the func's named return type `pos`. (Previously this lowered to invalid IR: a `ptr` returned where
+// `{ float, float }` was expected.)
+// RUN: %arche run %s | grep -qxF "v=3.0 4.0"
+#import { fmt }
+
+pos(x, y) :: float;
+
+mk :: func(a: float, b: float) -> pos {
+  return (a, b);
+}
+
+go :: system eff {
+  v := mk(3.0, 4.0);
+  fmt.printf("v=%.1f %.1f\n", v.x, v.y);
+}
+
+#run seq({ go })

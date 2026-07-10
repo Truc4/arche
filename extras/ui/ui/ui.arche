@@ -1,0 +1,14 @@
+content_top :: func(py: int) -> int {
+  return py + PAD + TITLE_H;
+}
+
+content_x :: func(px: int) -> int {
+  return px + PAD;
+}
+content_w :: func(pw: int) -> int {
+  return pw - PAD - PAD;
+}
+
+next :: func(cy: int, h: int) -> int {
+  return cy + h + GAP;
+}

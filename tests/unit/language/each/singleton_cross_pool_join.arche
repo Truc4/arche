@@ -1,0 +1,27 @@
+// A map whose columns live on DIFFERENT single-row (`[1]`) pools is a cross-pool singleton JOIN: no single
+// archetype owns every column, so the fan drives over the first column's pool and broadcasts the rest. This
+// is the `else` branch of the all-singleton driver selection — it must keep working alongside the fix that
+// makes a self-contained singleton (one archetype owning all columns) fan only itself (see
+// array_column_sibling_layout_bind.arche). Here P owns `a`=5, Q owns `b`=7; the join prints 12.
+// RUN: %arche run %s | grep -qx "12"
+#import { fmt }
+
+a :: int;
+b :: int;
+
+P :: arche { a }
+Q :: arche { b }
+[1]P ?abort;
+[1]Q ?abort;
+
+seed :: system eff {
+  insert(P { a: 5 })(_:, _ok:);
+  insert(Q { b: 7 })(_:, _ok:);
+}
+join :: system eff {
+  map (query { a, b }) eff {
+    fmt.printf("%d\n", a + b);
+  };
+}
+
+#run seq({ seed, join })

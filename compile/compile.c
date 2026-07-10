@@ -3,6 +3,7 @@
 #include "../codegen/codegen.h"
 #include "../codegen/gpu_embed.h"
 #include "../codegen/gpu_glsl.h"
+#include "../codegen/wasmgen.h"
 #include "../lexer/lexer.h"
 #include "../lower/lower.h"
 #include "../parser/parser.h"
@@ -14,6 +15,9 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#ifndef __wasi__
+#include <sys/resource.h> /* native only: RLIMIT_AS tweak around the clang child (unreachable on wasm) */
+#endif
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -192,6 +196,40 @@ static void compile_add_c_shim(void *ctx, const char *path) {
 		g_c_shims[g_c_shim_count++] = strcpy(malloc(strlen(path) + 1), path);
 }
 
+/* Browser host files (`.js`) discovered in device folders / selected variant subfolders — the wasm/dom
+ * backend glue. Collected like the C shims but EMITTED (concatenated next to the `.wasm`), not linked; only a
+ * wasm build consumes them. Deduped; reset in resolve_uses. */
+static char *g_js_hosts[MAX_LOADED_MODS];
+static int g_js_host_count;
+
+static void compile_add_js_host(void *ctx, const char *path) {
+	(void)ctx;
+	for (int i = 0; i < g_js_host_count; i++)
+		if (strcmp(g_js_hosts[i], path) == 0)
+			return;
+	if (g_js_host_count < MAX_LOADED_MODS)
+		g_js_hosts[g_js_host_count++] = strcpy(malloc(strlen(path) + 1), path);
+}
+
+/* Copy `src` → `dst` verbatim. Returns 0 on success, -1 otherwise. */
+static int copy_file(const char *src, const char *dst) {
+	FILE *s = fopen(src, "rb");
+	if (!s)
+		return -1;
+	FILE *d = fopen(dst, "wb");
+	if (!d) {
+		fclose(s);
+		return -1;
+	}
+	char buf[8192];
+	size_t n;
+	while ((n = fread(buf, 1, sizeof(buf), s)) > 0)
+		fwrite(buf, 1, n, d);
+	fclose(s);
+	fclose(d);
+	return 0;
+}
+
 /* Append the collected device C shims and `#link` `-l<lib>` flags to a cc command being assembled in
  * `cmd` (current length *len, capacity cap). Shims precede the `-l` libs so the linker resolves a
  * shim's library references (left-to-right). Returns 0, or -1 if appending would overflow — the caller
@@ -287,11 +325,20 @@ static int build_unit_object_cached(const char *unit_ll, const char *workdir, in
 	snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o %s %s", objtmp, asmf);
 	if (system(cmd) != 0)
 		return 1;
-	/* Publish atomically into the cache (rename; cp across filesystems). */
+	/* Publish atomically into the cache. A plain rename is atomic within a filesystem; when the workdir
+	 * (tmpfs `/tmp`) and the cache (on-disk project) differ, rename fails EXDEV, so copy to a UNIQUE temp
+	 * IN the cache dir and rename WITHIN it — still atomic. A bare `cp` straight to `obj_out` is NOT atomic:
+	 * a concurrent run's `pe_exists(obj_out)` would see the half-written object and link a truncated unit. */
 	if (rename(objtmp, obj_out) != 0) {
-		snprintf(cmd, sizeof(cmd), "cp %s %s", objtmp, obj_out);
+		char cptmp[900];
+		snprintf(cptmp, sizeof(cptmp), "%s/.%s.%ld.tmp", cache_dir, hash, (long)getpid());
+		snprintf(cmd, sizeof(cmd), "cp %s %s", objtmp, cptmp);
 		if (system(cmd) != 0)
 			return 1;
+		if (rename(cptmp, obj_out) != 0) {
+			unlink(cptmp);
+			return 1;
+		}
 	}
 	return 0;
 }
@@ -347,7 +394,10 @@ static int build_unit_so(const char *unit_ll, const char *workdir, int u, const 
 	 * host only ever sees the old `.so` or the complete new one.
 	 * (`-Wl,-z,undefs`, the -shared default, leaves host-provided symbols undefined until load.) */
 	char so_tmp[1400];
-	snprintf(so_tmp, sizeof(so_tmp), "%s.tmp", out_so);
+	/* Per-PROCESS temp name: concurrent `arche run`s of sibling files share this `.arche-hot` dir, so a fixed
+	 * `<out_so>.tmp` would let one run's rename race another's (mv: "cannot stat"). A pid-tagged temp keeps
+	 * each build private; the rename into the shared `out_so` stays atomic (same dir). */
+	snprintf(so_tmp, sizeof(so_tmp), "%s.%ld.tmp", out_so, (long)getpid());
 	snprintf(cmd, sizeof(cmd), "cc -shared -fPIC -o %s %s", so_tmp, asmf);
 	if (system(cmd) != 0)
 		return 1;
@@ -475,7 +525,13 @@ static const char *compile_select_variant(void *ctx, const char *mod_name) {
 }
 
 static const ModuleResolver g_compile_resolver = {
-    NULL, compile_mark_seen, compile_register_file, compile_mark_device, compile_select_variant, compile_add_c_shim,
+    NULL,
+    compile_mark_seen,
+    compile_register_file,
+    compile_mark_device,
+    compile_select_variant,
+    compile_add_c_shim,
+    compile_add_js_host,
 };
 
 /* Load a plain MODULE imported by PATH (`#import { "./util" }`). */
@@ -508,6 +564,9 @@ static void resolve_uses(const SyntaxNode *syntax_root, const char *src, const c
 	for (int i = 0; i < g_c_shim_count; i++)
 		free(g_c_shims[i]);
 	g_c_shim_count = 0;
+	for (int i = 0; i < g_js_host_count; i++)
+		free(g_js_hosts[i]);
+	g_js_host_count = 0;
 	g_resolve_errors = 0;
 
 	char *source_dir = source_dir_of(source_path);
@@ -682,6 +741,13 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	codegen_set_shared(emit == EMIT_SHARED ? 1 : 0);
 	if (emit == EMIT_SHARED)
 		codegen_force_whole_program();
+	/* `--arch=wasm32`: emit the wasm triple + lower syscalls to the `@arche_syscall` shim. Set explicitly
+	 * each call (a global; the in-process doctest runner reuses this entry) so it never leaks into a later
+	 * native build. wasm is whole-program (one clang link over the merged IR; no per-unit `.so`s). */
+	int target_wasm = (opts && opts->target == TARGET_WASM32);
+	codegen_set_target_wasm(target_wasm);
+	if (target_wasm)
+		codegen_force_whole_program();
 	/* Dev hot-reload is driven internally (no user flag): the run path sets ARCHE_HOT_DIR. Enabling it
 	 * implies per-unit (each device → its own reloadable `.so`). `arche build` never sets it → release
 	 * stays direct-call. (Internal env, set by `arche run`; also lets tests exercise the path.) */
@@ -762,6 +828,16 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	char temp_ir[512] = "", opt_file[512] = "", asm_file[512] = "";
 	char workdir[] = "/tmp/arche_XXXXXX";
 	int have_workdir = 0;
+
+	/* DIRECT wasm backend (ARCHE_WASMGEN=1): lower HIR straight to a self-contained `.wasm` — no LLVM IR,
+	 * no clang/wasm-ld. Bypasses the whole opt→llc→clang chain below. Env-gated for now (a `--backend=wasm`
+	 * flag can replace it). Placed after the temp-file state is initialized so `goto cleanup` is well-defined. */
+	if (target_wasm && getenv("ARCHE_WASMGEN")) {
+		rc = wasmgen_generate(ast, sem_ctx, out_path) ? 0 : 1;
+		if (!quiet && rc == 0)
+			printf("Generated wasm (direct backend): %s\n", out_path);
+		goto cleanup;
+	}
 	/* Per-unit codegen needs a work dir for the per-unit `.ll` modules even when the final deliverable
 	 * is raw IR (it llvm-links them into out_path). */
 	int per_unit_build = codegen_per_unit_enabled();
@@ -904,9 +980,9 @@ int compile_source(const char *user_source, const char *source_path, const char 
 			}
 			char cc_cmd[1 << 16];
 			int cl = snprintf(cc_cmd, sizeof(cc_cmd),
-			                  "cc -rdynamic -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o "
+			                  "cc -rdynamic -no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/log.o %s/net.o "
 			                  "%s/term.o %s/hotreload.o %s/inspect.o -ldl -lc",
-			                  out_path, u0_obj, rt, rt, rt, rt, rt, rt);
+			                  out_path, u0_obj, rt, rt, rt, rt, rt, rt, rt);
 			if (cl < 0 || cl >= (int)sizeof(cc_cmd)) {
 				fprintf(stderr, "link command too long\n");
 				rc = 1;
@@ -986,7 +1062,7 @@ int compile_source(const char *user_source, const char *source_path, const char 
 				cl += m;
 			}
 			int m = snprintf(cc_cmd + cl, sizeof(cc_cmd) - (size_t)cl,
-			                 " %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc", rt, rt, rt, rt);
+			                 " %s/stack_check.o %s/io.o %s/log.o %s/net.o %s/term.o -lc", rt, rt, rt, rt, rt);
 			if (m < 0 || m >= (int)sizeof(cc_cmd) - cl) {
 				fprintf(stderr, "link command too long\n");
 				rc = 1;
@@ -1048,6 +1124,114 @@ int compile_source(const char *user_source, const char *source_path, const char 
 		printf("Generated LLVM IR: %s\n", ir_file);
 
 	if (emit == EMIT_LLVM_IR) {
+		rc = 0;
+		goto cleanup;
+	}
+
+	/* wasm32-wasi: ONE clang invocation replaces the whole native opt→llc→cc→link chain — it compiles the
+	 * whole-program IR + the portable runtime shims (arche_syscall.c, io.c) and links wasi-libc via wasm-ld.
+	 * Needs a WASI sysroot: `$ARCHE_WASI_SDK`/`$WASI_SDK_PATH` (a wasi-sdk install) or the system
+	 * `/usr/share/wasi-sysroot` (e.g. Arch's wasi-libc). Only a full link (a `.wasm`) is supported. */
+	if (target_wasm) {
+		if (emit != EMIT_LINK) {
+			fprintf(stderr, "--arch=wasm32 supports only a full link (a `.wasm`) or --emit=llvm-ir\n");
+			goto cleanup;
+		}
+		const char *sdk = getenv("ARCHE_WASI_SDK");
+		if (!sdk || !sdk[0])
+			sdk = getenv("WASI_SDK_PATH");
+		char clangbuf[512], sysarg[600] = "";
+		const char *clang = "clang";
+		if (sdk && sdk[0]) {
+			snprintf(clangbuf, sizeof(clangbuf), "%s/bin/clang", sdk);
+			clang = clangbuf;
+			snprintf(sysarg, sizeof(sysarg), "--sysroot=%s/share/wasi-sysroot ", sdk);
+		} else if (access("/usr/share/wasi-sysroot", F_OK) == 0) {
+			snprintf(sysarg, sizeof(sysarg), "--sysroot=/usr/share/wasi-sysroot ");
+		}
+		const char *rt = arche_resource_dir(ARCHE_RES_RUNTIME);
+		/* Device backends (e.g. gfx) are shim-less on wasm: their `gfx_be_*` externs are left undefined so
+		 * `--allow-undefined` turns them into `env` imports the JS host provides (it owns the <canvas>). And
+		 * a reactor build (a #run with a top-level `forever`) has no @main — it exports arche_run/arche_frame
+		 * for the browser's rAF loop to drive, so link as a wasi reactor and keep those symbols. */
+		const char *reactor_args =
+		    codegen_was_reactor() ? "-mexec-model=reactor -Wl,--export=arche_run,--export=arche_frame " : "";
+		char cmd[2048];
+		int m = snprintf(cmd, sizeof(cmd),
+		                 "%s --target=wasm32-wasip1 %s%s-Wl,--allow-undefined -O2 %s %s/arche_syscall.c %s/io.c -o %s",
+		                 clang, sysarg, reactor_args, ir_file, rt, rt, out_path);
+		if (m < 0 || m >= (int)sizeof(cmd)) {
+			fprintf(stderr, "wasm link command too long\n");
+			goto cleanup;
+		}
+		if (!quiet)
+			printf("Linking wasm module (wasm32-wasip1)...\n");
+		/* The `build` frontend caps arche's own address space (RLIMIT_AS, cmd_build.c) to bound runaway
+		 * compilation; the clang child inherits it, and clang's wasi-libc-link worker threads can't allocate
+		 * stacks under that cap → a std::system_error abort on exit (harmless — the .wasm is already written and
+		 * clang returns 0 — but it prints a scary "report a bug to LLVM"). Lift the soft cap to the hard limit
+		 * for this process (arche is done compiling; only the child link remains) so clang runs clean. */
+#ifndef __wasi__
+		{
+			struct rlimit rl;
+			if (getrlimit(RLIMIT_AS, &rl) == 0 && rl.rlim_cur != rl.rlim_max) {
+				rl.rlim_cur = rl.rlim_max;
+				setrlimit(RLIMIT_AS, &rl);
+			}
+		}
+#endif
+		if (system(cmd) != 0) {
+			fprintf(stderr, "Failed to build wasm module — need a WASI sysroot (set ARCHE_WASI_SDK to a "
+			                "wasi-sdk, or install wasi-libc)\n");
+			goto cleanup;
+		}
+		/* Emit the collected device browser hosts next to the .wasm as `<outbase>.hosts.js` — the wasm/dom
+		 * backends' glue (the twin of the `.c` shims), so the app loads ONE generated file instead of
+		 * hand-writing per-device JS. Each host registers its seams on the `archeHosts` global that
+		 * runtime/arche-web.js consumes; concatenated in collection order. */
+		if (g_js_host_count > 0) {
+			char hosts_path[600];
+			size_t ol = strlen(out_path);
+			if (ol > 5 && strcmp(out_path + ol - 5, ".wasm") == 0)
+				snprintf(hosts_path, sizeof(hosts_path), "%.*s.hosts.js", (int)(ol - 5), out_path);
+			else
+				snprintf(hosts_path, sizeof(hosts_path), "%s.hosts.js", out_path);
+			FILE *hf = fopen(hosts_path, "w");
+			if (hf) {
+				fprintf(hf, "// GENERATED by `arche build --arch=wasm32` — device browser hosts for %s. Do not edit.\n",
+				        out_path);
+				for (int i = 0; i < g_js_host_count; i++) {
+					FILE *sf = fopen(g_js_hosts[i], "r");
+					if (!sf)
+						continue;
+					fprintf(hf, "\n// ==== %s ====\n", g_js_hosts[i]);
+					char buf[8192];
+					size_t rd;
+					while ((rd = fread(buf, 1, sizeof(buf), sf)) > 0)
+						fwrite(buf, 1, rd, hf);
+					fputc('\n', hf);
+					fclose(sf);
+				}
+				fclose(hf);
+				if (!quiet)
+					printf("Generated device hosts: %s (%d host%s)\n", hosts_path, g_js_host_count,
+					       g_js_host_count == 1 ? "" : "s");
+			}
+			/* Also drop the generic browser runtime (runtime/arche-web.js) next to the .wasm, so the app has
+			 * everything from one build: `<script src=arche-web.js><script src=X.hosts.js>archeRun("X.wasm")`. */
+			char outdir[512], webjs_src[600], webjs_dst[600];
+			snprintf(outdir, sizeof(outdir), "%s", out_path);
+			char *sl = strrchr(outdir, '/');
+			if (sl)
+				*sl = '\0';
+			else
+				snprintf(outdir, sizeof(outdir), ".");
+			snprintf(webjs_src, sizeof(webjs_src), "%s/arche-web.js", rt);
+			snprintf(webjs_dst, sizeof(webjs_dst), "%s/arche-web.js", outdir);
+			copy_file(webjs_src, webjs_dst);
+		}
+		if (!quiet)
+			printf("Successfully generated wasm module: %s\n", out_path);
 		rc = 0;
 		goto cleanup;
 	}
@@ -1201,9 +1385,10 @@ int compile_source(const char *user_source, const char *source_path, const char 
 
 		char cc_cmd[8192];
 		const char *gc = codegen_per_unit_enabled() ? "-Wl,--gc-sections " : "";
-		int cc_len = snprintf(cc_cmd, sizeof(cc_cmd),
-		                      "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/net.o %s/term.o -lc",
-		                      gc, out_path, asm_file, rt, rt, rt, rt);
+		int cc_len =
+		    snprintf(cc_cmd, sizeof(cc_cmd),
+		             "cc %s-no-pie -mcmodel=large -o %s %s %s/stack_check.o %s/io.o %s/log.o %s/net.o %s/term.o -lc",
+		             gc, out_path, asm_file, rt, rt, rt, rt, rt);
 		if (cc_len < 0 || cc_len >= (int)sizeof(cc_cmd)) {
 			fprintf(stderr, "link command too long\n");
 			goto cleanup;

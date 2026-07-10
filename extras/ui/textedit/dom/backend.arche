@@ -1,0 +1,36 @@
+#module
+#foreign
+textedit_be_open :: proc(buf: []char, n: int)(buf: []char);
+#foreign
+textedit_be_text :: proc(buf: []char, cap: int)(buf: []char);
+#foreign
+textedit_be_poll_run :: proc()(r: int);
+
+open :: system eff {
+  map (query { source }) eff {
+    textedit_be_open(source, source.length)(_:);
+  };
+}
+
+text :: system eff {
+  map (query { source, len })(source, len) eff {
+    textedit_be_text(_, source.length)(source);
+    len = 0;
+    for (; len < source.length && source[len] != 0; len += 1) {
+    }
+  };
+}
+
+poll_run :: system eff {
+  map (query { submit })(submit) eff {
+    textedit_be_poll_run()(r:);
+    if (r == 1) {
+      submit = 1;
+    }
+  };
+}
+
+step :: system eff {
+}
+render :: system eff {
+}

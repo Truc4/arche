@@ -1,0 +1,40 @@
+// DOCUMENTED BUG — expected to FAIL until fixed (see README.md).
+//
+// Writing an OUTER fan's scalar column from an INNER nested fan is SILENTLY DROPPED. `follow` iterates the
+// singleton `Cam` in the outer fan (binding its scalar `ex`) and, per inner `Prop`, sets `ex` from the
+// prop's `px` — masked so only the `hero` prop (px=9) contributes. `ex` should become 9, but it stays 0,
+// with no diagnostic. (Writing an outer *tuple field* from an inner fan does work — so the drop is specific
+// to outer *scalar* columns.) This is the pattern a camera-follow needs, so the silent drop is a real trap.
+//
+// This RUN line asserts the CORRECT result (ex=9.0); it is red while the bug drops the write.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ex=9.0"
+#import { fmt }
+
+ex   :: float;
+px   :: float;
+hero :: int;
+Cam  :: arche { ex }
+Prop :: arche { px, hero }
+
+[1]Cam(1);
+[2]Prop(2);
+
+seed :: system {
+  Cam.ex    = { 0.0 };
+  Prop.px   = { 5.0, 9.0 };
+  Prop.hero = { 0, 1 };
+}
+
+follow :: system eff {
+  map (query { ex })(ex) eff {
+    map (query { px, hero }) eff {
+      ex = ex * float(1 - hero) + px * float(hero);
+    };
+  };
+}
+
+show :: system eff {
+  fmt.printf("ex=%.1f\n", Cam.ex[0]);
+}
+
+#run seq({ seed, follow, show })

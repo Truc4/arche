@@ -1,0 +1,19 @@
+// A runtime tuple literal `(a, b)` passed as an argument coerces to the parameter's named group type
+// (`pos`), so the callee reads its fields. Building the vector at the call site from two computed scalars
+// must work — `manh((a, b))` = a + b.
+// RUN: %arche run %s | grep -qxF "l=7.0"
+#import { fmt }
+
+pos(x, y) :: float;
+
+manh :: func(p: pos) -> float {
+  return p.x + p.y;
+}
+
+go :: system eff {
+  a := 3.0;
+  b := 4.0;
+  fmt.printf("l=%.1f\n", manh((a, b)));
+}
+
+#run seq({ go })

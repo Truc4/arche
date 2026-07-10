@@ -227,6 +227,13 @@ int gfx_be_poll(void *handle) {
 	return g->open;
 }
 
+/* No keyboard is wired on the Wayland backend yet (no wl_seat/wl_keyboard listener), so the horizontal
+ * input axis is an honest 0 — the window renders but does not respond to ←/→. */
+int gfx_be_axis_x(void *handle) {
+	(void)handle;
+	return 0;
+}
+
 void gfx_be_close(void *handle) {
 	GfxWL *g = handle;
 	if (!g)
@@ -246,4 +253,26 @@ void gfx_be_close(void *handle) {
 	if (g->dpy)
 		wl_display_disconnect(g->dpy);
 	free(g);
+}
+
+/* No discrete key input wired for this backend. */
+int gfx_be_key(void *handle) {
+	(void)handle;
+	return 0;
+}
+int gfx_be_mouse_x(void *handle) {
+	(void)handle;
+	return 0;
+}
+int gfx_be_mouse_y(void *handle) {
+	(void)handle;
+	return 0;
+}
+int gfx_be_mouse_down(void *handle) {
+	(void)handle;
+	return 0;
+}
+int gfx_be_scroll(void *handle) {
+	(void)handle;
+	return 0;
 }

@@ -1,0 +1,25 @@
+// Driver smoke test for the `camera` device. eye=(100,50), zoom=2, viewport centre=(240,180): a world
+// point (110,50) maps to screen (20,0)*2 + centre = (260,180); follow((100,50) → (200,50), k=0.5) eases
+// the eye x to 150. Confirms the transforms and the shared `vec` `pos`.
+// RUN: %arche run %s | grep -qxF "s=260.0 180.0 eyex=150.0"
+#import { camera vec fmt }
+
+[1]Camera(1);
+
+seed :: system {
+  Camera.eye.x = { 100.0 };
+  Camera.eye.y = { 50.0 };
+  Camera.zoom  = { 2.0 };
+}
+
+go :: system eff {
+  map (query { eye, zoom }) eff {
+    c  := vec.mk(240.0, 180.0);
+    w  := vec.mk(110.0, 50.0);
+    s  := camera.to_screen(w, eye, zoom, c);
+    e2 := camera.follow(eye, vec.mk(200.0, 50.0), 0.5);
+    fmt.printf("s=%.1f %.1f eyex=%.1f\n", s.x, s.y, e2.x);
+  };
+}
+
+#run seq({ seed, go })

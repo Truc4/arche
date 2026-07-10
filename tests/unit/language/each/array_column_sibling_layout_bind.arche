@@ -1,0 +1,42 @@
+// Binding an array column (`title`) in a map must load the array POINTER, not a scalar — even when a sibling
+// archetype (`B`) shares the surrounding columns and places a SCALAR (`len`) at the same struct field index
+// that the array occupies in the other archetype. Regression: inside a writeback system's nested map, the
+// column-bind resolved a column's KIND (scalar-load vs array-pointer) by field POSITION conflated across
+// sibling archetypes, so `B`'s scalar-at-index-4 made the bind emit `load i8` on `A`'s `title` array →
+// invalid LLVM IR ("defined with type 'i8' but expected 'ptr'"). This is what per-archetype duplicate column
+// names used to sidestep. Expected: blit copies 'h','i' (104,105) into the framebuffer.
+// RUN: %arche run %s | grep -qx "104 105"
+#import { fmt str }
+
+screen(x, y) :: int;
+size(w, h)   :: int;
+view(w, h)   :: int;
+len          :: int;
+extra        :: int;
+
+A  :: arche { screen, size, title :: [8]char, len, view }
+B  :: arche { screen, size, len, view, extra }
+Fb :: arche { framebuffer :: [64]int }
+[1]A ?abort;
+[1]B ?abort;
+[1]Fb(1);
+
+seed :: system eff {
+  insert(A { screen: (0, 0), size: (0, 0), title: "hi", len: 2, view: (0, 0) })(_:, _ok:);
+}
+
+blit :: system (query { framebuffer })(framebuffer) eff {
+  map (query { screen, size, title, len, view }) eff {
+    for (i := 0; i < len; i += 1) {
+      framebuffer[i] = title[i];
+    }
+  };
+}
+
+dump :: system eff {
+  map (query { framebuffer }) eff {
+    fmt.printf("%d %d\n", framebuffer[0], framebuffer[1]);
+  };
+}
+
+#run seq({ seed, blit, dump })

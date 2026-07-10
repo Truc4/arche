@@ -1,6 +1,7 @@
 // Integer literals in every base + `_` digit separators: hex `0x`, binary `0b`, octal `0o`, decimal — each
 // usable as a const, a local, in a comparison, and as a column array-scatter element. All decode to the
-// same value an equivalent decimal literal would (and emit decimal in the IR).
+// same value an equivalent decimal literal would (and emit decimal in the IR). Includes hex with an `e`/`E`
+// digit (`0x7E`, `0xFACE`) — the `e` is a HEX DIGIT, never a decimal exponent, so these stay integers.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ok"
 #import { fmt }
 RED  :: 0xFF0000; // 16711680
@@ -9,7 +10,7 @@ PERM :: 0o755; // 493
 BIG  :: 1_000_000;
 v    :: int;
 N    :: arche { v }
-[4]N(4);
+[6]N(6);
 entry :: system eff {
   fmt.assert(RED == 16711680, "hex const\n")();
   fmt.assert(MASK == 10, "bin const\n")();
@@ -25,11 +26,14 @@ entry :: system eff {
   fmt.assert(o == 15, "oct local\n")();
   fmt.assert(s == 2500, "underscore local\n")();
 
-  N.v = { 0x10, 0b100, 0o7, 1_0 }; // 16, 4, 7, 10 — mixed bases in one column scatter
+  N.v = { 0x10, 0b100, 0o7, 1_0, 0x7E, 0xFACE }; // 16, 4, 7, 10, 126, 64206 — mixed bases + hex `E` digit,
+  // all scattered into an `int` column (rejects a float)
   fmt.assert(N.v[0] == 16, "scatter hex\n")();
   fmt.assert(N.v[1] == 4, "scatter bin\n")();
   fmt.assert(N.v[2] == 7, "scatter oct\n")();
   fmt.assert(N.v[3] == 10, "scatter sep\n")();
+  fmt.assert(N.v[4] == 126, "scatter hex E-digit\n")();
+  fmt.assert(N.v[5] == 64206, "scatter hex E-trailing\n")();
   fmt.printf("ok\n");
 }
 

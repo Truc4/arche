@@ -11,6 +11,40 @@ dims :: func(h: window) -> Eff(int, int) {
   return zip(gfx_be_w(h), gfx_be_h(h));
 }
 
+/// The window's horizontal input axis as one Eff: -1 while a left key (←/A) is held, +1 while a right key
+/// (→/D) is held, 0 otherwise. A step system binds it — `gfx.axis_x(handle)(dx:)` — and folds `dx` into a
+/// position. Backends that have no keyboard wired (headless, wayland) report 0.
+axis_x :: func(h: window) -> Eff(int) {
+  return gfx_be_axis_x(h);
+}
+
+/// The next discrete key press as one Eff — the typed ASCII byte (Enter=13, Backspace=8, Tab=9…) or a
+/// GFX_KEY_* sentinel (arrows: left=1000, right=1001, up=1002, down=1003), or 0 when nothing is queued. A
+/// step system drains it each frame — `gfx.key(handle)(k:)` — to feed an editor/text field. Non-blocking.
+key :: func(h: window) -> Eff(int) {
+  return gfx_be_key(h);
+}
+
+/// The pointer as three Effs: window-pixel x/y, and 1 while the left button is held (0 otherwise). A step system
+/// binds them — `gfx.mouse_x(handle)(mx:); gfx.mouse_y(handle)(my:); gfx.mouse_down(handle)(down:)` — so e.g. a
+/// button device can hit-test its rect. Backends with no pointer (headless) report 0.
+mouse_x :: func(h: window) -> Eff(int) {
+  return gfx_be_mouse_x(h);
+}
+mouse_y :: func(h: window) -> Eff(int) {
+  return gfx_be_mouse_y(h);
+}
+mouse_down :: func(h: window) -> Eff(int) {
+  return gfx_be_mouse_down(h);
+}
+
+/// The horizontal scroll delta accumulated since the last read (drain-and-clear like `key`), fed by the mouse
+/// wheel and a touch swipe. A step system folds it into a scroll position — `gfx.scroll(handle)(d:)`. Positive
+/// = scroll the world right. Backends with no wheel/touch (headless) report 0.
+scroll :: func(h: window) -> Eff(int) {
+  return gfx_be_scroll(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {

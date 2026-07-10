@@ -1,0 +1,17 @@
+// A runtime tuple literal is N-ary, not just pairs: `(a, b, c)` returns a `{T,T,T}` aggregate for a 3-field
+// named group (`v3(x,y,z)`). The same insertvalue packing generalizes to any arity.
+// RUN: %arche run %s | grep -qxF "v=3.0 4.0 5.0"
+#import { fmt }
+
+v3(x, y, z) :: float;
+
+mk :: func(a: float, b: float, c: float) -> v3 {
+  return (a, b, c);
+}
+
+go :: system eff {
+  r := mk(3.0, 4.0, 5.0);
+  fmt.printf("v=%.1f %.1f %.1f\n", r.x, r.y, r.z);
+}
+
+#run seq({ go })

@@ -1,0 +1,16 @@
+screen(x, y) :: int;
+size(w, h)   :: int;
+view(w, h)   :: int;
+mouse(x, y)  :: int;
+
+len        :: int;
+cursor     :: int;
+submit     :: int;
+key        :: int;
+clicked    :: int;
+wasdown    :: int;
+mouse_down :: int;
+
+PAD     :: 18;
+GAP     :: 14;
+TITLE_H :: 34;

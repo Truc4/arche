@@ -1,0 +1,10 @@
+// A const ARRAY must be readable across a module boundary exactly like a scalar const. Today
+// `constmod.SCALAR` resolves fine, but `constmod.TBL[1]` errors — "type 'i32' has no field 'TBL'" — so
+// module-qualified access to an array const is dropped (the base is mis-typed as the element scalar).
+// RED until the compiler resolves a foreign module's array const like its scalar consts.
+// RUN: rm -rf %t.cm && mkdir -p %t.cm && cp -r %repo/tests/unit/language/declarations/constmod %t.cm/ && cp %s %t.cm/app.arche && cd %t.cm && %arche build -o app app.arche && ./app | grep -qx "v=20 s=42"
+#import { constmod fmt }
+go :: system eff {
+  fmt.printf("v=%d s=%d\n", constmod.TBL[1], constmod.SCALAR);
+}
+#run seq({ go })

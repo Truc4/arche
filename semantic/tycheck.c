@@ -5,6 +5,7 @@
 #include "sem_model.h"
 #include "sem_types.h"
 
+#include "../lexer/lexer.h"
 #include "../syntax/syntax_tree.h"
 #include "../syntax/syntax_view.h"
 #include "../syntax/type_ref.h"
@@ -51,13 +52,26 @@ static char *literal_lexeme(SyntaxView e) {
 	return sem_cv_dup_first_token(e);
 }
 
+/* Is a number-literal lexeme a float? Int-ness is deferred to arche_int_lit — the ONE integer grammar
+ * shared with codegen/const-folding/CTFE — so a based literal like `0x7E` is an INT (the `E` is a hex
+ * digit, not a decimal exponent); only an unprefixed value arche_int_lit rejects yet that carries a
+ * '.'/'e'/'E' (e.g. `1.5`, `1e3`) is a float. Strings/chars are neither. */
+static int lit_is_float(const char *lex) {
+	if (!lex || lex[0] == '"' || lex[0] == '\'')
+		return 0;
+	long long v;
+	if (arche_int_lit(lex, &v))
+		return 0;
+	return strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E');
+}
+
 /* Untyped-literal flexibility (Rust/Go model): a literal whose value can plausibly inhabit
  * `expected` is accepted. */
 static int check_literal_fits(const TypeArena *arena, SemanticContext *ctx, SyntaxView e, TypeId expected) {
 	char *lex = literal_lexeme(e);
 	if (!lex)
 		return 0;
-	int is_float_lit = (lex[0] != '"' && lex[0] != '\'' && (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E')));
+	int is_float_lit = lit_is_float(lex);
 	int is_int_lit = (lex[0] != '"' && lex[0] != '\'' && !is_float_lit);
 	int is_char_lit = (lex[0] == '\'');
 	free(lex);
@@ -218,7 +232,7 @@ static TypeId synth(TyCtx *cx, SyntaxView e) {
 			r = tyid_of_prim(cx->arena, PRIM_STR);
 		else if (lex[0] == '\'')
 			r = tyid_of_prim(cx->arena, PRIM_CHAR);
-		else if (strchr(lex, '.') || strchr(lex, 'e') || strchr(lex, 'E'))
+		else if (lit_is_float(lex))
 			r = tyid_of_prim(cx->arena, PRIM_FLOAT);
 		else
 			r = tyid_of_prim(cx->arena, PRIM_INT);

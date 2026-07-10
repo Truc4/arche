@@ -35,6 +35,14 @@ static int merge_arche_dir(const ModuleResolver *r, const char *mod_name, const 
 			r->add_c_shim(r->ctx, cp);
 			continue;
 		}
+		/* A `.js` browser host — the wasm/dom backend's glue, the twin of the `.c` shim. Collected the same
+		 * variant-aware way; the wasm build emits the selected ones next to the `.wasm`. */
+		if (r->add_js_host && has_suffix(ent->d_name, ".js")) {
+			char jp[1300];
+			snprintf(jp, sizeof(jp), "%s/%s", folder, ent->d_name);
+			r->add_js_host(r->ctx, jp);
+			continue;
+		}
 		if (!has_suffix(ent->d_name, ".arche"))
 			continue;
 		char fp[1300];

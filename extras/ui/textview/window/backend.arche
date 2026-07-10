@@ -1,0 +1,68 @@
+#import { ui }
+
+OUT_BG  :: 0x11151f;
+OUT_COL :: 0xa6e3a1;
+OUT_TSZ :: 18;
+
+render :: system (query { framebuffer })(framebuffer) eff {
+  map (query { output, len, screen, size, view }) eff {
+    bx0 := screen.x;
+    by0 := screen.y;
+    bx1 := screen.x + size.w;
+    by1 := screen.y + size.h;
+    if (bx0 < 0) {
+      bx0 = 0;
+    }
+    if (by0 < 0) {
+      by0 = 0;
+    }
+    if (bx1 > view.w) {
+      bx1 = view.w;
+    }
+    if (by1 > view.h) {
+      by1 = view.h;
+    }
+    for (yy := by0; yy < by1; yy += 1) {
+      for (xx := bx0; xx < bx1; xx += 1) {
+        framebuffer[yy * view.w + xx] = OUT_BG;
+      }
+    }
+    s     := OUT_TSZ / 8;
+    adv   := 8 * s;
+    pitch := OUT_TSZ + 4;
+    penx  := screen.x + 6;
+    peny  := screen.y + 4;
+    for (i := 0; i < len; i += 1) {
+      c := output[i];
+      if (c == 10) {
+        penx = screen.x + 6;
+        peny = peny + pitch;
+        continue;
+      }
+      if (c >= 32 && c <= 126) {
+        gi := c - 32;
+        for (row := 0; row < 8; row += 1) {
+          b := ui.GLYPHS[gi * 8 + row];
+          for (col := 0; col < 8; col += 1) {
+            if (b >= 128) {
+              gx0 := penx + col * s;
+              gy0 := peny + row * s;
+              for (py := gy0; py < gy0 + s; py += 1) {
+                if (py >= by0 && py < by1) {
+                  for (px := gx0; px < gx0 + s; px += 1) {
+                    if (px >= bx0 && px < bx1) {
+                      framebuffer[py * view.w + px] = OUT_COL;
+                    }
+                  }
+                }
+              }
+              b = b - 128;
+            }
+            b = b * 2;
+          }
+        }
+        penx = penx + adv;
+      }
+    }
+  };
+}

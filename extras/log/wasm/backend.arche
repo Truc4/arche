@@ -1,0 +1,5 @@
+/// WASM backend for the `log` device — merged under `log = "wasm"`. Like gfx/wasm there is NO C shim: the
+/// wasm link drops device C shims, so `log_be_emit` (declared in core) stays undefined and becomes a wasm
+/// IMPORT the JS host fulfils (console.debug/info/warn/error, keyed by level). This folder is just the
+/// variant marker — the host provides the definition. Not a standalone test.
+// RUN: true

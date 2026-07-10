@@ -1,0 +1,18 @@
+#module
+#foreign
+button_be_label :: proc(s: []char, n: int)(s: []char);
+#foreign
+button_be_poll :: proc()(clicked: int);
+
+render :: system eff {
+  map (query { label, len }) eff {
+    button_be_label(label, len)(_:);
+  };
+}
+
+poll :: system eff {
+  map (query { clicked })(clicked) eff {
+    button_be_poll()(c:);
+    clicked = c;
+  };
+}

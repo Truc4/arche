@@ -1,0 +1,5 @@
+// Support module: a scalar const and an array const in the behavior file, so a consumer proves that
+// module-qualified access works for BOTH kinds. Not run directly.
+// RUN: true
+SCALAR :: 42;
+TBL    :: { 10, 20, 30, 40 }

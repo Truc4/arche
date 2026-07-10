@@ -26,6 +26,7 @@ enum {
 	B_UNCHECKED,
 	B_SELECT,
 	B_TARGET,
+	B_ARCH,
 	B_INCREMENTAL,
 	B_WHOLE_PROGRAM,
 	B_EXPORTED_MUTABLE,
@@ -68,6 +69,8 @@ static const ArgSpec k_build_specs[] = {
      "select a device's variant subfolder (repeatable; overrides arche.toml and ARCHE_SELECT)"},
     {B_TARGET, "--target", ARG_VALUE, 0, 0, "<name>",
      "select the active target/platform profile (overrides arche.toml `target` and ARCHE_TARGET)"},
+    {B_ARCH, "--arch", ARG_VALUE, 0, 0, "<arch>",
+     "codegen architecture: native (default) | wasm32 (wasm32-wasi, needs a WASI sysroot)"},
     {B_INCREMENTAL, "--incremental", ARG_FLAG, 0, 0, NULL,
      "device-granular incremental build: cache each device's object, reuse unchanged ones (no cross-unit inlining)"},
     {B_WHOLE_PROGRAM, "--whole-program", ARG_FLAG, 0, 0, NULL,
@@ -243,10 +246,18 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 		}
 	}
 
-	/* Limit memory to 512MB to prevent runaway compilation. */
+	/* Limit memory to 512MB to prevent runaway compilation — the SOFT limit only. Leaving the HARD limit at
+	 * its original value lets a later stage restore the cap for a child that needs more (the wasm backend
+	 * shells to clang, whose wasi-libc-link worker threads can't allocate stacks under 512MB — compile.c
+	 * raises the soft limit back to the hard one for that link). */
 	struct rlimit mem_limit;
+	if (getrlimit(RLIMIT_AS, &mem_limit) != 0) {
+		perror("Error: Could not read memory limit");
+		return ARCHE_ERR;
+	}
 	mem_limit.rlim_cur = 512 * 1024 * 1024;
-	mem_limit.rlim_max = 512 * 1024 * 1024;
+	if (mem_limit.rlim_max != RLIM_INFINITY && mem_limit.rlim_max < mem_limit.rlim_cur)
+		mem_limit.rlim_cur = mem_limit.rlim_max;
 	if (setrlimit(RLIMIT_AS, &mem_limit) != 0) {
 		perror("Error: Could not set memory limit");
 		return ARCHE_ERR;
@@ -290,6 +301,20 @@ int build_run(int argc, char **argv, const GlobalOpts *g) {
 	/* GPU is DERIVED from the machine profile (like placement), not a required flag: on iff a device is
 	 * present + glslc, unless forced. `--gpu` forces on, `--no-gpu`/`ARCHE_NO_GPU` forces CPU-only. */
 	opts.gpu = compile_gpu_auto(args_has(&p, B_GPU), args_has(&p, B_NO_GPU) || getenv("ARCHE_NO_GPU") != NULL);
+
+	/* `--arch=wasm32` retargets codegen + toolchain to wasm32-wasi; anything else is the native default. */
+	const char *arch = args_value(&p, B_ARCH);
+	if (arch) {
+		if (strcmp(arch, "wasm32") == 0)
+			opts.target = TARGET_WASM32;
+		else if (strcmp(arch, "native") != 0) {
+			fprintf(stderr, "%s: unknown --arch '%s' (want: native, wasm32)\n", g_prog, arch);
+			free(source);
+			return ARCHE_USAGE;
+		}
+	}
+	if (opts.target == TARGET_WASM32)
+		opts.gpu = 0; /* no Vulkan under wasm — @gpu maps CPU-fallback */
 
 	int rc = compile_source(source, input_file, output_file, &opts);
 	free(source);

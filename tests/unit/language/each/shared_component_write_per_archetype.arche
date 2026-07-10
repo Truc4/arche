@@ -1,0 +1,42 @@
+// A component (`len`) shared by two DIFFERENT archetypes (A, B) must be written per-archetype: a map that
+// matches only A (via A's unique marker `mark_a`) and writes `len` must update A's row only, leaving B's row
+// untouched. Regression (BUG — this test is RED): the write to the shared component BROADCASTS to every
+// archetype that owns it, so writing A's `len` also clobbered B's `len` (B prints 5 instead of its seeded 9).
+// This is the defect that forces per-archetype duplicate column names — it makes the shared-vocabulary ECS
+// style (one `len`/`pos`/`color` reused across archetypes) silently corrupt sibling rows, and a shared loop
+// counter written+read in a map spins forever. Expected once fixed: A=5 (written), B=9 (untouched).
+// RUN: %arche run %s | grep -qx "A=5"
+// RUN: %arche run %s | grep -qx "B=9"
+#import { fmt }
+
+len    :: int;
+mark_a :: int;
+mark_b :: int;
+
+A :: arche { mark_a, len }
+B :: arche { mark_b, len }
+[1]A ?abort;
+[1]B ?abort;
+
+seed :: system eff {
+  insert(A { mark_a: 0, len: 0 })(_:, _ok:);
+  insert(B { mark_b: 0, len: 9 })(_:, _ok:);
+}
+
+set_a :: system eff {
+  map (query { mark_a, len })(len) eff {
+    len = 5;
+  };
+}
+show_a :: system eff {
+  map (query { mark_a, len }) eff {
+    fmt.printf("A=%d\n", len);
+  };
+}
+show_b :: system eff {
+  map (query { mark_b, len }) eff {
+    fmt.printf("B=%d\n", len);
+  };
+}
+
+#run seq({ seed, set_a, show_a, show_b })

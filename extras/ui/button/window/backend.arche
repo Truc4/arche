@@ -1,0 +1,72 @@
+#import { ui }
+
+BTN_BG    :: 0xe4694e;
+BTN_LABEL :: 0x160d0a;
+BTN_TSZ   :: 16;
+
+render :: system (query { framebuffer })(framebuffer) eff {
+  map (query { screen, size, label, len, view }) eff {
+    fx0 := screen.x;
+    fy0 := screen.y;
+    fx1 := screen.x + size.w;
+    fy1 := screen.y + size.h;
+    if (fx0 < 0) {
+      fx0 = 0;
+    }
+    if (fy0 < 0) {
+      fy0 = 0;
+    }
+    if (fx1 > view.w) {
+      fx1 = view.w;
+    }
+    if (fy1 > view.h) {
+      fy1 = view.h;
+    }
+    for (yy := fy0; yy < fy1; yy += 1) {
+      for (xx := fx0; xx < fx1; xx += 1) {
+        framebuffer[yy * view.w + xx] = BTN_BG;
+      }
+    }
+    s   := BTN_TSZ / 8;
+    adv := 8 * s;
+    lw  := len * adv;
+    lx  := screen.x + (size.w - lw) / 2;
+    ly  := screen.y + (size.h - BTN_TSZ) / 2;
+    for (i := 0; i < len; i += 1) {
+      c := label[i];
+      if (c >= 32 && c <= 126) {
+        gi := c - 32;
+        for (row := 0; row < 8; row += 1) {
+          b := ui.GLYPHS[gi * 8 + row];
+          for (col := 0; col < 8; col += 1) {
+            if (b >= 128) {
+              gx0 := lx + i * adv + col * s;
+              gy0 := ly + row * s;
+              for (py := gy0; py < gy0 + s; py += 1) {
+                if (py >= fy0 && py < fy1) {
+                  for (px := gx0; px < gx0 + s; px += 1) {
+                    if (px >= fx0 && px < fx1) {
+                      framebuffer[py * view.w + px] = BTN_LABEL;
+                    }
+                  }
+                }
+              }
+              b = b - 128;
+            }
+            b = b * 2;
+          }
+        }
+      }
+    }
+  };
+}
+
+poll :: system eff {
+  map (query { screen, size, clicked, wasdown, mouse, mouse_down })(clicked, wasdown) eff {
+    clicked = 0;
+    if (mouse_down == 1 && wasdown == 0 && mouse.x >= screen.x && mouse.x < screen.x + size.w && mouse.y >= screen.y && mouse.y < screen.y + size.h) {
+      clicked = 1;
+    }
+    wasdown = mouse_down;
+  };
+}

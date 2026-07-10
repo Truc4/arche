@@ -1,0 +1,36 @@
+// DOCUMENTED BUG — expected to FAIL until fixed (see README.md).
+//
+// A whole-tuple column write inside an effectful `map … eff` fan is SILENTLY DROPPED. The identical write
+// in a pure `map` works (that is exactly what the boids `apply` kernel does: `vel = nvel`). Here `adv`
+// runs `pos = pos + vel` inside a `map … eff` fan, so `pos` should advance 5 → 8 — but it stays 5, with no
+// diagnostic. A field write (`pos.x = pos.x + vel.x`) inside the same fan works, so the drop is specific to
+// whole-tuple writes in effectful fans.
+//
+// This RUN line asserts the CORRECT result (x=8.0); it is red while the bug drops the write.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "x=8.0"
+#import { fmt }
+
+pos(x, y) :: float;
+vel(x, y) :: float;
+P         :: arche { pos, vel }
+
+[1]P(1);
+
+seed :: system {
+  P.pos.x = { 5.0 };
+  P.pos.y = { 0.0 };
+  P.vel.x = { 3.0 };
+  P.vel.y = { 0.0 };
+}
+
+adv :: system eff {
+  map (query { pos, vel })(pos) eff {
+    pos = pos + vel;
+  };
+}
+
+show :: system eff {
+  fmt.printf("x=%.1f\n", P.pos.x[0]);
+}
+
+#run seq({ seed, adv, show })
