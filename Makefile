@@ -209,9 +209,10 @@ test-inspect: $(INSPECT_TEST_BIN)
 test-e2e: $(TARGET) $(BUILD_DIR)/runtime/hotreload.o
 	python3 tests/integration/e2e_hot_reload/run_e2e.py
 
-# Run all tests with LIT
+# Run all tests with LIT. Only tests/ is scanned — extras/ holds device LIBRARIES (exercised by the
+# tests/extras/ smoke drivers + verify-fmt), not standalone tests, mirroring how stdlib/ is doctest-only.
 test: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	lit -v tests/ extras/
+	lit -v tests/
 	$(MAKE) test-doc
 	$(MAKE) verify-fmt
 
@@ -225,7 +226,7 @@ test: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODE
 # hand to re-validate the whole language under per-unit. Whole-program (no inlining loss) stays the
 # default build.
 test-per-unit: $(TARGET) $(ANALYZER_BIN) $(SYNTAX_TOKENS_BIN) $(SEMANTIC_TEST_BIN) $(CODEGEN_TEST_BIN) $(SYNTAX_VIEW_TEST_BIN) $(HOTRELOAD_TEST_BIN) $(INSPECT_TEST_BIN) $(BUILD_DIR)/runtime/stack_check.o $(BUILD_DIR)/runtime/io.o $(BUILD_DIR)/runtime/log.o $(BUILD_DIR)/runtime/net.o $(BUILD_DIR)/runtime/term.o
-	ARCHE_PER_UNIT=1 lit -v tests/ extras/
+	ARCHE_PER_UNIT=1 lit -v tests/
 
 # Run doctests over the real source tree: ```arche examples in /// doc comments (.arche) AND in
 # prose docs (.md). The synthetic runner fixtures in tests/unit/doctest/ + tests/unit/mddoc/ are
