@@ -11,6 +11,7 @@
 #include <gdk/gdkx.h>
 #include <X11/Xlib.h>
 #include <string.h>
+#include <stdio.h>
 #include "../../../gfx/x11/gfx_x11.h"
 
 #define ED_CAP 4096
@@ -25,6 +26,22 @@ static struct {
 	int ready;
 } G;
 
+/* Theme the widget from the DRIVER's palette (bg/fg, 0xRRGGBB) — no colours hardcoded here. Applied
+ * screen-wide at APPLICATION priority; our named node is the only editor widget in the app. */
+static void apply_css(int bg, int fg) {
+	char css[256];
+	snprintf(css, sizeof css,
+	         "window { background-color:#%06x; }"
+	         "#arche-editor, #arche-editor text {"
+	         "  background-color:#%06x; color:#%06x; caret-color:#%06x; }",
+	         bg & 0xffffff, bg & 0xffffff, fg & 0xffffff, fg & 0xffffff);
+	GtkCssProvider *p = gtk_css_provider_new();
+	gtk_css_provider_load_from_data(p, css, -1, NULL);
+	gtk_style_context_add_provider_for_screen(gdk_screen_get_default(), GTK_STYLE_PROVIDER(p),
+	                                          GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+	g_object_unref(p);
+}
+
 static gboolean on_key(GtkWidget *w, GdkEventKey *e, gpointer u) {
 	(void)w;
 	(void)u;
@@ -35,7 +52,7 @@ static gboolean on_key(GtkWidget *w, GdkEventKey *e, gpointer u) {
 	return FALSE;
 }
 
-void textedit_be_open(void *gfxhandle, char *seed, int n) {
+void textedit_be_open(void *gfxhandle, char *seed, int n, int bg, int fg) {
 	if (G.ready)
 		return;
 	Window parent = gfx_x11_window(gfxhandle);
@@ -50,6 +67,8 @@ void textedit_be_open(void *gfxhandle, char *seed, int n) {
 	gtk_window_set_decorated(GTK_WINDOW(G.win), FALSE);
 	GtkWidget *sw = gtk_scrolled_window_new(NULL, NULL);
 	G.view = gtk_text_view_new();
+	gtk_widget_set_name(G.view, "arche-editor");
+	apply_css(bg, fg);
 	gtk_text_view_set_monospace(GTK_TEXT_VIEW(G.view), TRUE);
 	G.tb = gtk_text_view_get_buffer(GTK_TEXT_VIEW(G.view));
 	int k = 0;

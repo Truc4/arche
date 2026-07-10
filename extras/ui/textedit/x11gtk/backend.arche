@@ -44,7 +44,7 @@
 
 #module
 #foreign
-textedit_be_open :: proc(win: window, buf: []char, n: int)(buf: []char);
+textedit_be_open :: proc(win: window, buf: []char, n: int, bg: int, fg: int)(buf: []char);
 #foreign
 textedit_be_text :: proc(buf: []char, cap: int)(buf: []char);
 #foreign
@@ -55,8 +55,8 @@ textedit_be_place :: proc(x: int, y: int, w: int, h: int)();
 // Build + embed the GtkTextView once, parented to the scene window (handle), seeded from source.
 open :: system eff {
   map (query { handle }) eff {
-    map (query { source }) eff {
-      textedit_be_open(handle, source, source.length)(_:);
+    map (query { source, bg, fg }) eff {
+      textedit_be_open(handle, source, source.length, bg, fg)(_:);
     };
   };
 }

@@ -11,6 +11,11 @@ clicked    :: int;
 wasdown    :: int;
 mouse_down :: int;
 
+// Theme — the DRIVER owns the palette (0xRRGGBB) and seeds it per element; every backend renders these
+// instead of hardcoding its own colours. `bg`/`fg` are the element's fill + text/foreground colour.
+bg :: int;
+fg :: int;
+
 PAD     :: 18;
 GAP     :: 14;
 TITLE_H :: 34;

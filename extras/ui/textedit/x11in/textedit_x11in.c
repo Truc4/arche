@@ -16,8 +16,6 @@
 #include "../../../gfx/x11/gfx_x11.h"
 
 #define ED_CAP 4096
-#define BG 0x0e121bUL /* editor background (matches the dom backend) */
-#define FG 0xcdd6f4UL /* text colour */
 
 typedef struct {
 	Display *dpy;
@@ -28,6 +26,7 @@ typedef struct {
 	char buf[ED_CAP];
 	int len, cursor;
 	int w, h;        /* current child size (px) */
+	int bg, fg;      /* driver-supplied palette (0xRRGGBB) */
 	int run_pending; /* Ctrl-R edge, drained by poll_run */
 	int ready;
 } Editor;
@@ -90,9 +89,9 @@ static void handle_key(XKeyEvent *ke) {
 static void redraw(void) {
 	if (!E.ready)
 		return;
-	XSetForeground(E.dpy, E.gc, BG);
+	XSetForeground(E.dpy, E.gc, (unsigned long)(E.bg & 0xffffff));
 	XFillRectangle(E.dpy, E.win, E.gc, 0, 0, (unsigned)E.w, (unsigned)E.h);
-	XSetForeground(E.dpy, E.gc, FG);
+	XSetForeground(E.dpy, E.gc, (unsigned long)(E.fg & 0xffffff));
 	const int x0 = 6;
 	int y = 6 + E.fasc;
 	int ls = 0; /* line start */
@@ -117,17 +116,20 @@ static void redraw(void) {
 	XFlush(E.dpy);
 }
 
-void textedit_be_open(void *gfxhandle, char *seed, int n) {
+void textedit_be_open(void *gfxhandle, char *seed, int n, int bg, int fg) {
 	if (E.ready)
 		return;
 	Window parent = gfx_x11_window(gfxhandle);
 	if (!parent)
 		return;
+	E.bg = bg;
+	E.fg = fg;
 	E.dpy = XOpenDisplay(NULL);
 	if (!E.dpy)
 		return;
 	int scr = DefaultScreen(E.dpy);
-	E.win = XCreateSimpleWindow(E.dpy, parent, 0, 0, 1, 1, 0, BlackPixel(E.dpy, scr), BG);
+	E.win = XCreateSimpleWindow(E.dpy, parent, 0, 0, 1, 1, 0, BlackPixel(E.dpy, scr),
+	                            (unsigned long)(bg & 0xffffff));
 	XSelectInput(E.dpy, E.win, KeyPressMask | ButtonPressMask | ExposureMask | FocusChangeMask);
 	E.gc = XCreateGC(E.dpy, E.win, 0, NULL);
 	E.font = XLoadQueryFont(E.dpy, "-*-*-medium-r-normal--14-*-*-*-*-*-*-*");

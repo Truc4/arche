@@ -1,0 +1,54 @@
+/// textview=x11gtk — the output pane as a read-only GTK GtkTextView embedded in the gfx scene window, so it
+/// gets a native SCROLLBAR + word WRAPPING + selectable text (the framebuffer `window` backend has none).
+/// The C shim (textview_x11gtk.c) builds a non-editable GtkTextView inside a GtkScrolledWindow and reparents
+/// it into the scene window (via gfx_x11_window()); arche just pushes the output text + the projected rect
+/// each frame. Requires gfx=x11. The #cflags/#link lists are `pkg-config --cflags/--libs gtk+-3.0
+/// gdk-x11-3.0` — regenerate for another system. Mirrors textedit/x11gtk.
+// RUN: true
+#import { gfx }
+#cflags {
+  "-I/usr/include/gtk-3.0"
+  "-I/usr/include/at-spi2-atk/2.0"
+  "-I/usr/include/at-spi-2.0"
+  "-I/usr/include/atk-1.0"
+  "-I/usr/include/dbus-1.0"
+  "-I/usr/lib/dbus-1.0/include"
+  "-I/usr/include/pango-1.0"
+  "-I/usr/include/harfbuzz"
+  "-I/usr/include/gdk-pixbuf-2.0"
+  "-I/usr/include/cairo"
+  "-I/usr/include/freetype2"
+  "-I/usr/include/libpng16"
+  "-I/usr/include/pixman-1"
+  "-I/usr/include/gio-unix-2.0"
+  "-I/usr/include/glib-2.0"
+  "-I/usr/lib/glib-2.0/include"
+  "-I/usr/include/fribidi"
+}
+#link {
+  "gtk-3"
+  "gdk-3"
+  "pangocairo-1.0"
+  "pango-1.0"
+  "gdk_pixbuf-2.0"
+  "cairo-gobject"
+  "cairo"
+  "gio-2.0"
+  "gobject-2.0"
+  "glib-2.0"
+  "X11"
+}
+
+#module
+#foreign
+textview_be_render :: proc(win: window, buf: []char, n: int, x: int, y: int, w: int, h: int, bg: int, fg: int)(buf: []char);
+
+// Each frame: lazy-create + embed the widget (first call, themed from the driver's bg/fg), push the output
+// text, and position it.
+render :: system eff {
+  map (query { handle }) eff {
+    map (query { output, len, screen, size, bg, fg }) eff {
+      textview_be_render(handle, output, len, screen.x, screen.y, size.w, size.h, bg, fg)(_:);
+    };
+  };
+}
