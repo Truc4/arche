@@ -12904,6 +12904,12 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		 * (auto-indexed at %row); a SINGLETON column as a broadcast scalar loaded at index 0. */
 		for (int p = 0; p < param_count; p++) {
 			const char *param_name = params[p]->name;
+			/* Does the FANNED archetype own this column? If so, bind from ITS OWN storage (the field path
+			 * below) even when another archetype also declares the same shared component. Only a column the
+			 * fanned archetype LACKS is a genuine cross-pool broadcast from its (singleton) owner. Without
+			 * this guard a component shared across archetypes was always read from the FIRST-declared owner
+			 * (arch_owning_col), so a map over B read A's value — silently corrupting a shared `len`/`pos`/
+			 * `color` across sibling archetypes (and spinning a shared, read-back loop counter forever). */
 			const char *owner = arch_owning_col(ctx, param_name);
 			if (owner && !arch_has_col(arch, param_name) && get_arch_static_capacity(ctx, owner) == 1) {
 				bind_singleton_col(ctx, param_name, owner);

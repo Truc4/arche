@@ -15,9 +15,10 @@ open :: system eff {
 text :: system eff {
   map (query { source, len })(source, len) eff {
     textedit_be_text(_, source.length)(source);
-    len = 0;
-    for (; len < source.length && source[len] != 0; len += 1) {
+    n := 0;
+    for (; n < source.length && source[n] != 0; n += 1) {
     }
+    len = n;
   };
 }
 
