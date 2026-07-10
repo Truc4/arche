@@ -1,0 +1,92 @@
+/// textedit=x11gtk — the editor as a REAL GTK GtkTextView embedded in the gfx scene window (not a separate
+/// top-level). The C shim (textedit_x11gtk.c) builds a GtkTextView and XReparentWindows it into the scene
+/// window (via gfx_x11_window()), so the OS toolkit renders + edits with native cursor/selection/IME; arche
+/// only seeds it (open), positions it (render → place), pulls the text back (text), and polls Ctrl-R
+/// (poll_run). The OS-widget analog of the dom backend's <textarea>. Requires gfx=x11.
+///
+/// The #cflags -I list is `pkg-config --cflags gtk+-3.0 gdk-x11-3.0` and the #link list is `--libs` of the
+/// same — regenerate both for a different system. (This is what the #cflags region exists for: GTK headers
+/// live in ~20 dirs, so the shim can't compile without them.)
+// RUN: true
+#import { gfx }
+#cflags {
+  "-I/usr/include/gtk-3.0"
+  "-I/usr/include/at-spi2-atk/2.0"
+  "-I/usr/include/at-spi-2.0"
+  "-I/usr/include/atk-1.0"
+  "-I/usr/include/dbus-1.0"
+  "-I/usr/lib/dbus-1.0/include"
+  "-I/usr/include/pango-1.0"
+  "-I/usr/include/harfbuzz"
+  "-I/usr/include/gdk-pixbuf-2.0"
+  "-I/usr/include/cairo"
+  "-I/usr/include/freetype2"
+  "-I/usr/include/libpng16"
+  "-I/usr/include/pixman-1"
+  "-I/usr/include/gio-unix-2.0"
+  "-I/usr/include/glib-2.0"
+  "-I/usr/lib/glib-2.0/include"
+  "-I/usr/include/fribidi"
+}
+#link {
+  "gtk-3"
+  "gdk-3"
+  "pangocairo-1.0"
+  "pango-1.0"
+  "gdk_pixbuf-2.0"
+  "cairo-gobject"
+  "cairo"
+  "gio-2.0"
+  "gobject-2.0"
+  "glib-2.0"
+  "X11"
+}
+
+#module
+#foreign
+textedit_be_open :: proc(win: window, buf: []char, n: int)(buf: []char);
+#foreign
+textedit_be_text :: proc(buf: []char, cap: int)(buf: []char);
+#foreign
+textedit_be_poll_run :: proc()(r: int);
+#foreign
+textedit_be_place :: proc(x: int, y: int, w: int, h: int)();
+
+// Build + embed the GtkTextView once, parented to the scene window (handle), seeded from source.
+open :: system eff {
+  map (query { handle }) eff {
+    map (query { source }) eff {
+      textedit_be_open(handle, source, source.length)(_:);
+    };
+  };
+}
+
+// Each frame: pump the GTK loop (renders + handles native input), then copy the buffer into `source`.
+text :: system eff {
+  map (query { source, len })(source, len) eff {
+    textedit_be_text(_, source.length)(source);
+    len = 0;
+    for (; len < source.length && source[len] != 0; len += 1) {
+    }
+  };
+}
+
+// Ctrl-R inside the widget raises submit (same flag the RUN button / browser Ctrl-Enter raise).
+poll_run :: system eff {
+  map (query { submit })(submit) eff {
+    textedit_be_poll_run()(r:);
+    if (r == 1) {
+      submit = 1;
+    }
+  };
+}
+
+// Position the embedded widget from the driver's projected editor rect (render px == window px on x11).
+render :: system eff {
+  map (query { source, screen, size }) eff {
+    textedit_be_place(screen.x, screen.y, size.w, size.h)();
+  };
+}
+
+step :: system eff {
+}

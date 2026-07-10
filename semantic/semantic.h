@@ -32,6 +32,7 @@ void semantic_reset_modules(void);
  * name contains a char outside [A-Za-z0-9._-] (a hard fail — these flow into the cc `-l` link line).
  * The compiler calls this after the front-end to append `-l<name>` to its link command. */
 int semantic_collect_link_libs(const SyntaxNode *root, const char *root_src, char out[][64], int cap);
+int semantic_collect_cflags(const SyntaxNode *root, const char *root_src, char out[][64], int cap);
 
 /* Editor-only: also inline module `name` into the root namespace even when the root has no `#import`
  * for it (NULL clears). Set by the analyzer when the open document is a member of a device folder, so

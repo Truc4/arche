@@ -10,7 +10,7 @@
         ta.id = "ui-textedit";
         ta.spellcheck = false;
         ta.setAttribute("autocomplete", "off");
-        ta.style.cssText = "order:1;height:22em;width:100%;box-sizing:border-box;resize:none;background:#0e121b;" +
+        ta.style.cssText = "position:absolute;box-sizing:border-box;resize:none;background:#0e121b;" +
           "color:#cdd6f4;border:1px solid #232838;border-radius:0.4em;padding:0.7em;" +
           "font:1em/1.5 ui-monospace,Menlo,monospace;outline:none;";
         (rt.root || document.body).appendChild(ta);
@@ -42,6 +42,15 @@
           new Uint8Array(mem.buffer)[bufPtr + k] = 0;
         },
         textedit_be_poll_run() { const f = self.runPending; self.runPending = false; return f ? 1 : 0; },
+        // Position the <textarea> from the driver's projected rect (render px), relative to the panel origin.
+        textedit_be_place(x, y, w, h) {
+          const s = rt._uiScale || window.innerHeight / (rt.renderH || 1080);
+          const ta = self.ta;
+          ta.style.left = ((x - (rt._uiPanelX || 0)) * s) + "px";
+          ta.style.top = ((y - (rt._uiPanelY || 0)) * s) + "px";
+          ta.style.width = (w * s) + "px";
+          ta.style.height = (h * s) + "px";
+        },
       };
     },
   });

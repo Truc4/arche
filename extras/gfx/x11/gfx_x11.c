@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "gfx_x11.h"
 
 typedef struct {
 	Display *dpy;
@@ -252,6 +253,16 @@ int gfx_be_scroll(void *handle) {
 	int s = g->scroll;
 	g->scroll = 0;
 	return s;
+}
+
+/* Expose the scene window's X11 identity to sibling native backends (see gfx_x11.h). */
+Display *gfx_x11_display(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->dpy : NULL;
+}
+Window gfx_x11_window(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->win : 0;
 }
 
 void gfx_be_close(void *handle) {

@@ -1,12 +1,12 @@
 #module
 #foreign
-button_be_label :: proc(s: []char, n: int)(s: []char);
+button_be_label :: proc(s: []char, n: int, x: int, y: int, w: int, h: int)(s: []char);
 #foreign
 button_be_poll :: proc()(clicked: int);
 
 render :: system eff {
-  map (query { label, len }) eff {
-    button_be_label(label, len)(_:);
+  map (query { label, len, screen, size }) eff {
+    button_be_label(label, len, screen.x, screen.y, size.w, size.h)(_:);
   };
 }
 

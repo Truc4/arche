@@ -58,6 +58,7 @@ typedef enum TokenKind {
 	TOK_HASH_FILE,    /* #file    — narrow visibility to file scope (phase B) */
 	TOK_HASH_FOREIGN, /* #foreign — region of foreign-bodied (FFI) proc decls */
 	TOK_HASH_LINK,    /* #link    — region of quoted system-library names to link (-l<name>) */
+	TOK_HASH_CFLAGS,  /* #cflags  — region of quoted cc flags (e.g. -I dirs) to COMPILE the C shims */
 	TOK_HASH_RUN,     /* #run <Schedule-value> — the program's schedule the runtime executes */
 
 	/* assignment */

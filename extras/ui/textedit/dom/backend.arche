@@ -5,6 +5,8 @@ textedit_be_open :: proc(buf: []char, n: int)(buf: []char);
 textedit_be_text :: proc(buf: []char, cap: int)(buf: []char);
 #foreign
 textedit_be_poll_run :: proc()(r: int);
+#foreign
+textedit_be_place :: proc(x: int, y: int, w: int, h: int)();
 
 open :: system eff {
   map (query { source }) eff {
@@ -32,5 +34,11 @@ poll_run :: system eff {
 
 step :: system eff {
 }
+
+/* Position the real <textarea> from the driver's projected rect, so the DOM playground lays out from the
+ * SAME arche `layout` the native window backend reads — not from CSS. */
 render :: system eff {
+  map (query { source, screen, size }) eff {
+    textedit_be_place(screen.x, screen.y, size.w, size.h)();
+  };
 }

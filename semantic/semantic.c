@@ -8376,6 +8376,82 @@ int semantic_collect_link_libs(const SyntaxNode *root, const char *root_src, cha
 	return n;
 }
 
+/* Looser than a #link lib name: a cc flag carries -, /, ., =, +, :, , (e.g. -I/usr/include/gtk-3.0). Still
+ * reject anything a shell could act on — the cc command runs via system() — so no spaces/quotes/;|&$`()<>*?~. */
+static int sem_cflag_ok(const char *s, size_t n) {
+	if (n == 0)
+		return 0;
+	for (size_t i = 0; i < n; i++) {
+		char c = s[i];
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+		      c == '-' || c == '/' || c == '=' || c == '+' || c == ':' || c == ','))
+			return 0;
+	}
+	return 1;
+}
+
+/* Gather the quoted flags of every `#cflags` region in one syntax root into out[] (deduped). Mirrors
+ * sem_collect_link_from_root but distinguishes #cflags via TOK_HASH_CFLAGS and validates with sem_cflag_ok. */
+static int sem_collect_cflags_from_root(const SyntaxNode *root, const char *src, char out[][64], int *pn, int cap) {
+	if (!root)
+		return 0;
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *cn = root->children[i].as.node;
+		if (cn->kind != SN_REGION)
+			continue;
+		if (!sv_has_token((SyntaxView){cn, src}, TOK_HASH_CFLAGS))
+			continue;
+		for (int j = 0; j < cn->child_count; j++) {
+			if (cn->children[j].tag != SE_TOKEN || cn->children[j].as.token.kind != TOK_STRING)
+				continue;
+			size_t L = cn->children[j].as.token.length;
+			size_t off = cn->children[j].as.token.offset;
+			if (L >= 2) { /* strip the surrounding quotes */
+				off += 1;
+				L -= 2;
+			}
+			const char *flag = src + off;
+			if (!sem_cflag_ok(flag, L)) {
+				fprintf(stderr, "Error: invalid #cflags flag \"%.*s\" — only [A-Za-z0-9._+=:,/-] allowed\n", (int)L,
+				        flag);
+				return -1;
+			}
+			if (L > 63)
+				L = 63;
+			char tmp[64];
+			memcpy(tmp, flag, L);
+			tmp[L] = '\0';
+			int dup = 0;
+			for (int k = 0; k < *pn; k++)
+				if (strcmp(out[k], tmp) == 0) {
+					dup = 1;
+					break;
+				}
+			if (dup)
+				continue;
+			if (*pn >= cap) {
+				fprintf(stderr, "Error: too many #cflags flags (max %d)\n", cap);
+				return -1;
+			}
+			memcpy(out[*pn], tmp, L + 1);
+			(*pn)++;
+		}
+	}
+	return 0;
+}
+
+int semantic_collect_cflags(const SyntaxNode *root, const char *root_src, char out[][64], int cap) {
+	int n = 0;
+	if (sem_collect_cflags_from_root(root, root_src, out, &n, cap) < 0)
+		return -1;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (sem_collect_cflags_from_root(g_sem_modules[m].root, g_sem_modules[m].src, out, &n, cap) < 0)
+			return -1;
+	return n;
+}
+
 int semantic_has_module(const char *name) {
 	for (int i = 0; i < g_sem_module_count; i++)
 		if (strcmp(g_sem_modules[i].name, name) == 0)

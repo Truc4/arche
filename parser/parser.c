@@ -1419,6 +1419,9 @@ static int parse_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 	case TOK_HASH_LINK:
 		/* `#link { "lib" ... }` — system libraries to link (block form only). */
 		return parse_link_region(parser, out_kind);
+	case TOK_HASH_CFLAGS:
+		/* `#cflags { "-I..." ... }` — cc flags to compile the C shims (same block grammar as #link). */
+		return parse_link_region(parser, out_kind);
 	case TOK_HASH_RUN:
 		/* `#run <expr>` — the program's Schedule value. */
 		return parse_run_region(parser, out_kind);
