@@ -10,5 +10,8 @@
 Ghosted :: arche { ghost }
 [1]Ghosted(1);
 
-go :: system eff { map (query { ghost }) eff {}; }
+go :: system eff {
+  map (query { ghost }) eff {
+  };
+}
 #run seq({ go })

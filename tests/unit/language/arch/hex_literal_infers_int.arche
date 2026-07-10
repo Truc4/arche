@@ -7,7 +7,7 @@
 
 show :: system eff {
   x := 0xE0E0E0; // 14737632 — must be int
-  y := 0xFF;     // 255 — must be int
+  y := 0xFF; // 255 — must be int
   fmt.printf("x=%d y=%d\n", x, y);
 }
 

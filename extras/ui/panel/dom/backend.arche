@@ -1,10 +1,15 @@
 #module
 #foreign
-panel_be_render :: proc(x: int, y: int, width: int, height: int, title: []char, n: int)(title: []char);
+panel_be_render :: proc(x: int, y: int, width: int, height: int, title: []char, n: int)(
+  title: []char,
+);
 
 render :: system eff {
   map (query { screen, size, title, len }) eff {
-    x := screen.x; y := screen.y; w := size.w; h := size.h;
+    x := screen.x;
+    y := screen.y;
+    w := size.w;
+    h := size.h;
     panel_be_render(x, y, w, h, title, len)(_:);
   };
 }

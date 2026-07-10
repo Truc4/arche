@@ -1,12 +1,7 @@
-// DOCUMENTED BUG — expected to FAIL until fixed (see README.md).
-//
-// A runtime tuple literal `return (a, b)` lowers to invalid LLVM IR: the return value is defined as a
-// `ptr` but the function's return type is `{ float, float }`, so `opt` rejects it and the build fails:
-//   error: '%v0' defined with type 'ptr' but expected '{ float, float }'
-// The workaround is to assemble the vector from axis basis constants (`XHAT * a + YHAT * b`), which the
-// `vec` device does. Building a 2-vector from two computed scalars is a basic operation and should just work.
-//
-// This RUN line asserts a successful build + correct output (v=3.0 4.0); it is red while the IR is invalid.
+// A runtime tuple literal `return (a, b)` from two computed scalars packs a `{T,…}` aggregate (insertvalue)
+// and returns it — a first-class tuple value, not a `ptr`. The caller binds the result and reads its fields
+// via the func's named return type `pos`. (Previously this lowered to invalid IR: a `ptr` returned where
+// `{ float, float }` was expected.)
 // RUN: %arche run %s | grep -qxF "v=3.0 4.0"
 #import { fmt }
 

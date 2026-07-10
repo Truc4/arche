@@ -14,7 +14,14 @@ Q :: arche { b }
 [1]P ?abort;
 [1]Q ?abort;
 
-seed :: system eff { insert(P { a: 5 })(_:, _ok:); insert(Q { b: 7 })(_:, _ok:); }
-join :: system eff { map (query { a, b }) eff { fmt.printf("%d\n", a + b); }; }
+seed :: system eff {
+  insert(P { a: 5 })(_:, _ok:);
+  insert(Q { b: 7 })(_:, _ok:);
+}
+join :: system eff {
+  map (query { a, b }) eff {
+    fmt.printf("%d\n", a + b);
+  };
+}
 
 #run seq({ seed, join })

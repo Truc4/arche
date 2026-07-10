@@ -2,4 +2,4 @@
 // module-qualified access works for BOTH kinds. Not run directly.
 // RUN: true
 SCALAR :: 42;
-TBL :: { 10, 20, 30, 40 };
+TBL    :: { 10, 20, 30, 40 }

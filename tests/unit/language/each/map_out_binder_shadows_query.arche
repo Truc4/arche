@@ -1,14 +1,14 @@
-// SOUNDNESS (BUG — this test is RED): an out-binding `(x:)` on a call must NOT silently re-declare a name that
-// the enclosing map already bound in its write-back list `(x)`. Today it does: `(x:)` introduces a fresh local
-// that SHADOWS the queried column, so the call's result lands on the throwaway shadow and the column is never
-// written — it keeps its stale value. Like `map_self_binder_unqueried`, this should be a hard semantic error
-// (or, at least, `(x:)` on an already-bound name should write the queried column). For arrays the bug hides
-// (the shadow aliases the column's storage, so the write "works"); on a scalar it is plainly observable.
+// An out-binding `(k:)` on a call is a NEW binding (colon = declare) — it legitimately SHADOWS a name the
+// enclosing map already bound in its write-back list `(k)`. The call's result lands on the throwaway shadow,
+// so the queried column is never written and keeps its seeded value (`k=0`). This is sound, but the silent
+// lost write is a trap, so the compiler warns that the write-back column `k` is a DEAD binding
+// (`dead_write_binding`, W0031): it is declared writable but never actually written. To write the column,
+// drop the colon (`mark()(k)`); to bind a fresh local, rename it.
 //
-// `mark` is a value-producing effect: `sys_write` returns its byte count (3), written to stderr so it can't
-// reach the checked stdout. `mark()(k:)` shadows the queried `k`, so `k` stays 0 and the program prints `k=0`.
-// This test asserts the write reaches the column (`k=3`); it fails until the shadowing is rejected/fixed.
-// RUN: %arche build -o %t %s && %t 2>/dev/null | grep -qx "k=3"
+// `mark` is a value-producing effect: `sys_write` returns its byte count (3), which the `(k:)` shadow
+// captures and discards. The RUN lines assert the warning fires at build and the program prints `k=0`.
+// RUN: %arche build -o %t %s 2>&1 | grep -qF "dead_write_binding"
+// RUN: %t 2>/dev/null | grep -qx "k=0"
 #import { fmt os }
 
 mark :: func() -> Eff(i64) {
@@ -24,7 +24,7 @@ seed :: system {
 }
 
 // `k:` re-declares a NEW `k` shadowing the map's queried + write-bound `k`; mark's 3 lands on the shadow, so
-// the queried column is never written and keeps 0.
+// the queried column is never written and keeps 0 — and `dead_write_binding` warns about the unwritten `(k)`.
 bad :: system eff {
   map (query { k })(k) eff {
     mark()(k:);

@@ -420,6 +420,8 @@ static const char *resolve_callable_alias(SemanticContext *ctx, const char *name
 	return cur;
 }
 
+/// A name → full-TypeId table for structural component types: callable (`proc`/`func`) type aliases and
+/// array components (`buf :: [4]char`) whose shape the scalar-name alias registry would drop.
 static void register_callable_type_alias(SemanticContext *ctx, const char *name, TypeId id) {
 	ctx->ctype_alias_names = realloc(ctx->ctype_alias_names, (ctx->ctype_alias_count + 1) * sizeof(char *));
 	ctx->ctype_alias_ids = realloc(ctx->ctype_alias_ids, (ctx->ctype_alias_count + 1) * sizeof(TypeId));
@@ -2346,12 +2348,41 @@ static TypeId call_type_id(SemanticContext *ctx, SyntaxView v) {
  * `M[i]` → the sized inner `[stride]elem`; a whole array const → its `[N]`/`[N][W]` type; a distinct
  * subtype or array-returning call → its true type), so hints, tycheck, and the dangling check all see
  * it. This is the only expression-type engine in semantic analysis. */
+/* An anonymous tuple VALUE literal `(a, b, …)` — its type is `(T0, T1, …)` synthesised positionally from the
+ * element types (no field names of its own). A named component-group type, and thus `.field` access, is
+ * adopted at the use site (return type / param / declared bind); standalone it stays anonymous. */
+static TypeId tuple_lit_type_id(SemanticContext *ctx, SyntaxView v) {
+	int n = 0;
+	for (int i = 0; i < v.node->child_count; i++)
+		if (v.node->children[i].tag == SE_NODE)
+			n++;
+	if (n < 2)
+		return TYID_UNKNOWN;
+	const char **names = calloc((size_t)n, sizeof(char *));
+	TypeId *types = calloc((size_t)n, sizeof(TypeId));
+	int fi = 0;
+	for (int i = 0; i < v.node->child_count; i++) {
+		if (v.node->children[i].tag != SE_NODE)
+			continue;
+		SyntaxView ev = {v.node->children[i].as.node, v.src};
+		names[fi] = "";
+		types[fi] = sem_expr_type_id(ctx, ev);
+		fi++;
+	}
+	TypeId t = tyid_of_tuple(ctx->ty_arena, names, types, fi);
+	free(names);
+	free(types);
+	return t;
+}
+
 static TypeId sem_expr_type_id(SemanticContext *ctx, SyntaxView v) {
 	if (!sv_present(v))
 		return TYID_UNKNOWN;
 	switch (sv_kind(v)) {
 	case SN_PAREN_EXPR:
 		return sem_expr_type_id(ctx, sem_first_expr(v));
+	case SN_TUPLE_LIT:
+		return tuple_lit_type_id(ctx, v);
 	case SN_UNARY_EXPR:
 		/* `move x`/`copy x` are transparent; `!x` is an int 0/1; `-x` keeps the operand's type. */
 		if (sv_has_token(v, TOK_BANG))
@@ -6910,10 +6941,14 @@ static const char *bind_query_archetype(SemanticContext *ctx, DeclSummary *d) {
 		param_type = sem_expand_tuple_nominal(ctx, param_type);
 		for (int ci = 0; ci < ctx->decl_count; ci++) {
 			DeclSummary *cc = ctx->decls[ci];
-			if (cc && cc->kind == DECL_CONST && cc->name && strcmp(cc->name, d->params[p].name) == 0 &&
-			    tyid_kind(ctx->ty_arena, cc->const_type_value_id) == TYK_TUPLE) {
-				param_type = cc->const_type_value_id;
-				break;
+			if (cc && cc->kind == DECL_CONST && cc->name && strcmp(cc->name, d->params[p].name) == 0) {
+				TyKind cvk = tyid_kind(ctx->ty_arena, cc->const_type_value_id);
+				/* An array component (`buf :: [4]char`) binds with its FULL type so `buf[i]` is indexable, like a
+				 * tuple-group column binds its 2-vector value type. */
+				if (cvk == TYK_TUPLE || cvk == TYK_ARRAY) {
+					param_type = cc->const_type_value_id;
+					break;
+				}
 			}
 		}
 		add_variable(ctx, d->params[p].name, param_type);
@@ -6991,12 +7026,43 @@ static void kernel_writes_end(SemanticContext *ctx, SyntaxView knode, const char
 		sem_emit_write_set_mismatch(ctx, loc, kind, name, list, nd > 0);
 		free(list);
 	}
+	/* Reverse check: a declared write-back column never actually written (here or in a nested fan that
+	 * propagated its write up) is a dead binding — an out-binder `(col:)` shadows the queried column so the
+	 * write lands on a throwaway local, silently losing it. */
+	for (int j = 0; j < nd; j++) {
+		SyntaxView wp = sv_child_at(knode, SN_WRITE_PARAM, j);
+		char *dn = sem_txt_dup(sv_token(wp, TOK_IDENT));
+		if (!dn)
+			continue;
+		int written = 0;
+		for (int i = 0; i < ctx->k_write_count && !written; i++)
+			if (strcmp(dn, ctx->k_writes[i]) == 0)
+				written = 1;
+		if (!written && strcmp(dn, "_") != 0)
+			sem_emit_lint_dead_write_binding(ctx, sem_node_loc(wp.node), dn);
+		free(dn);
+	}
+	/* Propagate writes an ENCLOSING kernel declared writable (this kernel is already popped, so the stack
+	 * holds the enclosing chain) up to the parent collector, so the enclosing kernel's reverse check counts
+	 * a nested write as satisfying its declaration (camera-follow: outer declares `(ex)`, inner writes it). */
+	char **prop = NULL;
+	int prop_n = 0;
+	for (int i = 0; i < ctx->k_write_count; i++)
+		if (col_is_declared_write(ctx, ctx->k_writes[i])) {
+			prop = realloc(prop, (size_t)(prop_n + 1) * sizeof(char *));
+			prop[prop_n++] = sem_dupz(ctx->k_writes[i]);
+		}
 	for (int i = 0; i < ctx->k_write_count; i++)
 		free(ctx->k_writes[i]);
 	free(ctx->k_writes);
 	ctx->k_collect = sv_collect;
 	ctx->k_writes = sv_w;
 	ctx->k_write_count = sv_n;
+	for (int i = 0; i < prop_n; i++) {
+		kernel_record_write(ctx, prop[i]);
+		free(prop[i]);
+	}
+	free(prop);
 }
 
 static void analyze_system_decl(SemanticContext *ctx, DeclSummary *sys) {
@@ -9563,6 +9629,14 @@ static void analyze_program_core(SemanticContext *ctx) {
 						register_type_alias(ctx, aname, fbacking, cloc, dsheet); /* aname leaks like the old path */
 					}
 				}
+			} else if (tvk == TYK_ARRAY) {
+				/* An array component (`buf :: [4]char`): the scalar-name alias registry would drop the `[N]`, so
+				 * record the FULL array TypeId in the component-type table. The scalar element alias is kept too so
+				 * `buf` is a known component name; consumers that need the shape read the full TypeId. */
+				register_callable_type_alias(ctx, c->name, tv);
+				const char *ebacking = sem_tyid_name(ctx, tv);
+				if (ebacking)
+					register_type_alias_tiered(ctx, c->name, ebacking, c->is_transparent, cloc, dsheet);
 			} else {
 				const char *backing = sem_tyid_name(ctx, tv);
 				if (!backing)
@@ -10285,6 +10359,16 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 	if (sv_present(form) && (sv_kind(form) == SN_TYPE_PROC || sv_kind(form) == SN_TYPE_FUNC)) {
 		ds->const_type_value_id = sem_intern_view(ctx, form); /* callable-type alias */
 		ds->const_value_loc = sem_node_loc(form.node);
+		return ds;
+	}
+	SyntaxView rhs_type = sem_type_at(dv, 0);
+	if (sv_present(rhs_type) && !sv_has_token(dv, TOK_LPAREN) && !sv_present(sem_node_at_expr(dv, 0)) &&
+	    (sv_kind(rhs_type) == SN_TYPE_ARRAY || sv_kind(rhs_type) == SN_TYPE_SHAPED_ARRAY)) {
+		/* A bare `::` array type in VALUE position (`buf :: [4]char`, no value expr) — a component whose column
+		 * carries the FULL array type. The scalar-name alias path would drop the `[N]`, so keep the interned
+		 * TypeId. A typed valued const (`name : []char : "linux"`) has a value expr and falls through below. */
+		ds->const_type_value_id = sem_intern_view(ctx, rhs_type);
+		ds->const_value_loc = sem_node_loc(rhs_type.node);
 		return ds;
 	}
 	if (!decorated && sv_has_token(dv, TOK_LPAREN)) {

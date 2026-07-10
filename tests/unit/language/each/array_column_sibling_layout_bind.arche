@@ -11,22 +11,32 @@
 screen(x, y) :: int;
 size(w, h)   :: int;
 view(w, h)   :: int;
-len   :: int;
-extra :: int;
+len          :: int;
+extra        :: int;
 
 A  :: arche { screen, size, title :: [8]char, len, view }
 B  :: arche { screen, size, len, view, extra }
 Fb :: arche { framebuffer :: [64]int }
-[1]A ?abort; [1]B ?abort; [1]Fb(1);
+[1]A ?abort;
+[1]B ?abort;
+[1]Fb(1);
 
-seed :: system eff { insert(A { screen: (0, 0), size: (0, 0), title: "hi", len: 2, view: (0, 0) })(_:, _ok:); }
+seed :: system eff {
+  insert(A { screen: (0, 0), size: (0, 0), title: "hi", len: 2, view: (0, 0) })(_:, _ok:);
+}
 
 blit :: system (query { framebuffer })(framebuffer) eff {
   map (query { screen, size, title, len, view }) eff {
-    for (i := 0; i < len; i += 1) { framebuffer[i] = title[i]; }
+    for (i := 0; i < len; i += 1) {
+      framebuffer[i] = title[i];
+    }
   };
 }
 
-dump :: system eff { map (query { framebuffer }) eff { fmt.printf("%d %d\n", framebuffer[0], framebuffer[1]); }; }
+dump :: system eff {
+  map (query { framebuffer }) eff {
+    fmt.printf("%d %d\n", framebuffer[0], framebuffer[1]);
+  };
+}
 
 #run seq({ seed, blit, dump })

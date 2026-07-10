@@ -6,11 +6,22 @@ BTN_TSZ   :: 16;
 
 render :: system (query { framebuffer })(framebuffer) eff {
   map (query { screen, size, label, len, view }) eff {
-    fx0 := screen.x;        fy0 := screen.y;        fx1 := screen.x + size.w;    fy1 := screen.y + size.h;
-    if (fx0 < 0) { fx0 = 0; }
-    if (fy0 < 0) { fy0 = 0; }
-    if (fx1 > view.w) { fx1 = view.w; }
-    if (fy1 > view.h) { fy1 = view.h; }
+    fx0 := screen.x;
+    fy0 := screen.y;
+    fx1 := screen.x + size.w;
+    fy1 := screen.y + size.h;
+    if (fx0 < 0) {
+      fx0 = 0;
+    }
+    if (fy0 < 0) {
+      fy0 = 0;
+    }
+    if (fx1 > view.w) {
+      fx1 = view.w;
+    }
+    if (fy1 > view.h) {
+      fy1 = view.h;
+    }
     for (yy := fy0; yy < fy1; yy += 1) {
       for (xx := fx0; xx < fx1; xx += 1) {
         framebuffer[yy * view.w + xx] = BTN_BG;

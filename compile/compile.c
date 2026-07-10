@@ -325,11 +325,20 @@ static int build_unit_object_cached(const char *unit_ll, const char *workdir, in
 	snprintf(cmd, sizeof(cmd), "cc -no-pie -mcmodel=large -c -o %s %s", objtmp, asmf);
 	if (system(cmd) != 0)
 		return 1;
-	/* Publish atomically into the cache (rename; cp across filesystems). */
+	/* Publish atomically into the cache. A plain rename is atomic within a filesystem; when the workdir
+	 * (tmpfs `/tmp`) and the cache (on-disk project) differ, rename fails EXDEV, so copy to a UNIQUE temp
+	 * IN the cache dir and rename WITHIN it — still atomic. A bare `cp` straight to `obj_out` is NOT atomic:
+	 * a concurrent run's `pe_exists(obj_out)` would see the half-written object and link a truncated unit. */
 	if (rename(objtmp, obj_out) != 0) {
-		snprintf(cmd, sizeof(cmd), "cp %s %s", objtmp, obj_out);
+		char cptmp[900];
+		snprintf(cptmp, sizeof(cptmp), "%s/.%s.%ld.tmp", cache_dir, hash, (long)getpid());
+		snprintf(cmd, sizeof(cmd), "cp %s %s", objtmp, cptmp);
 		if (system(cmd) != 0)
 			return 1;
+		if (rename(cptmp, obj_out) != 0) {
+			unlink(cptmp);
+			return 1;
+		}
 	}
 	return 0;
 }
@@ -385,7 +394,10 @@ static int build_unit_so(const char *unit_ll, const char *workdir, int u, const 
 	 * host only ever sees the old `.so` or the complete new one.
 	 * (`-Wl,-z,undefs`, the -shared default, leaves host-provided symbols undefined until load.) */
 	char so_tmp[1400];
-	snprintf(so_tmp, sizeof(so_tmp), "%s.tmp", out_so);
+	/* Per-PROCESS temp name: concurrent `arche run`s of sibling files share this `.arche-hot` dir, so a fixed
+	 * `<out_so>.tmp` would let one run's rename race another's (mv: "cannot stat"). A pid-tagged temp keeps
+	 * each build private; the rename into the shared `out_so` stays atomic (same dir). */
+	snprintf(so_tmp, sizeof(so_tmp), "%s.%ld.tmp", out_so, (long)getpid());
 	snprintf(cmd, sizeof(cmd), "cc -shared -fPIC -o %s %s", so_tmp, asmf);
 	if (system(cmd) != 0)
 		return 1;

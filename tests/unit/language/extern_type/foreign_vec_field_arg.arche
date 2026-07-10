@@ -9,10 +9,16 @@
 sink_be :: proc(x: int, y: int)();
 
 pos2(x, y) :: int;
-Thing :: arche { pos2 }
+Thing      :: arche { pos2 }
 [1]Thing ?abort;
 
-seed :: system eff { insert(Thing { pos2: (3, 4) })(_:, _ok:); }
-go :: system eff { map (query { pos2 }) eff { sink_be(pos2.x, pos2.y)(); }; }
+seed :: system eff {
+  insert(Thing { pos2: (3, 4) })(_:, _ok:);
+}
+go :: system eff {
+  map (query { pos2 }) eff {
+    sink_be(pos2.x, pos2.y)();
+  };
+}
 
 #run seq({ seed, go })

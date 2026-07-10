@@ -23,8 +23,20 @@ seed :: system eff {
   insert(B { mark_b: 0, len: 9 })(_:, _ok:);
 }
 
-set_a :: system eff { map (query { mark_a, len })(len) eff { len = 5; }; }
-show_a :: system eff { map (query { mark_a, len }) eff { fmt.printf("A=%d\n", len); }; }
-show_b :: system eff { map (query { mark_b, len }) eff { fmt.printf("B=%d\n", len); }; }
+set_a :: system eff {
+  map (query { mark_a, len })(len) eff {
+    len = 5;
+  };
+}
+show_a :: system eff {
+  map (query { mark_a, len }) eff {
+    fmt.printf("A=%d\n", len);
+  };
+}
+show_b :: system eff {
+  map (query { mark_b, len }) eff {
+    fmt.printf("B=%d\n", len);
+  };
+}
 
 #run seq({ seed, set_a, show_a, show_b })

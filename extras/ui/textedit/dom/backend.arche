@@ -1,8 +1,8 @@
 #module
 #foreign
-textedit_be_open     :: proc(buf: []char, n: int)(buf: []char);
+textedit_be_open :: proc(buf: []char, n: int)(buf: []char);
 #foreign
-textedit_be_text     :: proc(buf: []char, cap: int)(buf: []char);
+textedit_be_text :: proc(buf: []char, cap: int)(buf: []char);
 #foreign
 textedit_be_poll_run :: proc()(r: int);
 
@@ -24,7 +24,9 @@ text :: system eff {
 poll_run :: system eff {
   map (query { submit })(submit) eff {
     textedit_be_poll_run()(r:);
-    if (r == 1) { submit = 1; }
+    if (r == 1) {
+      submit = 1;
+    }
   };
 }
 

@@ -7,58 +7,98 @@ EDIT_TSZ :: 16;
 step :: system eff {
   map (query { source, len, cursor, submit, key })(source, len, cursor, submit) eff {
     k := key;
-    if (k == 18) { submit = 1; }
-    if (k == 1000 && cursor > 0) { cursor = cursor - 1; }
-    if (k == 1001 && cursor < len) { cursor = cursor + 1; }
+    if (k == 18) {
+      submit = 1;
+    }
+    if (k == 1000 && cursor > 0) {
+      cursor = cursor - 1;
+    }
+    if (k == 1001 && cursor < len) {
+      cursor = cursor + 1;
+    }
     if (k == 1002) {
       ls := cursor;
-      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) { }
+      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) {
+      }
       c := cursor - ls;
       if (ls > 0) {
         ps := ls - 1;
-        for (; ps > 0 && source[ps - 1] != 10; ps -= 1) { }
+        for (; ps > 0 && source[ps - 1] != 10; ps -= 1) {
+        }
         plen := ls - 1 - ps;
-        if (c > plen) { cursor = ls - 1; } else { cursor = ps + c; }
+        if (c > plen) {
+          cursor = ls - 1;
+        }
+        else {
+          cursor = ps + c;
+        }
       }
     }
     if (k == 1003) {
       ls := cursor;
-      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) { }
-      c := cursor - ls;
+      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) {
+      }
+      c  := cursor - ls;
       le := cursor;
-      for (; le < len && source[le] != 10; le += 1) { }
+      for (; le < len && source[le] != 10; le += 1) {
+      }
       if (le < len) {
         ns := le + 1;
         ne := ns;
-        for (; ne < len && source[ne] != 10; ne += 1) { }
+        for (; ne < len && source[ne] != 10; ne += 1) {
+        }
         nlen := ne - ns;
-        if (c > nlen) { cursor = ne; } else { cursor = ns + c; }
+        if (c > nlen) {
+          cursor = ne;
+        }
+        else {
+          cursor = ns + c;
+        }
       }
     }
     if (k == 8 && cursor > 0) {
-      for (j := cursor - 1; j < len - 1; j += 1) { source[j] = source[j + 1]; }
-      len = len - 1;
+      for (j := cursor - 1; j < len - 1; j += 1) {
+        source[j] = source[j + 1];
+      }
+      len    = len - 1;
       cursor = cursor - 1;
     }
     ch := 0;
-    if (k >= 32 && k < 127) { ch = k; }
-    if (k == 13) { ch = 10; }
+    if (k >= 32 && k < 127) {
+      ch = k;
+    }
+    if (k == 13) {
+      ch = 10;
+    }
     if (ch > 0 && len < source.length - 1) {
-      for (j := len; j > cursor; j -= 1) { source[j] = source[j - 1]; }
+      for (j := len; j > cursor; j -= 1) {
+        source[j] = source[j - 1];
+      }
       source[cursor] = ch;
-      len = len + 1;
-      cursor = cursor + 1;
+      len            = len + 1;
+      cursor         = cursor + 1;
     }
   };
 }
 
 render :: system (query { framebuffer })(framebuffer) eff {
   map (query { source, len, cursor, screen, size, view }) eff {
-    bx0 := screen.x;       by0 := screen.y;       bx1 := screen.x + size.w;   by1 := screen.y + size.h;
-    if (bx0 < 0) { bx0 = 0; }
-    if (by0 < 0) { by0 = 0; }
-    if (bx1 > view.w) { bx1 = view.w; }
-    if (by1 > view.h) { by1 = view.h; }
+    bx0 := screen.x;
+    by0 := screen.y;
+    bx1 := screen.x + size.w;
+    by1 := screen.y + size.h;
+    if (bx0 < 0) {
+      bx0 = 0;
+    }
+    if (by0 < 0) {
+      by0 = 0;
+    }
+    if (bx1 > view.w) {
+      bx1 = view.w;
+    }
+    if (by1 > view.h) {
+      by1 = view.h;
+    }
     for (yy := by0; yy < by1; yy += 1) {
       for (xx := bx0; xx < bx1; xx += 1) {
         framebuffer[yy * view.w + xx] = EDIT_BG;
@@ -74,9 +114,16 @@ render :: system (query { framebuffer })(framebuffer) eff {
     curx  := left;
     cury  := top;
     for (i := 0; i < len; i += 1) {
-      if (i == cursor) { curx = penx; cury = peny; }
+      if (i == cursor) {
+        curx = penx;
+        cury = peny;
+      }
       c := source[i];
-      if (c == 10) { penx = left; peny = peny + pitch; continue; }
+      if (c == 10) {
+        penx = left;
+        peny = peny + pitch;
+        continue;
+      }
       if (c >= 32 && c <= 126) {
         gi := c - 32;
         for (row := 0; row < 8; row += 1) {
@@ -102,7 +149,10 @@ render :: system (query { framebuffer })(framebuffer) eff {
         penx = penx + adv;
       }
     }
-    if (cursor >= len) { curx = penx; cury = peny; }
+    if (cursor >= len) {
+      curx = penx;
+      cury = peny;
+    }
     for (cyy := cury; cyy < cury + EDIT_TSZ; cyy += 1) {
       if (cyy >= by0 && cyy < by1) {
         for (cxx := curx; cxx < curx + 2; cxx += 1) {

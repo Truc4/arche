@@ -12,8 +12,8 @@
 // RUN: %arche build -o %t %s && %t | grep -x "97 3"
 #import { fmt }
 buf :: [4]char;
-n :: int;
-W :: arche { buf, n }
+n   :: int;
+W   :: arche { buf, n }
 [1]W ?abort;
 
 seed :: system eff {
@@ -23,4 +23,6 @@ show :: map (query { buf, n }) eff {
   fmt.printf("%d %d\n", buf[0], n);
 }
 
-#run { seq({ seed, show }) }
+#run {
+  seq({ seed, show })
+}

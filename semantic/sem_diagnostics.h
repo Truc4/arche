@@ -253,6 +253,10 @@ typedef enum {
 	                                      result-dependent sequence decomposes across systems (producer writes a
 	                                      column, consumer reads it). Default WARN; flip to error once stdlib is
 	                                      converted. W0030. */
+	SEM_LINT_dead_write_binding,       /* a column named in a kernel's `(writes)` list is never actually written
+	                                      in the body (nor any nested fan) — a dead write-back binding, e.g. a
+	                                      `(col:)` out-binder shadows the queried column so the write lands on a
+	                                      throwaway local. W0031. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -365,6 +369,7 @@ SemDiag *sem_emit_proc_under_applied(SemanticContext *ctx, SourceLoc loc, const 
 SemDiag *sem_emit_eff_extern_not_static(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_lint_unused_query(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_dead_write_binding(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_filter_type_not_primitive(SemanticContext *ctx, SourceLoc loc);
 SemDiag *sem_emit_each_field_invalid_rhs(SemanticContext *ctx, SourceLoc loc, const char *name);

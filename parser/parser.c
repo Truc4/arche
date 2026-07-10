@@ -1019,7 +1019,12 @@ static int parse_static_decl(Parser *parser, SyntaxNodeKind *out_kind) {
 			 * the value name (which denotes a type), exactly like the bare `name :: T` alias form. */
 			if (parser->current.kind == TOK_ALIAS)
 				advance(parser);
-			if (!parse_expression(parser))
+			/* A bare `::` RHS that begins a type-only form (`[N]T`) can't start an expression; parse it as
+			 * a type so a top-level array component (`buf :: [4]char`) carries its shape to the column. */
+			if (parser->current.kind == TOK_LBRACKET) {
+				if (!parse_type(parser))
+					return 0;
+			} else if (!parse_expression(parser))
 				return 0;
 		}
 		require_decl_terminator(parser);

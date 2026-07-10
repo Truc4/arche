@@ -89,8 +89,9 @@ void *gfx_be_open(int w, int h, char *title) {
 			XFree(sh);
 		}
 	}
-	XSelectInput(dpy, win, ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | ButtonPressMask |
-	                           ButtonReleaseMask | PointerMotionMask);
+	XSelectInput(dpy, win,
+	             ExposureMask | KeyPressMask | KeyReleaseMask | StructureNotifyMask | ButtonPressMask |
+	                 ButtonReleaseMask | PointerMotionMask);
 	Atom wm_delete = XInternAtom(dpy, "WM_DELETE_WINDOW", False);
 	XSetWMProtocols(dpy, win, &wm_delete, 1);
 	XMapWindow(dpy, win);
@@ -171,16 +172,21 @@ int gfx_be_poll(void *handle) {
 			int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
 			if (ks == XK_Left) {
 				g->left = down;
-				if (down) keyq_push(g, GFX_KEY_LEFT);
+				if (down)
+					keyq_push(g, GFX_KEY_LEFT);
 			} else if (ks == XK_Right) {
 				g->right = down;
-				if (down) keyq_push(g, GFX_KEY_RIGHT);
+				if (down)
+					keyq_push(g, GFX_KEY_RIGHT);
 			} else if (ks == XK_Up) {
-				if (down) keyq_push(g, GFX_KEY_UP);
+				if (down)
+					keyq_push(g, GFX_KEY_UP);
 			} else if (ks == XK_Down) {
-				if (down) keyq_push(g, GFX_KEY_DOWN);
+				if (down)
+					keyq_push(g, GFX_KEY_DOWN);
 			} else if (ks == XK_Escape) {
-				if (down) g->open = 0;
+				if (down)
+					g->open = 0;
 			} else if (down) {
 				/* Printable + control (Enter=13, Backspace=8, Tab=9…) come through XLookupString. */
 				for (int i = 0; i < n; i++)
@@ -237,7 +243,8 @@ int gfx_be_mouse_down(void *handle) {
 	return g ? g->mdown : 0;
 }
 
-/* Horizontal scroll delta accumulated since the last read (wheel), then cleared — drain-and-clear like the key queue. */
+/* Horizontal scroll delta accumulated since the last read (wheel), then cleared — drain-and-clear like the key queue.
+ */
 int gfx_be_scroll(void *handle) {
 	GfxX11 *g = handle;
 	if (!g)

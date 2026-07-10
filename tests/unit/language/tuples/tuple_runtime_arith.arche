@@ -1,0 +1,19 @@
+// A runtime tuple literal composes with tuple arithmetic: `(a, b) + C` adds the runtime-built vector to a
+// named-vector const, lane by lane. The literal is a first-class `{T,…}` value, so it feeds the same
+// tuple-arithmetic path as any tuple value. Result: (3,4) + (1,1) = (4,5).
+// RUN: %arche run %s | grep -qxF "v=4.0 5.0"
+#import { fmt }
+
+pos(x, y) :: float;
+C(x, y)   :: (1.0, 1.0);
+
+mk :: func(a: float, b: float) -> pos {
+  return (a, b) + C;
+}
+
+go :: system eff {
+  r := mk(3.0, 4.0);
+  fmt.printf("v=%.1f %.1f\n", r.x, r.y);
+}
+
+#run seq({ go })

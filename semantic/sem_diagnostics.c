@@ -205,6 +205,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_proc_calls_proc]               = { "W0028", "proc_calls_proc",               CLASS_LINT, 1 },
 	[SEM_LINT_pool_index_outside_query]      = { "W0029", "pool_index_outside_query",      CLASS_LINT, 1 },
 	[SEM_LINT_proc_not_primitive]            = { "W0030", "proc_not_primitive",            CLASS_LINT, 1 },
+	[SEM_LINT_dead_write_binding]            = { "W0031", "dead_write_binding",            CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -747,6 +748,14 @@ SemDiag *sem_emit_lint_map_writes_foreign_pool(SemanticContext *ctx, SourceLoc l
 	                 "singletons, the driver WRITES them (a foreign-pool write in a map runs once, not per row); "
 	                 "opt out with --map-foreign-write=warn|allow",
 	                 name);
+}
+
+SemDiag *sem_emit_lint_dead_write_binding(SemanticContext *ctx, SourceLoc loc, const char *name) {
+	return sem_emit_(ctx, SEM_LINT_dead_write_binding, loc,
+	                 "write-back column '%s' is declared writable but never written — an out-binder '%s:' "
+	                 "shadows the queried column so the write lands on a throwaway local; drop the ':' "
+	                 "('%s') to write the column, or remove '%s' from the write list",
+	                 name, name, name, name);
 }
 SemDiag *sem_emit_each_field_filter_type_not_name(SemanticContext *ctx, SourceLoc loc) {
 	return sem_emit_(ctx, SEM_DIAG_each_field_filter_type_not_name, loc,

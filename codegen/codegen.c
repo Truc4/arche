@@ -6972,6 +6972,26 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 			break;
 		}
 
+		/* A tuple VALUE literal `(a, b, …)` (parsed as SN_TUPLE_LIT, lowered through this array-literal node)
+		 * resolves to a `{T,…}` aggregate — NOT a `[N x i8]` char array. Pack it with `insertvalue`, the same
+		 * value the tuple-arithmetic and multi-value-return paths build, so it flows as a first-class tuple. */
+		if (expr->resolved.tag == HIR_TYPE_TUPLE && expr->resolved.field_count == elem_count) {
+			char aggty[256];
+			tuple_llvm_type(&expr->resolved, aggty, sizeof(aggty));
+			char cur[256];
+			strcpy(cur, "undef");
+			for (int i = 0; i < elem_count; i++) {
+				char eb[256];
+				codegen_expression(ctx, elems[i], eb);
+				const char *mt = llvm_type_from_arche(field_base_type_name(expr->resolved.fields[i].type));
+				char *acc = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", acc, aggty, cur, mt, eb, i);
+				strcpy(cur, acc);
+			}
+			strcpy(result_buf, cur);
+			break;
+		}
+
 		/* Build the constant RHS (type + initializer) and content-intern it. */
 		char rhs[4096];
 		char *decl_pos = rhs;
@@ -10071,9 +10091,16 @@ static void codegen_statement(CodegenContext *ctx, HirStmt *stmt) {
 					if (strcmp(arche_type, "handle") != 0) {
 						const char *st = llvm_type_from_arche(arche_type);
 						int is_flt = strcmp(st, "float") == 0 || strcmp(st, "double") == 0;
+						/* Index by the fan that BOUND this column (`loop_idx`), so an OUTER-fan column written
+						 * from a nested inner fan targets the outer row — not the ambient inner index. A `[1]`
+						 * singleton column has one row and writes at index 0. Mirrors the read path above. */
+						const char *row =
+						    (val->loop_idx && val->loop_idx[0]) ? val->loop_idx : ctx->implicit_loop_index;
+						if (val->arch_name && get_arch_static_capacity(ctx, val->arch_name) == 1)
+							row = "0";
 						char *gep = gen_value_name(ctx);
 						buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", gep, st, st, val->llvm_name,
-						                  ctx->implicit_loop_index);
+						                  row);
 						char rhs_buf[256];
 						codegen_expression(ctx, stmt->data.assign_stmt.value, rhs_buf);
 						if (stmt->data.assign_stmt.op != OP_NONE) {
@@ -12603,6 +12630,17 @@ static const char *arch_owning_col(CodegenContext *ctx, const char *col) {
 	return NULL;
 }
 
+/// Whether `arch` declares a column named `col` — a driver owns its own column even when another archetype
+/// declared the shared component first (`arch_owning_col` returns only the first owner).
+static int arch_has_col(const HirArchetypeDecl *arch, const char *col) {
+	if (!arch)
+		return 0;
+	for (int f = 0; f < arch->field_count; f++)
+		if (strcmp(arch->fields[f]->name, col) == 0)
+			return 1;
+	return 0;
+}
+
 /* Load a singleton column's value at index 0 (broadcast) as a scalar SSA, binding it to `param_name`. */
 static void bind_singleton_col(CodegenContext *ctx, const char *param_name, const char *arch_name) {
 	HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
@@ -12700,7 +12738,7 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 			for (int p = 0; p < sys->param_count; p++) {
 				const char *param_name = sys->params[p]->name;
 				const char *owner = arch_owning_col(ctx, param_name);
-				if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+				if (owner && !arch_has_col(arch, param_name) && get_arch_static_capacity(ctx, owner) == 1) {
 					bind_singleton_col(ctx, param_name, owner);
 					continue;
 				}
@@ -12867,7 +12905,7 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		for (int p = 0; p < param_count; p++) {
 			const char *param_name = params[p]->name;
 			const char *owner = arch_owning_col(ctx, param_name);
-			if (owner && strcmp(owner, arch_name) != 0 && get_arch_static_capacity(ctx, owner) == 1) {
+			if (owner && !arch_has_col(arch, param_name) && get_arch_static_capacity(ctx, owner) == 1) {
 				bind_singleton_col(ctx, param_name, owner);
 				continue;
 			}

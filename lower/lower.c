@@ -268,6 +268,9 @@ static void tuple_rewrite_stmt(HirStmt *s, const char *base) {
 	case HIR_STMT_BIND:
 		tuple_rewrite_expr(s->data.bind_stmt.value, base);
 		break;
+	case HIR_STMT_MULTI_BIND:
+		tuple_rewrite_expr(s->data.multi_bind.value, base);
+		break;
 	case HIR_STMT_ASSIGN:
 		tuple_rewrite_expr(s->data.assign_stmt.target, base);
 		tuple_rewrite_expr(s->data.assign_stmt.value, base);
@@ -588,6 +591,21 @@ static HirType map_type_id(const TypeArena *a, TypeId t) {
 		/* an archetype handle (e.g. an `insert` out-slot) — a pointer-width i64 cell, as map_type_str. */
 		ht.tag = HIR_TYPE_HANDLE;
 		return ht;
+	case TYK_ARRAY: {
+		/* `[N]T` sized array → SHAPED_ARRAY (rank N); `[]T` slice → ARRAY. Matches lower_type_cst's node path. */
+		HirType *elem = hir_type_create(HIR_TYPE_UNKNOWN);
+		*elem = map_type_id(a, tyid_elem(a, t));
+		int len = tyid_array_len(a, t);
+		if (len >= 0) {
+			ht.tag = HIR_TYPE_SHAPED_ARRAY;
+			ht.elem = elem;
+			ht.rank = len;
+		} else {
+			ht.tag = HIR_TYPE_ARRAY;
+			ht.elem = elem;
+		}
+		return ht;
+	}
 	default:
 		ht.tag = HIR_TYPE_UNKNOWN;
 		return ht;
@@ -1150,6 +1168,27 @@ static HirExpr *lower_expr_cst(SyntaxView e) {
 				continue;
 			SyntaxView ev = {e.node->children[i].as.node, e.src};
 			ax->data.array_literal.elements[ax->data.array_literal.element_count++] = lower_expr_cst(ev);
+		}
+		/* A tuple VALUE literal `(a, b, …)` carries a `{T,…}` tuple type (from the semantic model, whose element
+		 * types are authoritative) so a value position (return / bind / arg / arithmetic) packs it as an
+		 * aggregate. A column-scatter target (`P.pos = (a,b)`) iterates the elements directly and ignores it.
+		 * Kept local to the literal — a general `map_type_id` tuple case would retype unrelated group reads. */
+		if (sv_kind(e) == SN_TUPLE_LIT && g_lower_model && g_lower_sem) {
+			const TypeArena *ar = sem_context_arena(g_lower_sem);
+			TypeId tt = sem_model_expr_type_id(g_lower_model, sv_id(e));
+			if (tyid_kind(ar, tt) == TYK_TUPLE) {
+				int nc = tyid_tuple_count(ar, tt);
+				ax->resolved.tag = HIR_TYPE_TUPLE;
+				ax->resolved.field_count = nc;
+				ax->resolved.fields = nc ? calloc((size_t)nc, sizeof(HirTupleField)) : NULL;
+				for (int i = 0; i < nc; i++) {
+					const char *fn = tyid_tuple_field_name(ar, tt, i);
+					ax->resolved.fields[i].name = (fn && fn[0]) ? dupz(fn) : NULL;
+					HirType *ft = hir_type_create(HIR_TYPE_UNKNOWN);
+					*ft = map_type_id(ar, tyid_tuple_field_type(ar, tt, i));
+					ax->resolved.fields[i].type = ft;
+				}
+			}
 		}
 		break;
 	}
@@ -2805,6 +2844,9 @@ static HirDecl *lower_system_from(SyntaxView f, char *name) {
 	as->eff = sv_has_eff(f);
 	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* Expand whole-group vector writes (`pos = pos + vel`) before the `pos.x`→`pos_x` rewrite, as the
+	 * pure-map path does — a `system(Q)` fan writes columns the same way. */
+	expand_group_assigns(as);
 	/* `system(Q)` carries query columns (the effectful fan); a run-once `system { }` resolves to 0. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
 	/* `system (query {…} as Flock)`: `Flock.<col>` names the whole queried column (the neighbour fold domain). */
@@ -2827,6 +2869,9 @@ static HirKernelDecl *lower_each_payload(SyntaxView f, char *name) {
 	as->eff = 1; /* the per-entity fan (`map (Q) eff`) is effectful by construction */
 	lower_writes(f, &as->writes, &as->write_count);
 	as->stmts = syntax_lower_body(f, &as->stmt_count);
+	/* Expand whole-group vector writes (`pos = pos + vel`) into per-component blocks BEFORE the per-param
+	 * `pos.x`→`pos_x` rewrite, exactly as the pure-map path does — an eff fan writes columns the same way. */
+	expand_group_assigns(as);
 	/* the fan carries its query columns (flattened), bound per-element in codegen's row loop. */
 	lower_query_columns(f, as->stmts, as->stmt_count, &as->params, &as->param_count);
 	/* `map (query {…} as w) eff`: the matched row's handle binds to `w` in the body. */
@@ -2925,8 +2970,15 @@ static HirDecl *lower_archetype_from(SyntaxView f, char *name) {
 		/* Preserve the source-declared type name for close-on-delete matching — an enum column lowers to
 		 * its backing int below, losing the nominal, so record it here (the base identifier of the type). */
 		af->decl_type_name = sv_present(ty) ? sv_dup_first_token(ty) : sv_dup(fn);
+		TypeId arr_id = g_lower_sem ? semantic_callable_type_alias(g_lower_sem, raw) : TYID_UNKNOWN;
 		if (sv_present(ty)) {
 			af->type = lower_type_cst(ty);
+		} else if (arr_id != TYID_UNKNOWN && tyid_kind(sem_context_arena(g_lower_sem), arr_id) == TYK_ARRAY) {
+			/* A top-level array component (`buf :: [4]char`) referenced by bare name — build the real `[N]T`
+			 * column from the stored full TypeId, like the inline `arche { buf :: [4]char }` member does. */
+			HirType *t = hir_type_create(HIR_TYPE_UNKNOWN);
+			*t = map_type_id(sem_context_arena(g_lower_sem), arr_id);
+			af->type = t;
 		} else {
 			const char *r = g_lower_sem ? semantic_resolve_type_alias(g_lower_sem, raw) : raw;
 			HirType *t = hir_type_create(HIR_TYPE_UNKNOWN);

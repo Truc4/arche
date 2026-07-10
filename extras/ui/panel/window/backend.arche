@@ -7,21 +7,43 @@ TITLE_TSZ    :: 24;
 
 render :: system (query { framebuffer })(framebuffer) eff {
   map (query { screen, size, title, len, view }) eff {
-    bx0 := screen.x;         by0 := screen.y;         bx1 := screen.x + size.w;     by1 := screen.y + size.h;
-    if (bx0 < 0) { bx0 = 0; }
-    if (by0 < 0) { by0 = 0; }
-    if (bx1 > view.w) { bx1 = view.w; }
-    if (by1 > view.h) { by1 = view.h; }
+    bx0 := screen.x;
+    by0 := screen.y;
+    bx1 := screen.x + size.w;
+    by1 := screen.y + size.h;
+    if (bx0 < 0) {
+      bx0 = 0;
+    }
+    if (by0 < 0) {
+      by0 = 0;
+    }
+    if (bx1 > view.w) {
+      bx1 = view.w;
+    }
+    if (by1 > view.h) {
+      by1 = view.h;
+    }
     for (yy := by0; yy < by1; yy += 1) {
       for (xx := bx0; xx < bx1; xx += 1) {
         framebuffer[yy * view.w + xx] = FRAME_BORDER;
       }
     }
-    ix0 := screen.x + 2;     iy0 := screen.y + 2;     ix1 := screen.x + size.w - 2; iy1 := screen.y + size.h - 2;
-    if (ix0 < 0) { ix0 = 0; }
-    if (iy0 < 0) { iy0 = 0; }
-    if (ix1 > view.w) { ix1 = view.w; }
-    if (iy1 > view.h) { iy1 = view.h; }
+    ix0 := screen.x + 2;
+    iy0 := screen.y + 2;
+    ix1 := screen.x + size.w - 2;
+    iy1 := screen.y + size.h - 2;
+    if (ix0 < 0) {
+      ix0 = 0;
+    }
+    if (iy0 < 0) {
+      iy0 = 0;
+    }
+    if (ix1 > view.w) {
+      ix1 = view.w;
+    }
+    if (iy1 > view.h) {
+      iy1 = view.h;
+    }
     for (yy := iy0; yy < iy1; yy += 1) {
       for (xx := ix0; xx < ix1; xx += 1) {
         framebuffer[yy * view.w + xx] = FRAME_BG;
@@ -34,9 +56,9 @@ render :: system (query { framebuffer })(framebuffer) eff {
       }
     }
     scale := TITLE_TSZ / 8;
-    adv := 8 * scale;
-    tx  := screen.x + ui.PAD;
-    ty  := screen.y + ui.PAD;
+    adv   := 8 * scale;
+    tx    := screen.x + ui.PAD;
+    ty    := screen.y + ui.PAD;
     for (i := 0; i < len; i += 1) {
       c := title[i];
       if (c >= 32 && c <= 126) {

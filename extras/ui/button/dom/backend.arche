@@ -2,7 +2,7 @@
 #foreign
 button_be_label :: proc(s: []char, n: int)(s: []char);
 #foreign
-button_be_poll  :: proc()(clicked: int);
+button_be_poll :: proc()(clicked: int);
 
 render :: system eff {
   map (query { label, len }) eff {
