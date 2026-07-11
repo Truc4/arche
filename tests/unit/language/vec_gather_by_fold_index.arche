@@ -1,0 +1,43 @@
+// RED bug-capture: a GATHER of a WHOLE 2-vec column by a FOLD-ROW index mis-compiles. `Body.lv[P.i]` where
+// `lv(x,y)::float` is a 2-vec and `P.i` is a column of the folded pool lowers the gather base as an INTEGER
+// pointer (the 2-vec is treated as i32) — the emitted IR fails to verify (`opt: error: integer constant must
+// have integer type`, or `expected value token` at `getelementptr i32, i32* lv, …`) — so it fails to build.
+//
+// SCALAR and per-COMPONENT gathers by the same fold-row index DO compile and run correctly
+// (`Body.lv.x[P.i]`, `Body.val[P.i]` — see tests/extras/rigid_cross_pool_gather_reduce.arche); only the
+// whole-2-vec gather breaks. The `rigid` device's Stage-2 warm-start solver works around it by gathering
+// body state component-wise. Found building the cross-pool warm-start feasibility spike.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { fmt }
+
+lv(x, y) :: float;
+sink(x, y) :: float;
+i :: int;
+Body :: arche { lv, sink }
+Ref  :: arche { i }
+[4]Body(2);
+[4]Ref(2);
+
+// gather the WHOLE 2-vec of the body indexed by a folded Ref row.
+grab :: func(v: lv) -> sink { return v; }
+
+seed :: system {
+  Body.lv.x = { 3.0, 5.0 };  Body.lv.y = { 4.0, 12.0 };
+  Body.sink.x = { 0.0, 0.0 };  Body.sink.y = { 0.0, 0.0 };
+  Ref.i = { 1, 0 };
+}
+
+// map Body, fold Ref, gather the WHOLE 2-vec Body.lv[Ref.i] (the mis-compiling form).
+pull :: system (query { i } as R) {
+  map (query { lv, sink } as me)(sink) {
+    sink = reduce(+, grab(Body.lv[R.i]));
+  };
+}
+
+verify :: system eff {
+  // body0 should pull row1's lv=(5,12); body1 should pull row0's lv=(3,4).
+  fmt.assert(Body.sink.x[0] > 4.9 && Body.sink.x[0] < 5.1, "whole-2-vec fold-index gather broken\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, pull, verify })

@@ -1,7 +1,8 @@
-// Driver test for `rigid.integrate`: a rigid body translates by its linear velocity and its orientation
-// unit-vector `rot` spins by `avel` while STAYING unit length (renormalised small-angle step — no trig).
-// Body starts pos=(10,20), mo=(3,-1,0.2) [lvel=(3,-1), avel=0.2], rot=(1,0). After 5 frames pos=(25,15)
-// exactly; rot has turned ~1.0 rad CCW (rot.y climbs) and |rot| is still 1.
+// Driver test for `rigid.integrate` (now a TGS SUBSTEP stepping by DT=1/16): a rigid body translates by
+// `lvel·DT` and its orientation unit-vector `rot` spins by `avel·DT` while STAYING unit length (renormalised
+// small-angle step — no trig). Body starts pos=(10,20), lvel=(3,-1), avel=0.2, rot=(1,0). Calling integrate
+// 16× = ONE frame: pos advances by the full lvel to (13,19) exactly; rot turns ~0.2 rad CCW (rot.y≈0.199)
+// and |rot| stays 1.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt }
 
@@ -22,10 +23,13 @@ seed :: system {
 // Assertions read state via column comparisons + a func (vec.len), NOT `local := RBody.vec.x[0]; local*…`.
 verify :: system eff {
   len := vec.len(vec.mk(RBody.rot.x[0], RBody.rot.y[0]));
-  fmt.assert(RBody.pos.x[0] == 25.0 && RBody.pos.y[0] == 15.0, "linear integrate wrong\n")();
+  fmt.assert(RBody.pos.x[0] == 13.0 && RBody.pos.y[0] == 19.0, "linear integrate wrong (lvel·DT over 16 substeps)\n")();
   fmt.assert(len > 0.999 && len < 1.001, "rot drifted off unit length\n")();
-  fmt.assert(RBody.rot.y[0] > 0.5 && RBody.rot.x[0] < 0.9 && RBody.rot.x[0] > 0.0, "rot did not spin CCW\n")();
+  fmt.assert(RBody.rot.y[0] > 0.18 && RBody.rot.y[0] < 0.21 && RBody.rot.x[0] > 0.97, "rot did not spin CCW ~0.2 rad\n")();
   fmt.printf("ok\n");
 }
 
-#run seq({ seed, integrate, integrate, integrate, integrate, integrate, verify })
+#run seq({ seed,
+  integrate, integrate, integrate, integrate, integrate, integrate, integrate, integrate,
+  integrate, integrate, integrate, integrate, integrate, integrate, integrate, integrate,
+  verify })

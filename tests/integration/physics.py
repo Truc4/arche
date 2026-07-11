@@ -38,12 +38,15 @@ def _vecrow(vals):
     return "{ " + ", ".join("%r" % float(v) for v in vals) + " }"
 
 
-def build_driver(bodies, frames, iters=(12, 4), grav=0.4):
+SUBSTEPS = 16  # MUST match rigid.arche SUBSTEPS/DT — the device integrates by a compile-constant DT=1/16.
+
+
+def build_driver(bodies, frames, vel_it=2, grav=0.4):
     """bodies: list of dicts with pos,vel,spin,rot,ext,mi,mat (each a tuple/scalar). A body with mi[0]==0
     and a non-zero vel is a KINEMATIC pusher (moves at constant velocity, unaffected by collisions).
-    Traces every body every frame. `iters` = (velocity, position) iteration counts."""
+    Traces every body every frame. Substepped TGS-Soft solver: SUBSTEPS substeps/frame, `vel_it` velocity
+    iterations per substep. Gravity is applied per substep (GRAV/SUBSTEPS)."""
     n = len(bodies)
-    vel_it, pos_it = iters
     cols = {
         "pos.x": [b["pos"][0] for b in bodies], "pos.y": [b["pos"][1] for b in bodies],
         "lvel.x": [b["vel"][0] for b in bodies], "lvel.y": [b["vel"][1] for b in bodies],
@@ -67,8 +70,12 @@ def build_driver(bodies, frames, iters=(12, 4), grav=0.4):
                   'RBody.rot.x[%d], RBody.rot.y[%d], RBody.spin.x[%d]);\n') % (i, i, i, i, i, i, i, i)
     trace += ('    if (c > %d.5) { fmt.fflush(0)(_:); os.exit(0)(_:); }\n  };\n}\n' % (frames - 1))
 
-    vstep = ", ".join(["rigid.solve_lin, rigid.solve_ang, rigid.apply"] * vel_it)
-    pstep = ", ".join(["rigid.solve_pos, rigid.apply_pos"] * pos_it)
+    # One TGS substep: apply gravity (per-substep GRAV/SUBSTEPS), count contacts, run `vel_it` soft-constraint
+    # velocity iterations, then integrate positions by DT. The whole substep is unrolled SUBSTEPS times/frame.
+    substep = ("grav, rigid.contacts, "
+               + "rigid.solve_lin, rigid.solve_ang, rigid.apply, " * vel_it
+               + "rigid.integrate")
+    subs = ", ".join([substep] * SUBSTEPS)
     # World-bounds confine: a dynamic body's centre is clamped into the arena and velocity into a wall is
     # zeroed. The real wall collisions handle normal contact; this only fires when a body would leave the
     # visual bin (e.g. squeezed between the player and a wall — an over-constrained case the solver can't win).
@@ -88,28 +95,34 @@ def build_driver(bodies, frames, iters=(12, 4), grav=0.4):
     ) % (AL, AR, ATOP, AFLOOR)
     prog = (
         "#import { rigid vec fmt os }\n"
-        "GRAV :: %r;\n"
+        "GDT :: %r;\n"                        # gravity per SUBSTEP = GRAV / SUBSTEPS
         "c :: float;\n"
         "Clock :: arche { c }\n"
         "[%d]RBody(%d);\n"
         "[1]Clock(1);\n"
         "%s"
-        "grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y + GRAV * select(mi.x > 0.0, 1.0, 0.0); }\n"
+        "grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y + GDT * select(mi.x > 0.0, 1.0, 0.0); }\n"
         "tick :: map (query { c })(c) { c = c + 1.0; }\n"
         "%s%s"
-        "#run seq({ seed, forever(seq({ grav, rigid.integrate, %s, %s, rigid.rest, confine, tick, trace })) })\n"
-    ) % (grav, n, n, seed, confine, trace, vstep, pstep)
+        "#run seq({ seed, forever(seq({ %s, rigid.rest, confine, tick, trace })) })\n"
+    ) % (grav / SUBSTEPS, n, n, seed, confine, trace, subs)
     return prog
 
 
 def run(prog, timeout=200):
+    # COMPILE to a native binary then execute it — the substepped solver runs 16×/frame, far too slow under
+    # the `arche run` interpreter. Building once + running the compiled exe is ~10-100× faster.
     with tempfile.TemporaryDirectory() as d:
         with open(os.path.join(d, "arche.toml"), "w") as f:
             f.write(MANIFEST)
         with open(os.path.join(d, "s.arche"), "w") as f:
             f.write(prog)
-        r = subprocess.run([arche_bin, "run", "--pool-index=allow", "s.arche"],
+        exe = os.path.join(d, "sim")
+        b = subprocess.run([arche_bin, "build", "--pool-index=allow", "-o", exe, "s.arche"],
                            cwd=d, capture_output=True, text=True, timeout=timeout)
+        if b.returncode != 0:
+            return "", "BUILD FAILED:\n" + b.stderr[-2000:], b.returncode
+        r = subprocess.run([exe], cwd=d, capture_output=True, text=True, timeout=timeout)
         return r.stdout, r.stderr, r.returncode
 
 
@@ -210,7 +223,39 @@ def scn_squeeze():
     return bodies, dyn, 150
 
 
-SCENARIOS = {"rest": scn_rest, "squeeze": scn_squeeze}
+def scn_stack():
+    """A 4-box tower that must settle SOLID — the dead-solid-stack invariant the soft-constraint solver buys.
+    Boxes start a few px above their rest heights (1100/1020/940/860, each 2*ext apart on the floor) and must
+    settle into contact WITHOUT compressing the tower or jittering."""
+    walls = bin_bodies()
+    cx = (AL + AR) / 2
+    ext = 40.0
+    invI = 1.0 / (ext * ext * 2 / 3)
+    ys = [1096, 1012, 928, 844]  # bottom→top, ~4-16px above rest so they settle into contact
+    boxes = [{"pos": (cx, y), "vel": (0, 0), "spin": 0.0, "rot": (1, 0), "ext": (ext, ext),
+              "mi": (1.0, invI), "mat": (0.0, 0.5)} for y in ys]
+    dyn = list(range(len(walls), len(walls) + 4))  # bottom→top
+    return walls + boxes, dyn, 160
+
+
+def check_stack(frames, dyn, spacing=80.0, tol_frac=0.02, tail=40):
+    """`dyn` are the stacked boxes bottom→top. Over the settled tail, consecutive centres must stay `spacing`
+    apart within tol_frac (the tower neither COMPRESSES nor gaps), and the top box must be at rest."""
+    fmax = max(frames)
+    window = [f for f in frames if f > fmax - tail]
+    tol = spacing * tol_frac
+    for a, b in zip(dyn, dyn[1:]):
+        gaps = [abs(frames[f][a][1] - frames[f][b][1]) for f in window]
+        if abs(min(gaps) - spacing) > tol or abs(max(gaps) - spacing) > tol:
+            raise Fail("stack gap %d-%d = [%.2f,%.2f], want %.1f±%.2f (compression/separation)"
+                       % (a, b, min(gaps), max(gaps), spacing, tol))
+    top = dyn[-1]
+    vmax = max(max(abs(frames[f][top][2]), abs(frames[f][top][3])) for f in window)
+    if vmax > 0.1:
+        raise Fail("stack top box not at rest: |v|max=%.3f" % vmax)
+
+
+SCENARIOS = {"rest": scn_rest, "squeeze": scn_squeeze, "stack": scn_stack}
 
 
 def main():
@@ -228,6 +273,9 @@ def main():
             check_containment(fr, bodies, dyn)
             if name in ("rest",):
                 check_rest(fr, dyn)
+            if name == "stack":
+                check_rest(fr, dyn)
+                check_stack(fr, dyn)
             print("PASS %-10s (%d frames, %d bodies)" % (name, max(fr), len(dyn)))
         except Fail as e:
             print("FAIL %-10s %s" % (name, e))

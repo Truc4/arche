@@ -1,0 +1,59 @@
+// Driver test: an 8-box TALL tower settles DEAD-SOLID under the substepped TGS-Soft solve. This is the case
+// the plan expected to need Stage-2 warm-starting — but the substepped soft-constraint velocity solver +
+// per-body mass-splitting already converges it: the bottom contact (bearing 7 boxes) compresses <0.3%, every
+// gap stays ~80, the whole tower is at rest. So warm-starting is NOT required for tall stacks at this scale.
+// (Measured to ~0.15% at 8 boxes, ~0.22% at 12.)
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt os }
+
+GDT :: 0.025;
+c :: float;
+Clock :: arche { c }
+
+[16]RBody(9);
+[1]Clock(1);
+seed :: system {
+  RBody.pos.x  = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };
+  RBody.pos.y  = { -1000.0, 50.0,140.0,230.0,320.0,410.0,500.0,590.0,680.0 };
+  RBody.lvel.x = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };  RBody.lvel.y = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };
+  RBody.spin.x = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };  RBody.spin.y = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };
+  RBody.rot.x  = { 1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0 };  RBody.rot.y  = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };
+  RBody.ext.x  = { 4000.0, 40.0,40.0,40.0,40.0,40.0,40.0,40.0,40.0 };
+  RBody.ext.y  = { 1000.0, 40.0,40.0,40.0,40.0,40.0,40.0,40.0,40.0 };
+  RBody.mi.x   = { 0.0, 1.0,1.0,1.0,1.0,1.0,1.0,1.0,1.0 };
+  RBody.mi.y   = { 0.0, 0.0009375,0.0009375,0.0009375,0.0009375,0.0009375,0.0009375,0.0009375,0.0009375 };
+  RBody.mat.x  = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };  RBody.mat.y  = { 0.3,0.3,0.3,0.3,0.3,0.3,0.3,0.3,0.3 };
+  RBody.dimp.x = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };  RBody.dimp.y = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };
+  RBody.dang.x = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };  RBody.dang.y = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };
+  RBody.cor.x  = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };  RBody.cor.y  = { 0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0,0.0 };
+  Clock.c = { 0.0 };
+}
+
+grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
+tick :: map (query { c })(c) { c = c + 1.0; }
+
+sub :: func() -> Schedule {
+  return seq({ grav, rigid.contacts, rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.integrate });
+}
+
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 349.5) {
+      gbot := RBody.pos.y[2] - RBody.pos.y[1];   // bottom gap, bearing 7 boxes
+      gtop := RBody.pos.y[8] - RBody.pos.y[7];   // top gap, bearing 1
+      fmt.assert(RBody.pos.y[1] > 39.0 && RBody.pos.y[1] < 41.0, "bottom box rests near ~40\n")();
+      fmt.assert(gbot > 79.3 && gbot < 80.3, "bottom (most-loaded) gap stays ~80 (<0.3% compression)\n")();
+      fmt.assert(gtop > 79.3 && gtop < 80.3, "top gap stays ~80\n")();
+      fmt.assert(RBody.lvel.y[8] > -0.05 && RBody.lvel.y[8] < 0.05, "top box settles to rest (dead-solid tower)\n")();
+      fmt.assert(RBody.spin.x[4] > -0.02 && RBody.spin.x[4] < 0.02, "boxes stay upright\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
+}
+
+#run seq({ seed, forever(seq({
+  sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),
+  rigid.rest, tick, check })) })

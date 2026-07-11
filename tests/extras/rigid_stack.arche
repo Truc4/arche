@@ -1,48 +1,50 @@
-// Driver test: a STACK of 3 boxes dropped onto a static floor settles into a standing tower — the hardest
-// case for a Jacobi rigid solver. At PIXEL scale (ext=40, gravity 0.4), 12 velocity + 6 positional
-// iterations per frame. After 250 frames the three boxes rest in order, UPRIGHT (no spin), roughly at the
-// stacked heights (~40 / ~120 / ~200), neither collapsed/fallen-through nor exploded apart.
-//
-// A dense vertical stack is exactly the case a Jacobi/reduce solver converges on SLOWLY: it stands and stays
-// upright, but the contacts stay slightly compressed and the top box keeps a small residual velocity (a
-// documented engine limitation — Gauss-Seidel/sequential impulses would settle it dead; see the physics
-// integration harness note). So this asserts the STRUCTURAL invariant (stands, upright, ordered, does not
-// collapse or blow up), not a dead-still rest — loose height bands absorb the residual compression.
+// Driver test: a 3-box tower settles SOLID under the substepped TGS-Soft solve — the case the old Jacobi
+// solver could only leave compressed & jittering (documented limitation). Here the soft-constraint velocity
+// bias + per-body mass-splitting + 16 substeps settle it dead: boxes rest at ~40/120/200 (each 80 apart),
+// gaps within ~0.1px of 80 (<0.2% compression), top box at rest, all upright. No positional pass.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-G :: 0.4;
+GDT :: 0.025;
 c :: float;
 Clock :: arche { c }
 
 [8]RBody(4);
 [1]Clock(1);
 seed :: system {
-  RBody.pos.x  = { 0.0,    0.0,  0.0,  0.0  };  RBody.pos.y  = { -1000.0, 50.0, 132.0, 214.0 };
+  RBody.pos.x  = { 0.0,    0.0,  0.0,  0.0  };  RBody.pos.y  = { -1000.0, 50.0, 140.0, 230.0 };
   RBody.lvel.x = { 0.0,    0.0,  0.0,  0.0  };  RBody.lvel.y = { 0.0, 0.0, 0.0, 0.0 };
   RBody.spin.x = { 0.0,    0.0,  0.0,  0.0  };  RBody.spin.y = { 0.0, 0.0, 0.0, 0.0 };
   RBody.rot.x  = { 1.0,    1.0,  1.0,  1.0  };  RBody.rot.y  = { 0.0, 0.0, 0.0, 0.0 };
   RBody.ext.x  = { 4000.0, 40.0, 40.0, 40.0 };  RBody.ext.y  = { 1000.0, 40.0, 40.0, 40.0 };
-  RBody.mi.x   = { 0.0,    1.0,  1.0,  1.0  };  RBody.mi.y   = { 0.0, 0.000938, 0.000938, 0.000938 };
-  RBody.mat.x  = { 0.0,    0.0,  0.0,  0.0  };  RBody.mat.y  = { 0.4, 0.4, 0.4, 0.4 };
+  RBody.mi.x   = { 0.0,    1.0,  1.0,  1.0  };  RBody.mi.y   = { 0.0, 0.0009375, 0.0009375, 0.0009375 };
+  RBody.mat.x  = { 0.0,    0.0,  0.0,  0.0  };  RBody.mat.y  = { 0.3, 0.3, 0.3, 0.3 };
   RBody.dimp.x = { 0.0,0.0,0.0,0.0 };  RBody.dimp.y = { 0.0,0.0,0.0,0.0 };
   RBody.dang.x = { 0.0,0.0,0.0,0.0 };  RBody.dang.y = { 0.0,0.0,0.0,0.0 };
   RBody.cor.x  = { 0.0,0.0,0.0,0.0 };  RBody.cor.y  = { 0.0,0.0,0.0,0.0 };
   Clock.c = { 0.0 };
 }
 
-grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - G * select(mi.x > 0.0, 1.0, 0.0); }
+grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
 tick :: map (query { c })(c) { c = c + 1.0; }
+
+sub :: func() -> Schedule {
+  return seq({ grav, rigid.contacts,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.integrate });
+}
 
 check :: system eff {
   map (query { c }) eff {
-    if (c > 249.5) {
-      fmt.assert(RBody.pos.y[1] > 30.0 && RBody.pos.y[1] < 45.0,   "bottom box should rest near ~40\n")();
-      fmt.assert(RBody.pos.y[2] > 95.0 && RBody.pos.y[2] < 125.0,  "middle box should rest near ~120\n")();
-      fmt.assert(RBody.pos.y[3] > 160.0 && RBody.pos.y[3] < 210.0, "top box should rest near ~200\n")();
-      fmt.assert(RBody.pos.y[2] - RBody.pos.y[1] > 60.0, "boxes must not collapse into each other\n")();
-      fmt.assert(RBody.spin.x[1] > -0.05 && RBody.spin.x[1] < 0.05, "boxes should stay upright\n")();
-      fmt.assert(RBody.spin.x[3] > -0.05 && RBody.spin.x[3] < 0.05, "top box should stay upright\n")();
+    if (c > 199.5) {
+      g12 := RBody.pos.y[2] - RBody.pos.y[1];
+      g23 := RBody.pos.y[3] - RBody.pos.y[2];
+      fmt.assert(g12 > 79.0 && g12 < 81.0, "bottom gap must stay ~80 (no compression)\n")();
+      fmt.assert(g23 > 79.0 && g23 < 81.0, "top gap must stay ~80 (no compression)\n")();
+      fmt.assert(RBody.pos.y[1] > 39.0 && RBody.pos.y[1] < 41.0, "bottom box rests at ~40\n")();
+      fmt.assert(RBody.lvel.y[3] > -0.05 && RBody.lvel.y[3] < 0.05, "top box settles to rest\n")();
+      fmt.assert(RBody.spin.x[1] > -0.02 && RBody.spin.x[1] < 0.02, "boxes stay upright\n")();
       fmt.printf("ok\n");
       fmt.fflush(0)(_:);
       os.exit(0)(_:);
@@ -50,13 +52,7 @@ check :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({ grav, rigid.integrate,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_pos, rigid.apply_pos, rigid.solve_pos, rigid.apply_pos, rigid.solve_pos, rigid.apply_pos,
-        rigid.solve_pos, rigid.apply_pos, rigid.solve_pos, rigid.apply_pos, rigid.solve_pos, rigid.apply_pos,
-        rigid.rest, tick, check })) })
+#run seq({ seed, forever(seq({
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  rigid.rest, tick, check })) })

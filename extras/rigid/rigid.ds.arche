@@ -11,7 +11,8 @@
 ///   `mat`  = (restitution, friction)           — material response coefficients
 ///   `dimp` = linear-impulse accumulator (x, y)         — the Jacobi solver's velocity accumulators…
 ///   `dang` = (angular-impulse accumulator, —)          — …committed by `apply`
-///   `cor`  = positional de-penetration accumulator (x, y)
+///   `cor`  = (active-contact count, —)                 — per-body, from the `contacts` pass; the divisor
+///                                                        for mass-splitting (the primary Jacobi stabiliser)
 /// EVERY per-body scalar is packed into the x of a 2-vector ON PURPOSE: a scalar-float column read through
 /// a self-join (`All.scalar`) mis-types as int, and 3-VECTOR components mis-handle in kernels — only plain
 /// 2-vectors read/write cleanly both directly and through the boids reduce. The driver owns and sizes the

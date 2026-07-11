@@ -1,0 +1,44 @@
+// Capability regression for the `rigid` device's Stage-2 warm-start solver: a `map` over one pool (Body) may
+// fold `reduce(+, …)` over a DIFFERENT pool (Pair), gathering body state by a FOLD-ROW index. This is the
+// data-parallel primitive that lets a fixed n²-pair pool hold per-pair warm-start impulses (λ) and have each
+// body sum the impulses of every pair it belongs to — the scatter-free path to contact-centric solving.
+//
+// Body values are gathered as SCALARS / 2-vec COMPONENTS (`Body.lv.x[P.pa]`): a WHOLE-2-vec gather by a
+// fold-row index currently mis-compiles (see tests/unit/language/vec_gather_by_fold_index.arche) — the
+// device gathers components. Pairs (0,1)(1,2)(2,3); each body sums its partners' lv.x. Expect 20 40 60 30.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "acc=20.000000 40.000000 60.000000 30.000000"
+#import { fmt }
+
+lv(x, y) :: float;
+ax :: float;
+pa :: int;
+pb :: int;
+Body :: arche { lv, ax }
+Pair :: arche { pa, pb }
+[4]Body(4);
+[4]Pair(3);
+
+// one fold-row (a Pair) contributes partner b's value to body a and vice-versa, keyed off the body row id.
+contribf :: func(meid: int, ea: int, eb: int, va: float, vb: float) -> float {
+  fa := select(ea == meid, 1.0, 0.0);
+  fb := select(eb == meid, 1.0, 0.0);
+  return vb * fa + va * fb;
+}
+
+seed :: system {
+  Body.lv.x = { 10.0, 20.0, 30.0, 40.0 };  Body.lv.y = { 0.0, 0.0, 0.0, 0.0 };
+  Body.ax = { 0.0, 0.0, 0.0, 0.0 };
+  Pair.pa = { 0, 1, 2 };  Pair.pb = { 1, 2, 3 };
+}
+
+fold :: system (query { pa, pb } as P) {
+  map (query { lv, ax } as me)(ax) {
+    ax = reduce(+, contribf(me.id, P.pa, P.pb, Body.lv.x[P.pa], Body.lv.x[P.pb]));
+  };
+}
+
+verify :: system eff {
+  fmt.printf("acc=%f %f %f %f\n", Body.ax[0], Body.ax[1], Body.ax[2], Body.ax[3]);
+}
+
+#run seq({ seed, fold, verify })

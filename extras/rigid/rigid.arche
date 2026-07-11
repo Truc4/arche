@@ -1,23 +1,28 @@
-/// Behavior for the `rigid` device — 2D rigid-body dynamics with ROTATION over oriented boxes (OBBs):
-/// SAT collision detection, a contact point, and an impulse solver with restitution + friction + angular
-/// response, plus a positional de-penetration pass. The full-fat companion to the AABB `physics` device.
+/// Behavior for the `rigid` device — 2D rigid-body dynamics with ROTATION over oriented boxes (OBBs): SAT
+/// collision detection, a 2-point contact manifold, and a SUBSTEPPED soft-constraint velocity solver
+/// (Box2D-v3 "TGS-Soft" flavour). The full-fat companion to the AABB `physics` device.
 ///
-/// Unlike `physics` (a single branch-free `select` kernel), a rigid solver needs real vector algebra, so
-/// the geometry lives in pure value `func`s (rotate/cross/SAT/contact/impulse) and the per-frame work is
-/// the boids self-join `reduce`: each body folds the pairwise impulses from every other body into an
-/// accumulator (a velocity SNAPSHOT read), then a second pass applies it — Jacobi, data-parallel,
-/// order-independent. The impulse response is split into a LINEAR and an ANGULAR reduce (`solve_lin` /
-/// `solve_ang`) because each fold is a 2-vector (the impulse is 3 numbers); both read the same pre-`apply`
-/// snapshot. Iterate by listing the trio several times in the schedule. Orientation is a unit vector (no
-/// trig): a body is spun by renormalising `rot + perp(rot)·ω`.
+/// The frame is advanced in SUBSTEPS(16) small steps of DT=1/16. Each substep: (driver) gravity, then
+/// `contacts` (count each body's active contacts for mass-splitting), then a few soft-constraint velocity
+/// iterations, then `integrate` (position by lvel·DT). RIGIDITY comes from this small step + the soft
+/// velocity bias (the normal impulse drives contacts to a small SEPARATING target ∝ penetration, removing
+/// overlap in VELOCITY space) — so there is NO positional/Baumgarte pass, which is what eliminated the old
+/// "sink then spring" squish. The per-substep work is the boids self-join `reduce`: each body folds the
+/// pairwise impulse from every other body into an accumulator (a velocity SNAPSHOT read), then `apply`
+/// commits it — Jacobi, data-parallel, order-independent (⇒ deterministic). Split into a LINEAR + ANGULAR
+/// reduce (`solve_lin`/`solve_ang`) because each fold is a 2-vector (the impulse is 3 numbers). The PRIMARY
+/// Jacobi stabiliser is MASS-SPLITTING (each body scales its response by 1/activeContacts), not
+/// under-relaxation. Orientation is a unit vector (no trig): spun by renormalising `rot + perp(rot)·ω·DT`.
+/// (Restitution + explicit warm-starting are Stage 2.)
 ///
 /// Per-body scalars are packed into 2-vector `x` (`spin`/`mi`/`mat`/`dang`) — see the datasheet for why.
 /// Systems are device-qualified in a driver's schedule (`rigid.solve_lin`, …), like the `physics` device.
 #import { vec }
 
 /// An oriented rigid body. `lvel`=linear vel, `spin.x`=angular vel, `rot`=orientation unit-vec,
-/// `ext`=half-extents, `mi`=(invMass,invInertia), `mat`=(restitution,friction), `dimp`/`dang`/`cor`=solver
-/// accumulators. Seed `rot=(1,0)` for angle 0 and `mi=(0,0)` for a static body.
+/// `ext`=half-extents, `mi`=(invMass,invInertia), `mat`=(restitution,friction), `dimp`/`dang`=impulse
+/// accumulators, `cor.x`=per-body active-contact count (for mass-splitting). Seed `rot=(1,0)` for angle 0
+/// and `mi=(0,0)` for a static body.
 RBody :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor }
 
 // --- vector helpers (pure, branch-free) --------------------------------------
@@ -87,18 +92,34 @@ sat :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos) -> pos3 {
   return (sx, sy, bo);
 }
 
-// --- contact resolution (impulse solver with restitution + friction + spin) --
+// --- contact resolution (soft-constraint VELOCITY impulse + friction + spin) --
 
-/// Minimum closing speed (px/frame) for restitution to apply — below it a contact is treated as resting
-/// (e = 0). Stops a settled stack from bouncing forever.
+/// TGS substepping: the frame is advanced in SUBSTEPS small steps of DT frames each. Rigidity comes from the
+/// small step + the soft-constraint velocity bias below (penetration is removed in velocity space, so there
+/// is NO separate positional / Baumgarte pass — that was the source of the old "sink then spring" squish).
+SUBSTEPS :: 16;
+DT       :: 0.0625;   // 1 / SUBSTEPS — frame fraction advanced per substep
+INV_DT   :: 16.0;     // SUBSTEPS
+
+/// Soft-constraint contact parameters (Box2D-v3 "TGS-Soft"), precomputed for a target stiffness of ≈3 contact
+/// cycles per frame at critical damping (ζ=1) and step dt = DT: with ω = 2π·3, c = DT·ω·(2ζ+DT·ω),
+/// biasRate = ω/(2ζ+DT·ω) ≈ 5.93, massScale = c/(1+c) ≈ 0.789. (impulseScale — the warm-start-λ leak term —
+/// arrives with Stage-2 warm-starting; Stage 1 has no persisted λ, so it is 0.)
+BIAS_RATE  :: 5.93;
+MASS_SCALE :: 0.789;
+
+/// Minimum closing speed for restitution to apply (used by the Stage-2 restitution pass); also the
+/// resting-contact gate. Kept as a device constant.
 REST_SLOP :: 1.0;
 
-/// One contact's impulse response ON body A, at contact point `c` with normal `n` (A→B): a NORMAL impulse
-/// (restitution `e` + the rotational effective mass) plus a Coulomb-cone-clamped FRICTION impulse (`mu`),
-/// from the relative velocity at `c` INCLUDING spin, scaled by `w` (the caller passes 1/activeContacts so
-/// the two manifold points share the load). Returns A's (Δlvel.x, Δlvel.y, Δω). `hit` gates it to an
-/// overlapping, approaching contact.
-contact_impulse :: func(c: pos, n: pos, e: float, mu: float, hit: float, w: float,
+/// One contact's SOFT-CONSTRAINT velocity impulse ON body A at point `c`, normal `n` (A→B), overlap depth
+/// `pen` (>0). The normal impulse drives the contact toward a small SEPARATING target velocity BIAS_RATE·pen
+/// (soft spring-damper in velocity space) and is NON-attractive (`jn ≥ 0`) — this removes penetration without
+/// a position pass. `ms` is body A's mass-SPLIT factor (1/activeContacts on A) applied to A's inverse
+/// mass+inertia: the PRIMARY Jacobi stabiliser — each of A's simultaneous contacts sees a proportionally
+/// heavier body, so their summed impulses don't overshoot (this replaces ad-hoc under-relaxation). Coulomb
+/// friction clamps the tangent impulse to μ·jn (the pure normal impulse). Returns A's (Δlvel.x, Δlvel.y, Δω).
+contact_impulse :: func(c: pos, n: pos, pen: float, mu: float, hit: float, ms: float,
                         pa: pos, lva: pos, wa: float, ma: mi,
                         pb: pos, lvb: pos, wb: float, mb: mi) -> pos3 {
   rA := c - pa;  rB := c - pb;
@@ -106,25 +127,24 @@ contact_impulse :: func(c: pos, n: pos, e: float, mu: float, hit: float, w: floa
   vB := lvb + crossw(wb, rB);
   vrel := vB - vA;
   vn  := vec.dot(vrel, n);
+  mxa := ma.x * ms;  mya := ma.y * ms;           // mass-split A's inverse mass / inertia
   rnA := cross(rA, n);  rnB := cross(rB, n);
-  kn0 := ma.x + mb.x + ma.y * rnA * rnA + mb.y * rnB * rnB;
+  kn0 := mxa + mb.x + mya * rnA * rnA + mb.y * rnB * rnB;
   kn  := select(kn0 > 0.0, kn0, 1.0);            // guard the divide (static–static / self pair)
-  closing := select(vn < 0.0, 1.0, 0.0);
-  // Restitution only for a real impact: below REST_SLOP closing speed treat e as 0, so a body resting on a
-  // stack (closing ≈ gravity per frame) does NOT keep bouncing — the main source of settle jitter.
-  e_eff := select(0.0 - vn > REST_SLOP, e, 0.0);
-  jn  := (0.0 - (1.0 + e_eff)) * vn / kn * hit * closing;
+  vtar := BIAS_RATE * pen;                        // overlap → target separating velocity (soft bias)
+  jn0 := MASS_SCALE * (vtar - vn) / kn * hit;
+  jn  := select(jn0 > 0.0, jn0, 0.0);            // non-attractive normal impulse
   t   := perp(n);
   vt  := vec.dot(vrel, t);
   rtA := cross(rA, t);  rtB := cross(rB, t);
-  kt0 := ma.x + mb.x + ma.y * rtA * rtA + mb.y * rtB * rtB;
+  kt0 := mxa + mb.x + mya * rtA * rtA + mb.y * rtB * rtB;
   kt  := select(kt0 > 0.0, kt0, 1.0);
   jt0 := (0.0 - vt) / kt * hit;
-  lim := mu * vec.absf(jn);
+  lim := mu * jn;                                 // Coulomb cone bounded by the (pure) normal impulse
   jt  := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
-  p   := (n * jn + t * jt) * w;                  // share of the load
-  dl  := p * (0.0 - ma.x);
-  dw  := (0.0 - ma.y) * cross(rA, p);
+  p   := n * jn + t * jt;
+  dl  := p * (0.0 - mxa);
+  dw  := (0.0 - mya) * cross(rA, p);
   return (dl.x, dl.y, dw);
 }
 
@@ -135,10 +155,9 @@ contact_impulse :: func(c: pos, n: pos, e: float, mu: float, hit: float, w: floa
 /// contact only if it actually penetrates the reference face (below it, within its tangential span). So a
 /// box flat on the floor has BOTH corners in contact (rests flat), while a box tipped on one corner has
 /// only that corner (it topples). Returns A's (Δlvel.x, Δlvel.y, Δω); the load is split 1/activeContacts.
-pair_response :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
+pair_response :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat, ms: float,
                       pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> pos3 {
-  e  := select(ta.x < tb.x, tb.x, ta.x);   // restitution = max of the pair
-  mu := select(ta.y < tb.y, ta.y, tb.y);   // friction    = min of the pair
+  mu := select(ta.y < tb.y, ta.y, tb.y);   // friction = min of the pair (restitution → Stage-2 pass)
   st  := sat(pa, ra, ea, pb, rb, eb);
   n   := vec.mk(st.x, st.y);
   sep := pb - pa;
@@ -190,67 +209,123 @@ pair_response :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta:
   c2 := v2 + tr * (t2c - t2);
   hit1 := hit * select(pen1 > 0.0, 1.0, 0.0);
   hit2 := hit * select(pen2 > 0.0, 1.0, 0.0);
-  cnt := hit1 + hit2;
-  w   := select(cnt > 0.5, 1.0 / cnt, 0.0);              // split the load across the active contacts
-  r1  := contact_impulse(c1, n, e, mu, hit1, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
-  r2  := contact_impulse(c2, n, e, mu, hit2, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
+  r1  := contact_impulse(c1, n, pen1, mu, hit1, ms, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
+  r2  := contact_impulse(c2, n, pen2, mu, hit2, ms, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
   return (r1.x + r2.x, r1.y + r2.y, r1.z + r2.z);
 }
 
 /// Linear velocity change body A receives from B — the (Δlvel) half of the 2-point response. Folded over B.
-imp_lin :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
+imp_lin :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat, ms: float,
                 pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> pos {
-  r := pair_response(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
+  r := pair_response(pa, ra, ea, lva, sa, ma, ta, ms, pb, rb, eb, lvb, sb, mb, tb);
   return vec.mk(r.x, r.y);
 }
 
 /// Angular velocity change body A receives from B — the (Δω) half, packed as a `spin` for the 2-vec reduce.
-imp_ang :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
+imp_ang :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat, ms: float,
                 pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> spin {
-  r := pair_response(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
+  r := pair_response(pa, ra, ea, lva, sa, ma, ta, ms, pb, rb, eb, lvb, sb, mb, tb);
   return (r.z, 0.0);
+}
+
+/// The number of ACTIVE contact points (0, 1 or 2) between boxes A and B — the same 2-point manifold gate as
+/// `pair_response` (a vertex counts once it penetrates the reference face), minus the impulse. Summed over B
+/// by the `contacts` pass to give each body its active-contact count for mass-splitting. Mirrors the manifold
+/// detection in `pair_response` (the tangential clip does not affect the penetration gate, so it's omitted).
+pair_count :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos) -> cor {
+  st  := sat(pa, ra, ea, pb, rb, eb);
+  n   := vec.mk(st.x, st.y);
+  sep := pb - pa;
+  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
+  hit := select(st.z > 0.0, far, 0.0);
+  axa := ra;  aya := perp(ra);
+  axb := rb;  ayb := perp(rb);
+  aref := select(vec.absf(vec.dot(n, axa)) > 0.99, 1, select(vec.absf(vec.dot(n, aya)) > 0.99, 1, 0));
+  rn  := vsel(aref, n, vec.mk(0.0 - n.x, 0.0 - n.y));
+  ip  := vsel(aref, pb, pa);
+  iax := vsel(aref, axb, axa);
+  iay := vsel(aref, ayb, aya);
+  iex := select(aref == 1, eb.x, ea.x);
+  iey := select(aref == 1, eb.y, ea.y);
+  rp  := vsel(aref, pa, pb);
+  rax := vsel(aref, axa, axb);
+  ray := vsel(aref, aya, ayb);
+  rex := select(aref == 1, ea.x, eb.x);
+  rey := select(aref == 1, ea.y, eb.y);
+  rext := vec.mk(rex, rey);
+  dax := vec.dot(iax, rn);  day := vec.dot(iay, rn);
+  useX := select(vec.absf(dax) >= vec.absf(day), 1, 0);
+  faceAxis := vsel(useX, iax, iay);
+  faceExt  := select(useX == 1, iex, iey);
+  perpAxis := vsel(useX, iay, iax);
+  perpExt  := select(useX == 1, iey, iex);
+  dsel := select(useX == 1, dax, day);
+  sn := select(dsel > 0.0, 0.0 - 1.0, 1.0);
+  fc := ip + faceAxis * (sn * faceExt);
+  v1 := fc + perpAxis * perpExt;
+  v2 := fc - perpAxis * perpExt;
+  sref := vec.dot(rp, rn) + obb_radius(rax, ray, rext, rn);
+  pen1 := sref - vec.dot(v1, rn);
+  pen2 := sref - vec.dot(v2, rn);
+  h1 := select(pen1 > 0.0, 1.0, 0.0);
+  h2 := select(pen2 > 0.0, 1.0, 0.0);
+  // count 0/1/2 via nested select (a bare float `hit1 + hit2` of two arithmetic locals here mis-compiles to
+  // an integer add — a `+` type-inference bug; nested select sidesteps it and stays branch-free).
+  both := select(h1 > 0.5, select(h2 > 0.5, 2.0, 1.0), select(h2 > 0.5, 1.0, 0.0));
+  cnt := both * hit;    // bind to a local first: a binary op directly in a return-tuple slot mis-types as int
+  return (cnt, 0.0);
 }
 
 // --- integration -------------------------------------------------------------
 
-/// Semi-implicit Euler step (dt = 1 frame): advance the centre by `lvel` and spin `rot` by `spin.x`
-/// (small-angle `rot + perp(rot)·ω`, renormalised — no trig, no drift). The driver adds gravity to `lvel`
-/// first. A temp holds the spun vector (writing `rot` from an RHS that reads it twice self-aliases).
+/// Semi-implicit Euler SUBSTEP (dt = DT frames): advance the centre by `lvel·DT` and spin `rot` by
+/// `spin.x·DT` (small-angle `rot + perp(rot)·ω`, renormalised — no trig, no drift). Run once per substep,
+/// after the substep's velocity solve. The driver adds gravity (`·DT`) to `lvel` first. A temp holds the
+/// spun vector (writing `rot` from an RHS that reads it twice self-aliases).
 integrate :: map (query { pos, lvel, spin, rot })(pos, rot) {
-  spun := rot + perp(rot) * spin.x;
-  pos = pos + lvel;
+  spun := rot + perp(rot) * (spin.x * DT);
+  pos = pos + lvel * DT;
   rot = normalize(spun);
 }
 
 // --- solver ------------------------------------------------------------------
 
-/// Solver phase 1a (Jacobi, LINEAR): each body folds the linear impulse from every other body into `dimp`,
-/// reading a velocity snapshot. Run the solve trio several times in the schedule for a stiffer solve.
-solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat } as All) {
-  map (query { pos, rot, ext, lvel, spin, mi, mat, dimp } as me)(dimp) {
-    dimp = reduce(+, imp_lin(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat,
+/// Contact-count pass (run once per substep, before the velocity solve): each body folds `pair_count` over
+/// every other body into `cor.x` = its number of active contact points. This is the divisor for the
+/// mass-split factor `ms` used by the solve — the PRIMARY Jacobi stabiliser (a body with N simultaneous
+/// contacts scales each contact's response by 1/N so their sum doesn't overshoot). `cor` (once the positional
+/// accumulator, now unused by the velocity-space solver) is repurposed as this count.
+contacts :: system (query { pos, rot, ext } as All) {
+  map (query { pos, rot, ext, cor } as me)(cor) {
+    cor = reduce(+, pair_count(me.pos, me.rot, me.ext, All.pos, All.rot, All.ext));
+  };
+}
+
+/// Solve phase 1a (Jacobi, LINEAR): each body folds the soft-constraint linear impulse from every other body
+/// into `dimp`, reading a velocity snapshot, mass-split by `ms = 1/max(cor.x,1)`. Iterate the trio a few
+/// times per substep.
+solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dimp } as me)(dimp) {
+    ms := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
+    dimp = reduce(+, imp_lin(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat, ms,
                              All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat));
   };
 }
 
-/// Solver phase 1b (Jacobi, ANGULAR): each body folds the angular impulse into `dang.x` from the SAME
-/// pre-`apply` snapshot as `solve_lin`.
-solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat } as All) {
-  map (query { pos, rot, ext, lvel, spin, mi, mat, dang } as me)(dang) {
-    dang = reduce(+, imp_ang(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat,
+/// Solve phase 1b (Jacobi, ANGULAR): folds the angular impulse into `dang.x` from the SAME snapshot + `ms`.
+solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dang } as me)(dang) {
+    ms := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
+    dang = reduce(+, imp_ang(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat, ms,
                              All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat));
   };
 }
 
-/// Under-relaxation factor for the Jacobi solve: applying only a FRACTION of each iteration's impulse and
-/// iterating more converges (full Jacobi over many simultaneous contacts overshoots — a dense pile picks up
-/// a persistent velocity limit-cycle / jitter otherwise). Run the solve trio ~5–8× per frame with this.
-RELAX :: 0.3;
-
-/// Solver phase 2: commit a relaxed share of the accumulated linear + angular impulses to the velocities.
+/// Solve phase 2: commit the accumulated linear + angular impulses. No under-relaxation — mass-splitting in
+/// the solve already prevents overshoot, so each iteration commits in full.
 apply :: map (query { lvel, spin, dimp, dang })(lvel, spin) {
-  lvel   = lvel + dimp * RELAX;
-  spin.x = spin.x + dang.x * RELAX;
+  lvel   = lvel + dimp;
+  spin.x = spin.x + dang.x;
 }
 
 /// Resting stabilization ("sleep"), run once per frame after the solve: a body moving below the thresholds
@@ -274,35 +349,5 @@ rest :: map (query { lvel, spin })(lvel, spin) {
   spin.x = dw * awake;
 }
 
-// --- positional de-penetration (Baumgarte-free split, like physics.collide) --
-
-/// The positional correction body A receives from overlapping B: move A along −n by a mass-weighted share
-/// of the penetration (× BETA so a stack settles without jitter). `n` points A→B, so A backs off along −n.
-/// Zero for a separated or self/coincident pair. Reads positions only (writes `cor`); `apply_pos` commits.
-// Baumgarte-style: correct only the penetration BEYOND a small slop, and gently (low BETA). Leaving a thin
-// tolerated overlap stops the correct-overshoot / re-penetrate oscillation that is the other jitter source.
-BETA     :: 0.2;
-PEN_SLOP :: 0.5;
-cor_of :: func(pa: pos, ra: pos, ea: pos, ma: mi, pb: pos, rb: pos, eb: pos, mb: mi) -> pos {
-  st  := sat(pa, ra, ea, pb, rb, eb);
-  n   := vec.mk(st.x, st.y);
-  sep := pb - pa;
-  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
-  hit := select(st.z > 0.0, far, 0.0);
-  pen := select(st.z > PEN_SLOP, st.z - PEN_SLOP, 0.0);  // only resolve overlap beyond the slop
-  wsum := ma.x + mb.x;
-  wa   := select(wsum > 0.0, ma.x / wsum, 0.0);          // A's share of the separation (0 if A static)
-  return n * (0.0 - pen * wa * BETA * hit);
-}
-
-/// Positional solver (phase 1): each body folds its de-penetration offset into `cor` (positions snapshot).
-solve_pos :: system (query { pos, rot, ext, mi } as All) {
-  map (query { pos, rot, ext, mi, cor } as me)(cor) {
-    cor = reduce(+, cor_of(me.pos, me.rot, me.ext, me.mi, All.pos, All.rot, All.ext, All.mi));
-  };
-}
-
-/// Positional solver (phase 2): commit the de-penetration offset to the centre.
-apply_pos :: map (query { pos, cor })(pos) {
-  pos = pos + cor;
-}
+// (No positional de-penetration pass: the soft-constraint velocity bias removes penetration in velocity
+// space, integrated to position by `integrate`. This is what eliminates the old Baumgarte "sink & spring".)

@@ -1,40 +1,46 @@
-// Driver test for ANGULAR response, ITERATED to convergence: an off-centre contact converts linear motion
-// into spin. A unit box falls straight down but overhangs the RIGHT edge of a narrow floor (floor@x=1 half
-// 1 ⇒ spans x∈[0,2]; box@x=0 spans x∈[-1,1]), so the manifold sits over the box's RIGHT half only. The
-// normal impulse there is off the box centre, so it applies a torque: iterating the solve trio, the box
-// converges to a steady CCW spin (~+1.07) while the fall is arrested (vy→0) — the rotational effective-mass
-// term and the shared linear+angular impulse in action. No tangential motion ⇒ no sideways drift.
+// Driver test for ANGULAR response: a box dropped TILTED (30°, rot=(cos30,sin30)=(0.866,0.5)) onto a wide
+// flat floor lands on a corner; the off-centre contact applies a torque that rotates it toward FLAT. It must
+// end markedly flatter than it started (|rot.y| drops from 0.5 toward ~0.14) and settle at rest (no residual
+// spin) — the rotational effective-mass + angular impulse in action. 16 TGS substeps/frame.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
+GDT :: 0.025;
 c :: float;
 Clock :: arche { c }
 
 [4]RBody(2);
 [1]Clock(1);
 seed :: system {
-  RBody.pos.x  = { 0.0,  1.0    };  RBody.pos.y  = { 0.9,  -100.0 };
-  RBody.lvel.x = { 0.0,  0.0    };  RBody.lvel.y = { -5.0, 0.0    };
-  RBody.spin.x = { 0.0,  0.0    };  RBody.spin.y = { 0.0,  0.0    };
-  RBody.rot.x  = { 1.0,  1.0    };  RBody.rot.y  = { 0.0,  0.0    };
-  RBody.ext.x  = { 1.0,  1.0    };  RBody.ext.y  = { 1.0,  100.0  };
-  RBody.mi.x   = { 1.0,  0.0    };  RBody.mi.y   = { 1.0,  0.0    };
-  RBody.mat.x  = { 0.2,  0.2    };  RBody.mat.y  = { 0.0,  0.0    };
-  RBody.dimp.x = { 0.0,  0.0    };  RBody.dimp.y = { 0.0,  0.0    };
-  RBody.dang.x = { 0.0,  0.0    };  RBody.dang.y = { 0.0,  0.0    };
-  RBody.cor.x  = { 0.0,  0.0    };  RBody.cor.y  = { 0.0,  0.0    };
+  RBody.pos.x  = { 0.0,   0.0     };  RBody.pos.y  = { 160.0, -1000.0 };
+  RBody.lvel.x = { 0.0,   0.0     };  RBody.lvel.y = { 0.0,   0.0     };
+  RBody.spin.x = { 0.0,   0.0     };  RBody.spin.y = { 0.0,   0.0     };
+  RBody.rot.x  = { 0.866, 1.0     };  RBody.rot.y  = { 0.5,   0.0     };   // box tilted 30°
+  RBody.ext.x  = { 40.0,  4000.0  };  RBody.ext.y  = { 40.0,  1000.0  };
+  RBody.mi.x   = { 1.0,   0.0     };  RBody.mi.y   = { 0.0009375, 0.0 };
+  RBody.mat.x  = { 0.0,   0.0     };  RBody.mat.y  = { 0.5,   0.5     };
+  RBody.dimp.x = { 0.0,0.0 };  RBody.dimp.y = { 0.0,0.0 };
+  RBody.dang.x = { 0.0,0.0 };  RBody.dang.y = { 0.0,0.0 };
+  RBody.cor.x  = { 0.0,0.0 };  RBody.cor.y  = { 0.0,0.0 };
   Clock.c = { 0.0 };
 }
 
+grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
 tick :: map (query { c })(c) { c = c + 1.0; }
 
-// forever ⇒ trio inlined once, frame N == iteration N. Check after the spin has converged.
+sub :: func() -> Schedule {
+  return seq({ grav, rigid.contacts,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.integrate });
+}
+
 check :: system eff {
   map (query { c }) eff {
-    if (c > 29.5) {
-      fmt.assert(RBody.spin.x[0] > 0.9 && RBody.spin.x[0] < 1.2, "off-centre hit should spin box CCW (~+1.07)\n")();
-      fmt.assert(RBody.lvel.y[0] > -0.2 && RBody.lvel.y[0] < 0.2, "fall should be arrested (vy→~0)\n")();
-      fmt.assert(RBody.lvel.x[0] > -0.01 && RBody.lvel.x[0] < 0.01, "no friction ⇒ no sideways drift\n")();
+    if (c > 149.5) {
+      fmt.assert(RBody.rot.y[0] > -0.05 && RBody.rot.y[0] < 0.3, "off-centre contact should rotate the box toward flat (|rot.y| 0.5 → ~0.14)\n")();
+      fmt.assert(RBody.spin.x[0] > -0.05 && RBody.spin.x[0] < 0.05, "should settle at rest (no residual spin)\n")();
+      fmt.assert(RBody.pos.y[0] > 39.0 && RBody.pos.y[0] < 48.0, "box rests on the floor\n")();
       fmt.printf("ok\n");
       fmt.fflush(0)(_:);
       os.exit(0)(_:);
@@ -42,4 +48,7 @@ check :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({ rigid.solve_lin, rigid.solve_ang, rigid.apply, tick, check })) })
+#run seq({ seed, forever(seq({
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  rigid.rest, tick, check })) })

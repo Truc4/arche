@@ -1,16 +1,15 @@
-// Driver test for the FULL step run to rest: gravity + integrate + impulse solve + positional
-// de-penetration, looped. A box dropped straight down onto a big static floor (top y=0) must SETTLE at rest
-// ON the surface (centre → ext.y=40, i.e. pos.y≈40), velocities → 0, no spin, without sinking through.
+// Driver test for the substepped TGS-Soft solve run to rest. A box dropped straight down onto a big static
+// floor (top y=0) must SETTLE ON the surface (centre → ext.y=40, i.e. pos.y≈40) with essentially ZERO
+// penetration, velocity → 0, no spin — the rigidity the soft-constraint velocity solver buys (the old
+// Baumgarte solver rested ~0.8px low with visible give; this rests within ~0.01px of 40).
 //
-// Runs at PIXEL scale (ext=40, gravity 0.4), the scale the device's tuning constants (REST_SLOP, PEN_SLOP,
-// V_SLEEP) are calibrated for — at unit scale those slops are half-a-box huge and the box never settles
-// cleanly. The velocity solve is iterated 12× and the positional pass 4× per frame (a Jacobi solver needs a
-// high iteration count + strong under-relaxation to CONVERGE to a dead stop; see extras/rigid/rigid.arche
-// RELAX). `forever` inlines the schedule once (a per-frame unroll of 40+ system refs overflows llc).
+// The schedule runs 16 TGS substeps/frame; each `sub()` = per-substep gravity + contact-count (for
+// mass-splitting) + 2 soft-constraint velocity iterations + a DT position integrate. `forever` inlines the
+// schedule once (a per-frame unroll of the full substep list overflows llc); frame N advances one frame.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-G :: 0.4;
+GDT :: 0.025;   // GRAV(0.4) * DT(1/16) per substep
 c :: float;
 Clock :: arche { c }
 
@@ -22,7 +21,7 @@ seed :: system {
   RBody.spin.x = { 0.0,   0.0     };  RBody.spin.y = { 0.0,   0.0     };
   RBody.rot.x  = { 1.0,   1.0     };  RBody.rot.y  = { 0.0,   0.0     };
   RBody.ext.x  = { 40.0,  4000.0  };  RBody.ext.y  = { 40.0,  1000.0  };
-  RBody.mi.x   = { 1.0,   0.0     };  RBody.mi.y   = { 0.000938, 0.0  };
+  RBody.mi.x   = { 1.0,   0.0     };  RBody.mi.y   = { 0.0009375, 0.0 };
   RBody.mat.x  = { 0.0,   0.0     };  RBody.mat.y  = { 0.3,   0.3     };
   RBody.dimp.x = { 0.0,0.0 };  RBody.dimp.y = { 0.0,0.0 };
   RBody.dang.x = { 0.0,0.0 };  RBody.dang.y = { 0.0,0.0 };
@@ -30,14 +29,21 @@ seed :: system {
   Clock.c = { 0.0 };
 }
 
-grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - G * select(mi.x > 0.0, 1.0, 0.0); }
+grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
 tick :: map (query { c })(c) { c = c + 1.0; }
+
+sub :: func() -> Schedule {
+  return seq({ grav, rigid.contacts,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.integrate });
+}
 
 check :: system eff {
   map (query { c }) eff {
-    if (c > 159.5) {
-      fmt.assert(RBody.pos.y[0] > 38.0 && RBody.pos.y[0] < 41.0, "box should rest ON the floor (pos.y~40)\n")();
-      fmt.assert(RBody.lvel.y[0] > -0.1 && RBody.lvel.y[0] < 0.1, "vy should settle to ~0\n")();
+    if (c > 119.5) {
+      fmt.assert(RBody.pos.y[0] > 39.5 && RBody.pos.y[0] < 40.2, "box should rest ON the floor (pos.y~40, near-zero penetration)\n")();
+      fmt.assert(RBody.lvel.y[0] > -0.05 && RBody.lvel.y[0] < 0.05, "vy should settle to ~0\n")();
       fmt.assert(RBody.spin.x[0] > -0.02 && RBody.spin.x[0] < 0.02, "no spin from a centred drop\n")();
       fmt.assert(RBody.pos.y[1] > -1000.01 && RBody.pos.y[1] < -999.99, "static floor must not move\n")();
       fmt.printf("ok\n");
@@ -47,13 +53,7 @@ check :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({ grav, rigid.integrate,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-        rigid.solve_pos, rigid.apply_pos, rigid.solve_pos, rigid.apply_pos,
-        rigid.solve_pos, rigid.apply_pos, rigid.solve_pos, rigid.apply_pos,
-        rigid.rest, tick, check })) })
+#run seq({ seed, forever(seq({
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  rigid.rest, tick, check })) })
