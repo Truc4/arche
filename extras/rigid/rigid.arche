@@ -228,7 +228,7 @@ solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat } as All) {
 /// Under-relaxation factor for the Jacobi solve: applying only a FRACTION of each iteration's impulse and
 /// iterating more converges (full Jacobi over many simultaneous contacts overshoots and diverges — bodies
 /// gain energy and fly apart). Run the solve trio ~6–8× per frame with this.
-RELAX :: 0.5;
+RELAX :: 1.0;
 
 /// Solver phase 2: commit a relaxed share of the accumulated linear + angular impulses to the velocities.
 apply :: map (query { lvel, spin, dimp, dang })(lvel, spin) {

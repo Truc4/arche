@@ -256,6 +256,12 @@ struct CodegenContext {
 	 * nested `map (… as me)` — as a pool column, so `resolve_collective_query` treats the binder as a query. */
 	const char *qbinder_name;
 	const char *qbinder_arch;
+	/* The binder query's columns + whether it matches MULTIPLE archetypes. A self-join fold (`reduce(+,
+	 * All.col)`) must span EVERY matching archetype, not just `qbinder_arch` — these let the fold enumerate
+	 * them. `qbinder_multi` is set when the `as` query resolves to >1 allocated shape. */
+	const char *qbinder_cols[32];
+	int qbinder_ncol;
+	int qbinder_multi;
 
 	/* Compile-time callback monomorphization. A proc with a proc/func-typed
 	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
@@ -3355,26 +3361,53 @@ static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
 static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op, char *result_buf) {
 	HirExpr *poolfield = find_fold_pool_field(ctx, sumexpr);
 	const char *arch = NULL;
-	char count[256];
 	int is_float = (sumexpr->resolved.tag == HIR_TYPE_FLOAT);
+	/* The fold DOMAIN is one archetype normally, but a self-join whose `as` query matches several archetypes
+	 * (`reduce(+, All.col)` where `All` spans A, B, C) must fold over EVERY one of them. `archs`/`narch` hold
+	 * the domain; the per-archetype loop below runs the fold once per archetype into shared accumulators. */
+	const char *archs[16];
+	int narch = 0;
 	if (poolfield && is_pool_col_field(ctx, poolfield, &arch)) {
-		/* Explicit `Pool.col` fold domain — reuse the collective column resolver for its count + element type. A
-		 * tuple-GROUP column (`Flock.pos`) has no single field, so emit_collective_column declines: fall back to
-		 * the pool's live row count (the summand's per-lane float-ness comes from its tuple type below). */
-		char colptr[256];
+		/* Element float-ness for a scalar column (a tuple-GROUP column declines; its lanes come from `tt`). */
+		char colptr[256], count0[256];
 		const char *cty;
 		int cisf;
-		if (emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf))
+		if (emit_collective_column(ctx, poolfield, colptr, count0, &cty, &cisf))
 			is_float = is_float || cisf;
-		else
-			emit_pool_live_count(ctx, arch, count, sizeof(count));
+		/* If the fold is over the multi-archetype self-join binder, enumerate all matching allocated shapes. */
+		const char *base = (poolfield->kind == HIR_EXPR_FIELD && poolfield->data.field.base &&
+		                    poolfield->data.field.base->kind == HIR_EXPR_NAME)
+		                       ? poolfield->data.field.base->data.name.name
+		                       : NULL;
+		if (base && ctx->qbinder_name && strcmp(base, ctx->qbinder_name) == 0 && ctx->qbinder_multi) {
+			const char *raw[32];
+			int rc = query_match_archs(ctx, ctx->qbinder_cols, ctx->qbinder_ncol, raw, 32);
+			for (int r = 0; r < rc && narch < 16; r++) {
+				const char *cn = canonical_arch_name(ctx, raw[r]);
+				if (get_arch_static_capacity(ctx, cn) <= 0)
+					continue;
+				int seen = 0;
+				for (int s = 0; s < narch; s++)
+					if (strcmp(archs[s], cn) == 0) {
+						seen = 1;
+						break;
+					}
+				if (!seen)
+					archs[narch++] = cn;
+			}
+		}
+		if (narch == 0) {
+			archs[0] = arch;
+			narch = 1;
+		}
+
 	} else if (poolfield && is_foldable_bare_col(ctx, poolfield, &arch)) {
-		/* An enclosing system's BOUND column (`pos`) is the fold domain — derive count from its pool and the
-		 * float-ness from the column's element type (so the accumulator identity is `0.0`, not the i32 `0`). */
+		/* An enclosing system's BOUND column (`pos`) is the fold domain — float-ness from its element type. */
 		ValueInfo *v = find_value(ctx, poolfield->data.name.name);
 		if (v && v->field_type && (strcmp(v->field_type, "float") == 0 || strcmp(v->field_type, "double") == 0))
 			is_float = 1;
-		emit_pool_live_count(ctx, arch, count, sizeof(count));
+		archs[0] = arch;
+		narch = 1;
 	} else {
 		strcpy(result_buf, "0");
 		return;
@@ -3403,42 +3436,50 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 	emit_alloca(ctx, "  %s = alloca i64\n", iv);
 	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv);
 
-	const char *saved_pool = ctx->fold_pool, *saved_idx = ctx->fold_index;
-	ctx->fold_pool = arch;
+	const char *saved_pool = ctx->fold_pool, *saved_idx = ctx->fold_index, *saved_qba = ctx->qbinder_arch;
+	/* Fold each domain archetype in turn into the SAME accumulators (a self-join spans them all). */
+	for (int k = 0; k < narch; k++) {
+		char count[256];
+		emit_pool_live_count(ctx, archs[k], count, sizeof(count));
+		ctx->fold_pool = archs[k];
+		ctx->qbinder_arch = archs[k]; /* so the summand's `All.col` resolves + indexes THIS archetype */
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv); /* reset the row counter for this archetype */
 
-	char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  br label %s\n", cond);
-	buffer_append_fmt(ctx, "%s:\n", cond + 1);
-	char *i = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
-	char *lt = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
-	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
-	buffer_append_fmt(ctx, "%s:\n", body + 1);
-	ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
-	char elem[256];
-	codegen_expression(ctx, sumexpr, elem);
-	for (int l = 0; l < nlane; l++) {
-		const char *ev = elem;
-		char evb[64];
-		if (tt) { /* extract this lane from the summand's aggregate value */
-			char *e = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, elem, l);
-			snprintf(evb, sizeof(evb), "%s", e);
-			ev = evb;
+		char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", cond);
+		buffer_append_fmt(ctx, "%s:\n", cond + 1);
+		char *i = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
+		char *lt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
+		buffer_append_fmt(ctx, "%s:\n", body + 1);
+		ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
+		char elem[256];
+		codegen_expression(ctx, sumexpr, elem);
+		for (int l = 0; l < nlane; l++) {
+			const char *ev = elem;
+			char evb[64];
+			if (tt) { /* extract this lane from the summand's aggregate value */
+				char *e = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, elem, l);
+				snprintf(evb, sizeof(evb), "%s", e);
+				ev = evb;
+			}
+			char *a = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, lty[l], lty[l], accs[l]);
+			char *r = emit_monoid_combine(ctx, op, lf[l], lty[l], a, ev);
+			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], r, lty[l], accs[l]);
 		}
-		char *a = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, lty[l], lty[l], accs[l]);
-		char *r = emit_monoid_combine(ctx, op, lf[l], lty[l], a, ev);
-		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], r, lty[l], accs[l]);
+		char *ni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
+		buffer_append_fmt(ctx, "  br label %s\n", cond);
+		buffer_append_fmt(ctx, "%s:\n", end + 1);
 	}
-	char *ni = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
-	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
-	buffer_append_fmt(ctx, "  br label %s\n", cond);
-	buffer_append_fmt(ctx, "%s:\n", end + 1);
 	ctx->fold_pool = saved_pool;
 	ctx->fold_index = saved_idx;
+	ctx->qbinder_arch = saved_qba;
 	if (tt) { /* pack the per-lane accumulators back into a `{T,…}` aggregate */
 		char cur[256];
 		strcpy(cur, "undef");
@@ -12716,6 +12757,20 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 		int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
 		int prev_columnar = ctx->in_columnar_system;
 		ctx->in_columnar_system = 1;
+		/* A self-join `system (query {…} as All)` — its outer query is the fold DOMAIN, not a per-archetype
+		 * driver. Record its columns so `reduce(+, All.col)` can span EVERY matching archetype (below), and
+		 * run the body exactly ONCE: the nested `map (… as me)` already iterates all element archetypes, so
+		 * repeating per outer archetype would just re-run (and clobber) the whole join. */
+		const char *prev_qb_cols[32];
+		int prev_qb_ncol = ctx->qbinder_ncol, prev_qb_multi = ctx->qbinder_multi;
+		for (int qc = 0; qc < prev_qb_ncol && qc < 32; qc++)
+			prev_qb_cols[qc] = ctx->qbinder_cols[qc];
+		if (sys->query_binder) {
+			ctx->qbinder_ncol = ncol < 32 ? ncol : 32;
+			for (int qc = 0; qc < ctx->qbinder_ncol; qc++)
+				ctx->qbinder_cols[qc] = cols[qc];
+			ctx->qbinder_multi = (na > 1);
+		}
 		for (int ai = 0; ai < na; ai++) {
 			const char *arch_name = archs[ai];
 			HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
@@ -12790,7 +12845,15 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 			pop_value_scope(ctx);
 			ctx->qbinder_name = prev_qbn;
 			ctx->qbinder_arch = prev_qba;
+			/* Self-join: the body (its nested `map … as me`) already spans every element archetype and the
+			 * fold spans every domain archetype — so run it ONCE, not once per matching outer archetype. */
+			if (sys->query_binder)
+				break;
 		}
+		ctx->qbinder_ncol = prev_qb_ncol;
+		ctx->qbinder_multi = prev_qb_multi;
+		for (int qc = 0; qc < prev_qb_ncol && qc < 32; qc++)
+			ctx->qbinder_cols[qc] = prev_qb_cols[qc];
 		ctx->in_columnar_system = prev_columnar;
 	} else {
 		codegen_body_fused(ctx, sys->stmts, sys->stmt_count);
