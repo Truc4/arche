@@ -104,7 +104,7 @@ def build_driver(bodies, frames, vel_it=2, grav=0.4):
         "grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y + GDT * select(mi.x > 0.0, 1.0, 0.0); }\n"
         "tick :: map (query { c })(c) { c = c + 1.0; }\n"
         "%s%s"
-        "#run seq({ seed, forever(seq({ %s, rigid.rest, confine, tick, trace })) })\n"
+        "#run seq({ seed, forever(seq({ %s, confine, tick, trace })) })\n"
     ) % (grav / SUBSTEPS, n, n, seed, confine, trace, subs)
     return prog
 

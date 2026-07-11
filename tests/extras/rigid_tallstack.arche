@@ -56,4 +56,4 @@ check :: system eff {
 
 #run seq({ seed, forever(seq({
   sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),sub(),
-  rigid.rest, tick, check })) })
+  tick, check })) })

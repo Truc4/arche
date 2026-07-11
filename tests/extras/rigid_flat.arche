@@ -1,0 +1,58 @@
+// Driver test: a box dropped TILTED must topple all the way to a FLAT face — not balance on a corner. Three
+// boxes at 25°, 30°, 40° each land on a corner and must rotate down to flat (|rot.y| ≈ 0, centre at ext.y=40),
+// NOT lock partway on a single point. This guards the manifold reference-selection fix: when a box tilts to
+// within ~8° of flat its face also aligns with the contact normal, and picking the box (not the wider floor)
+// as the reference produced a spurious 2-point manifold that FROZE it on a corner. The fix picks whichever
+// body's face is MOST aligned with the normal (the floor), so the single corner-contact topples it flat.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt os }
+
+GDT :: 0.025;
+c :: float;
+Clock :: arche { c }
+
+[4]RBody(4);
+[1]Clock(1);
+seed :: system {
+  //                box25   box30   box40   floor
+  RBody.pos.x  = { -120.0,  0.0,    120.0,  0.0     };  RBody.pos.y  = { 180.0, 180.0, 180.0, -1000.0 };
+  RBody.lvel.x = { 0.0,     0.0,    0.0,    0.0     };  RBody.lvel.y = { 0.0,   0.0,   0.0,   0.0     };
+  RBody.spin.x = { 0.0,     0.0,    0.0,    0.0     };  RBody.spin.y = { 0.0,   0.0,   0.0,   0.0     };
+  RBody.rot.x  = { 0.906,   0.866,  0.766,  1.0     };  RBody.rot.y  = { 0.423, 0.5,   0.643, 0.0     };
+  RBody.ext.x  = { 40.0,    40.0,   40.0,   4000.0  };  RBody.ext.y  = { 40.0,  40.0,  40.0,  1000.0  };
+  RBody.mi.x   = { 1.0,     1.0,    1.0,    0.0     };  RBody.mi.y   = { 0.0009375, 0.0009375, 0.0009375, 0.0 };
+  RBody.mat.x  = { 0.0,0.0,0.0,0.0 };  RBody.mat.y  = { 0.4, 0.4, 0.4, 0.4 };
+  RBody.dimp.x = { 0.0,0.0,0.0,0.0 };  RBody.dimp.y = { 0.0,0.0,0.0,0.0 };
+  RBody.dang.x = { 0.0,0.0,0.0,0.0 };  RBody.dang.y = { 0.0,0.0,0.0,0.0 };
+  RBody.cor.x  = { 0.0,0.0,0.0,0.0 };  RBody.cor.y  = { 0.0,0.0,0.0,0.0 };
+  Clock.c = { 0.0 };
+}
+
+grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
+tick :: map (query { c })(c) { c = c + 1.0; }
+
+sub :: func() -> Schedule {
+  return seq({ grav, rigid.contacts, rigid.solve_lin, rigid.solve_ang, rigid.apply,
+               rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.integrate });
+}
+
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 249.5) {
+      // each box must lie FLAT: |rot.y| < 0.05 (~3°) and centre near 40 (not perched ~44+ on a corner).
+      fmt.assert(RBody.rot.y[0] > -0.05 && RBody.rot.y[0] < 0.05, "25deg box did not lie flat (balanced on corner)\n")();
+      fmt.assert(RBody.rot.y[1] > -0.05 && RBody.rot.y[1] < 0.05, "30deg box did not lie flat\n")();
+      fmt.assert(RBody.rot.y[2] > -0.05 && RBody.rot.y[2] < 0.05, "40deg box did not lie flat\n")();
+      fmt.assert(RBody.pos.y[0] > 39.0 && RBody.pos.y[0] < 41.0, "25deg box not resting on its face (~40)\n")();
+      fmt.assert(RBody.pos.y[2] > 39.0 && RBody.pos.y[2] < 41.0, "40deg box not resting on its face (~40)\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
+}
+
+#run seq({ seed, forever(seq({
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
+  tick, check })) })
