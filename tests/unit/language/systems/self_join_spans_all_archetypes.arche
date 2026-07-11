@@ -1,0 +1,39 @@
+// A self-join `system (query {..} as All)` must fold over EVERY archetype that matches the query, not just
+// one. Here `v` is shared by three archetypes A, B, C; `reduce(+, All.v)` for any body must sum all four
+// rows' v = 1 + 2 + 10 + 100 = 113.
+//
+// RED until fixed: the join folds only the LAST matching archetype (C), so the sum comes out 100. This is
+// the boids/collision pattern — with it broken, a body in one archetype only "sees" bodies in the last
+// archetype, so e.g. a physics solver's bodies never collide with static geometry declared in an earlier
+// archetype (found building the `rigid` device: boxes fell straight through the floor because the floor's
+// archetype was not the last one in the join).
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { vec fmt }
+v(x, y) :: float;
+o(x, y) :: float;
+mk      :: int;
+A :: arche { v, o }
+B :: arche { v, o, mk }
+C :: arche { v, o }
+[4]A(2);
+[4]B(1);
+[4]C(1);
+
+seed :: system {
+  A.v.x = { 1.0, 2.0 };  A.v.y = { 0.0, 0.0 };  A.o.x = { 0.0, 0.0 };  A.o.y = { 0.0, 0.0 };
+  B.v.x = { 10.0 };      B.v.y = { 0.0 };       B.o.x = { 0.0 };       B.o.y = { 0.0 };  B.mk = { 0 };
+  C.v.x = { 100.0 };     C.v.y = { 0.0 };       C.o.x = { 0.0 };       C.o.y = { 0.0 };
+}
+
+sumv :: system (query { v } as All) {
+  map (query { v, o } as me)(o) {
+    o = reduce(+, All.v);
+  };
+}
+
+verify :: system eff {
+  fmt.assert(A.o.x[0] > 112.9 && A.o.x[0] < 113.1, "self-join reduce dropped archetypes (summed only the last)\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, sumv, verify })

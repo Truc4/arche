@@ -48,6 +48,11 @@ normalize :: func(v: pos) -> pos {
   return v * (1.0 / l);
 }
 
+/// Component-wise vector select (`select` does not lower on whole-vector operands): `c==1 ? a : b`.
+vsel :: func(c: int, a: pos, b: pos) -> pos {
+  return vec.mk(select(c == 1, a.x, b.x), select(c == 1, a.y, b.y));
+}
+
 // --- collision detection (separating-axis test over oriented boxes) ----------
 
 /// Half-width of an OBB projected onto a unit axis `n`, given its world axes `ax`/`ay` and half-extents.
@@ -84,35 +89,47 @@ sat :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos) -> pos3 {
 
 // --- contact resolution (impulse solver with restitution + friction + spin) --
 
-/// The contact point for boxes A and B given the contact normal `n` (A→B), by 1-D clipping. Laterally
-/// (along the tangent `t = perp(n)`) it is the CENTRE of the overlap of the two boxes' projections — so
-/// it sits under the actual overlap region, not between the centres (a laterally-offset box on a wide
-/// floor gets a contact under the box, not a huge spurious lever arm). Along the normal it is the midpoint
-/// of the two touching faces. Reduces to the face centre for a centred rest (no torque) and to the overlap
-/// edge for an overhang (correct torque). A clipped 2-POINT manifold (M5) improves off-centre stacking.
-contact_point :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos, n: pos) -> pos {
+/// One contact's impulse response ON body A, at contact point `c` with normal `n` (A→B): a NORMAL impulse
+/// (restitution `e` + the rotational effective mass) plus a Coulomb-cone-clamped FRICTION impulse (`mu`),
+/// from the relative velocity at `c` INCLUDING spin, scaled by `w` (the caller passes 1/activeContacts so
+/// the two manifold points share the load). Returns A's (Δlvel.x, Δlvel.y, Δω). `hit` gates it to an
+/// overlapping, approaching contact.
+contact_impulse :: func(c: pos, n: pos, e: float, mu: float, hit: float, w: float,
+                        pa: pos, lva: pos, wa: float, ma: mi,
+                        pb: pos, lvb: pos, wb: float, mb: mi) -> pos3 {
+  rA := c - pa;  rB := c - pb;
+  vA := lva + crossw(wa, rA);
+  vB := lvb + crossw(wb, rB);
+  vrel := vB - vA;
+  vn  := vec.dot(vrel, n);
+  rnA := cross(rA, n);  rnB := cross(rB, n);
+  kn0 := ma.x + mb.x + ma.y * rnA * rnA + mb.y * rnB * rnB;
+  kn  := select(kn0 > 0.0, kn0, 1.0);            // guard the divide (static–static / self pair)
+  closing := select(vn < 0.0, 1.0, 0.0);
+  jn  := (0.0 - (1.0 + e)) * vn / kn * hit * closing;
   t   := perp(n);
-  axa := ra;  aya := perp(ra);
-  axb := rb;  ayb := perp(rb);
-  cat := vec.dot(pa, t);  rat := obb_radius(axa, aya, ea, t);   // A's span along the tangent
-  cbt := vec.dot(pb, t);  rbt := obb_radius(axb, ayb, eb, t);   // B's span along the tangent
-  lo  := select(cat - rat > cbt - rbt, cat - rat, cbt - rbt);
-  hi  := select(cat + rat < cbt + rbt, cat + rat, cbt + rbt);
-  mid := (lo + hi) * 0.5;                                        // centre of the tangential overlap
-  can := vec.dot(pa, n) + obb_radius(axa, aya, ea, n);           // A's surface along the normal
-  cbn := vec.dot(pb, n) - obb_radius(axb, ayb, eb, n);           // B's surface along the normal
-  midn := (can + cbn) * 0.5;
-  return t * mid + n * midn;
+  vt  := vec.dot(vrel, t);
+  rtA := cross(rA, t);  rtB := cross(rB, t);
+  kt0 := ma.x + mb.x + ma.y * rtA * rtA + mb.y * rtB * rtB;
+  kt  := select(kt0 > 0.0, kt0, 1.0);
+  jt0 := (0.0 - vt) / kt * hit;
+  lim := mu * vec.absf(jn);
+  jt  := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
+  p   := (n * jn + t * jt) * w;                  // share of the load
+  dl  := p * (0.0 - ma.x);
+  dw  := (0.0 - ma.y) * cross(rA, p);
+  return (dl.x, dl.y, dw);
 }
 
-/// The contact IMPULSE VECTOR applied at the contact of boxes A and B (B receives +P, A receives −P). The
-/// full response: SAT normal + penetration, symmetric contact point, relative velocity there INCLUDING
-/// spin (`ω × r`), a NORMAL impulse with pair restitution `max(A,B)` + the rotational effective mass, plus a
-/// TANGENT (friction) impulse clamped to the Coulomb cone `min(A,B)·|Jn|`. Zero unless the boxes overlap
-/// AND are approaching, so a self-pair or a separating pair contributes nothing. `sa`/`sb` are the packed
-/// spins (`.x`=ω), `ma`/`mb` = (invM,invI), `ta`/`tb` = (rest,fric).
-contact_P :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
-                  pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> pos {
+/// The velocity change body A receives from its contact with B — a TWO-POINT manifold, which is what lets a
+/// box rest FLAT and stack (two touching corners give opposing torques that cancel spin; a single point
+/// would tip it). The manifold is the INCIDENT box's face vertices: SAT gives the normal and the REFERENCE
+/// box (the one the normal is a face of); the incident box's face toward it has two vertices, and EACH is a
+/// contact only if it actually penetrates the reference face (below it, within its tangential span). So a
+/// box flat on the floor has BOTH corners in contact (rests flat), while a box tipped on one corner has
+/// only that corner (it topples). Returns A's (Δlvel.x, Δlvel.y, Δω); the load is split 1/activeContacts.
+pair_response :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
+                      pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> pos3 {
   e  := select(ta.x < tb.x, tb.x, ta.x);   // restitution = max of the pair
   mu := select(ta.y < tb.y, ta.y, tb.y);   // friction    = min of the pair
   st  := sat(pa, ra, ea, pb, rb, eb);
@@ -120,50 +137,61 @@ contact_P :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat
   sep := pb - pa;
   far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);   // 0 for a self/coincident pair
   hit := select(st.z > 0.0, far, 0.0);
-  c   := contact_point(pa, ra, ea, pb, rb, eb, n);
-  rA  := c - pa;
-  rB  := c - pb;
-  vA  := lva + crossw(sa.x, rA);
-  vB  := lvb + crossw(sb.x, rB);
-  vrel := vB - vA;
-  // normal impulse
-  vn  := vec.dot(vrel, n);
-  rnA := cross(rA, n);
-  rnB := cross(rB, n);
-  kn0 := ma.x + mb.x + ma.y * rnA * rnA + mb.y * rnB * rnB;
-  kn  := select(kn0 > 0.0, kn0, 1.0);         // guard the divide (a static–static/self pair has kn=0, vn=0)
-  closing := select(vn < 0.0, 1.0, 0.0);
-  jn  := (0.0 - (1.0 + e)) * vn / kn * hit * closing;
-  // friction (tangent) impulse, clamped to the Coulomb cone
-  t   := perp(n);
-  vt  := vec.dot(vrel, t);
-  rtA := cross(rA, t);
-  rtB := cross(rB, t);
-  kt0 := ma.x + mb.x + ma.y * rtA * rtA + mb.y * rtB * rtB;
-  kt  := select(kt0 > 0.0, kt0, 1.0);
-  jt0 := (0.0 - vt) / kt * hit;
-  lim := mu * vec.absf(jn);
-  jt  := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
-  return n * jn + t * jt;
+  axa := ra;  aya := perp(ra);
+  axb := rb;  ayb := perp(rb);
+  // REFERENCE = the box whose face the SAT normal is (n is exactly one box's axis). INCIDENT = the other.
+  aref := select(vec.absf(vec.dot(n, axa)) > 0.99, 1, select(vec.absf(vec.dot(n, aya)) > 0.99, 1, 0));
+  rn  := vsel(aref, n, vec.mk(0.0 - n.x, 0.0 - n.y));   // reference → incident direction
+  ip  := vsel(aref, pb, pa);                             // incident box
+  iax := vsel(aref, axb, axa);
+  iay := vsel(aref, ayb, aya);
+  iex := select(aref == 1, eb.x, ea.x);
+  iey := select(aref == 1, eb.y, ea.y);
+  rp  := vsel(aref, pa, pb);                             // reference box
+  rax := vsel(aref, axa, axb);
+  ray := vsel(aref, aya, ayb);
+  rex := select(aref == 1, ea.x, eb.x);
+  rey := select(aref == 1, ea.y, eb.y);
+  rext := vec.mk(rex, rey);
+  // incident FACE = perpendicular to whichever incident axis lies most along rn; its two vertices:
+  dax := vec.dot(iax, rn);  day := vec.dot(iay, rn);
+  useX := select(vec.absf(dax) >= vec.absf(day), 1, 0);
+  faceAxis := vsel(useX, iax, iay);
+  faceExt  := select(useX == 1, iex, iey);
+  perpAxis := vsel(useX, iay, iax);
+  perpExt  := select(useX == 1, iey, iex);
+  dsel := select(useX == 1, dax, day);
+  sn := select(dsel > 0.0, 0.0 - 1.0, 1.0);              // face on the side opposing rn
+  fc := ip + faceAxis * (sn * faceExt);
+  v1 := fc + perpAxis * perpExt;
+  v2 := fc - perpAxis * perpExt;
+  // reference surface + tangential span (a vertex is a contact only if past the surface AND over the face)
+  sref := vec.dot(rp, rn) + obb_radius(rax, ray, rext, rn);
+  tr := perp(rn);
+  rc := vec.dot(rp, tr);  rr := obb_radius(rax, ray, rext, tr);
+  pen1 := sref - vec.dot(v1, rn);   t1 := vec.dot(v1, tr);
+  pen2 := sref - vec.dot(v2, rn);   t2 := vec.dot(v2, tr);
+  hit1 := hit * select(pen1 > 0.0 && t1 > rc - rr && t1 < rc + rr, 1.0, 0.0);
+  hit2 := hit * select(pen2 > 0.0 && t2 > rc - rr && t2 < rc + rr, 1.0, 0.0);
+  cnt := hit1 + hit2;
+  w   := select(cnt > 0.5, 1.0 / cnt, 0.0);              // split the load across the active contacts
+  r1  := contact_impulse(v1, n, e, mu, hit1, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
+  r2  := contact_impulse(v2, n, e, mu, hit2, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
+  return (r1.x + r2.x, r1.y + r2.y, r1.z + r2.z);
 }
 
-/// Linear velocity change body A receives from a contact with B: `−P · invMassA`. (Folded over all B.)
+/// Linear velocity change body A receives from B — the (Δlvel) half of the 2-point response. Folded over B.
 imp_lin :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
                 pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> pos {
-  p := contact_P(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
-  return p * (0.0 - ma.x);
+  r := pair_response(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
+  return vec.mk(r.x, r.y);
 }
 
-/// Angular velocity change body A receives from a contact with B: `−invInertiaA · (rA × P)`, packed as a
-/// `spin` 2-vector (`.x` = Δω) so it folds through a plain 2-vec reduce.
+/// Angular velocity change body A receives from B — the (Δω) half, packed as a `spin` for the 2-vec reduce.
 imp_ang :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
                 pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> spin {
-  st := sat(pa, ra, ea, pb, rb, eb);
-  n  := vec.mk(st.x, st.y);
-  c  := contact_point(pa, ra, ea, pb, rb, eb, n);
-  rA := c - pa;
-  p  := contact_P(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
-  return ((0.0 - ma.y) * cross(rA, p), 0.0);
+  r := pair_response(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
+  return (r.z, 0.0);
 }
 
 // --- integration -------------------------------------------------------------
@@ -197,10 +225,15 @@ solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat } as All) {
   };
 }
 
-/// Solver phase 2: commit the accumulated linear + angular impulses to the body's velocities.
+/// Under-relaxation factor for the Jacobi solve: applying only a FRACTION of each iteration's impulse and
+/// iterating more converges (full Jacobi over many simultaneous contacts overshoots and diverges — bodies
+/// gain energy and fly apart). Run the solve trio ~6–8× per frame with this.
+RELAX :: 0.5;
+
+/// Solver phase 2: commit a relaxed share of the accumulated linear + angular impulses to the velocities.
 apply :: map (query { lvel, spin, dimp, dang })(lvel, spin) {
-  lvel   = lvel + dimp;
-  spin.x = spin.x + dang.x;
+  lvel   = lvel + dimp * RELAX;
+  spin.x = spin.x + dang.x * RELAX;
 }
 
 // --- positional de-penetration (Baumgarte-free split, like physics.collide) --
