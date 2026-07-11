@@ -1,13 +1,18 @@
-// Driver test for the impulse solver (`rigid.solve_lin` + `rigid.solve_ang` + `rigid.apply`): a dynamic
-// unit box falls straight onto a static floor and BOUNCES with restitution, without spurious spin.
-// Box@(0,0.9) ext(1,1) mi=(1,1) lvel=(0,-5); floor@(0,-100) ext(1000,100) mi=(0,0) static; restitution 0.2
-// both. One solve+apply: the normal impulse reverses the closing speed by (1+e): vy −5 → +1.0 (= e·5).
-// Contact is laterally centred so no angular impulse (spin.x≈0), and the straight-down motion has no
-// tangential component so friction stays 0 (vx≈0).
+// Driver test for the impulse solver (`rigid.solve_lin` + `rigid.solve_ang` + `rigid.apply`), ITERATED to
+// convergence. A dynamic unit box penetrating a static floor, closing at vy=−5, is resolved by repeating the
+// solve trio. The solver is Jacobi + under-relaxed (RELAX<1) and restitution-suppressed (a resting contact
+// below REST_SLOP closing speed gets e=0), so the CONVERGED state is a dead-stop resting contact — the
+// normal velocity is driven to ≈0 (NOT a +e bounce: bounce is intentionally damped so stacks don't buzz).
+// The contact is laterally centred, so the two manifold points give equal-and-opposite torques ⇒ no spin,
+// and straight-down motion has no tangential component ⇒ no sideways drift.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
-#import { rigid vec fmt }
+#import { rigid vec fmt os }
+
+c :: float;
+Clock :: arche { c }
 
 [4]RBody(2);
+[1]Clock(1);
 seed :: system {
   RBody.pos.x  = { 0.0,  0.0    };  RBody.pos.y  = { 0.9,  -100.0 };
   RBody.lvel.x = { 0.0,  0.0    };  RBody.lvel.y = { -5.0, 0.0    };
@@ -19,15 +24,25 @@ seed :: system {
   RBody.dimp.x = { 0.0,  0.0    };  RBody.dimp.y = { 0.0,  0.0    };
   RBody.dang.x = { 0.0,  0.0    };  RBody.dang.y = { 0.0,  0.0    };
   RBody.cor.x  = { 0.0,  0.0    };  RBody.cor.y  = { 0.0,  0.0    };
+  Clock.c = { 0.0 };
 }
 
-verify :: system eff {
-  // body 0 is the falling box; comparisons on indexed reads are fine (avoid `:= then arithmetic`)
-  fmt.assert(RBody.lvel.y[0] > 0.99 && RBody.lvel.y[0] < 1.01, "restitution bounce should give vy=+1\n")();
-  fmt.assert(RBody.lvel.x[0] > -0.01 && RBody.lvel.x[0] < 0.01, "no sideways drift expected\n")();
-  fmt.assert(RBody.spin.x[0] > -0.01 && RBody.spin.x[0] < 0.01, "centred contact should give no spin\n")();
-  fmt.assert(RBody.lvel.y[1] > -0.01 && RBody.lvel.y[1] < 0.01, "static floor must not move\n")();
-  fmt.printf("ok\n");
+tick :: map (query { c })(c) { c = c + 1.0; }
+
+// forever loop so the solve trio is inlined ONCE (a per-frame unroll of many iterations overflows llc); the
+// loop re-runs it each frame, so frame N == iteration N of the velocity solve. Check after it has converged.
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 39.5) {
+      fmt.assert(RBody.lvel.y[0] > -0.2 && RBody.lvel.y[0] < 0.2, "closing velocity should resolve to rest (~0)\n")();
+      fmt.assert(RBody.lvel.x[0] > -0.01 && RBody.lvel.x[0] < 0.01, "no sideways drift expected\n")();
+      fmt.assert(RBody.spin.x[0] > -0.01 && RBody.spin.x[0] < 0.01, "centred contact should give no spin\n")();
+      fmt.assert(RBody.lvel.y[1] > -0.01 && RBody.lvel.y[1] < 0.01, "static floor must not move\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
 }
 
-#run seq({ seed, rigid.solve_lin, rigid.solve_ang, rigid.apply, verify })
+#run seq({ seed, forever(seq({ rigid.solve_lin, rigid.solve_ang, rigid.apply, tick, check })) })

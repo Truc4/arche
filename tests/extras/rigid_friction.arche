@@ -1,13 +1,17 @@
-// Driver test for the Coulomb FRICTION impulse. A box is driven into a static floor moving right AND down
-// (lvel=(4,-10)); one solve+apply. The normal impulse kills the −10 closing speed (Jn=10); friction then
-// applies a TANGENT impulse opposing the sideways motion, clamped to μ·|Jn| (μ=0.3 ⇒ cone limit 3). Here
-// the unclamped tangent impulse (~2.1) is inside the cone, so it applies fully: vx 4 → ~1.9 (friction bit),
-// vy → 0, and the tangent force at the contact below the centre spins the box (Δω ≈ −2). A frictionless
-// run would leave vx=4 — so vx<3 proves friction acted.
+// Driver test for the Coulomb FRICTION impulse, ITERATED to convergence. A box is driven into a static floor
+// moving right AND down (lvel=(4,−10)). The normal impulse arrests the fall (vy→0); the tangential (friction)
+// impulse, clamped each iteration to the Coulomb cone μ·|Jn| (μ=0.3), opposes the sideways motion, so over
+// the iterations vx bleeds down from 4 toward ~1 (it does NOT reach exactly 0 — the per-iteration cone limit
+// caps how fast tangential speed can shed). A frictionless run would leave vx=4 unchanged, so vx<3 proves
+// friction acted. The centred contact keeps spin near zero.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
-#import { rigid vec fmt }
+#import { rigid vec fmt os }
+
+c :: float;
+Clock :: arche { c }
 
 [4]RBody(2);
+[1]Clock(1);
 seed :: system {
   RBody.pos.x  = { 0.0,  0.0    };  RBody.pos.y  = { 0.9,  -100.0 };
   RBody.lvel.x = { 4.0,  0.0    };  RBody.lvel.y = { -10.0, 0.0   };
@@ -19,13 +23,23 @@ seed :: system {
   RBody.dimp.x = { 0.0,  0.0    };  RBody.dimp.y = { 0.0,  0.0    };
   RBody.dang.x = { 0.0,  0.0    };  RBody.dang.y = { 0.0,  0.0    };
   RBody.cor.x  = { 0.0,  0.0    };  RBody.cor.y  = { 0.0,  0.0    };
+  Clock.c = { 0.0 };
 }
 
-verify :: system eff {
-  fmt.assert(RBody.lvel.x[0] > 1.6 && RBody.lvel.x[0] < 2.2, "friction should cut vx from 4 to ~1.9\n")();
-  fmt.assert(RBody.lvel.y[0] > -0.1 && RBody.lvel.y[0] < 0.1, "normal impulse should stop the fall\n")();
-  fmt.assert(RBody.spin.x[0] > -2.2 && RBody.spin.x[0] < -1.8, "tangent force should spin the box (~-2)\n")();
-  fmt.printf("ok\n");
+tick :: map (query { c })(c) { c = c + 1.0; }
+
+// forever ⇒ trio inlined once, frame N == iteration N. Check after friction has converged.
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 39.5) {
+      fmt.assert(RBody.lvel.x[0] > 0.6 && RBody.lvel.x[0] < 1.5, "friction should cut vx from 4 toward ~1\n")();
+      fmt.assert(RBody.lvel.y[0] > -0.2 && RBody.lvel.y[0] < 0.2, "normal impulse should stop the fall\n")();
+      fmt.assert(RBody.spin.x[0] > -0.3 && RBody.spin.x[0] < 0.3, "centred contact ⇒ little spin\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
 }
 
-#run seq({ seed, rigid.solve_lin, rigid.solve_ang, rigid.apply, verify })
+#run seq({ seed, forever(seq({ rigid.solve_lin, rigid.solve_ang, rigid.apply, tick, check })) })

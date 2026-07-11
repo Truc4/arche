@@ -89,6 +89,10 @@ sat :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos) -> pos3 {
 
 // --- contact resolution (impulse solver with restitution + friction + spin) --
 
+/// Minimum closing speed (px/frame) for restitution to apply — below it a contact is treated as resting
+/// (e = 0). Stops a settled stack from bouncing forever.
+REST_SLOP :: 1.0;
+
 /// One contact's impulse response ON body A, at contact point `c` with normal `n` (A→B): a NORMAL impulse
 /// (restitution `e` + the rotational effective mass) plus a Coulomb-cone-clamped FRICTION impulse (`mu`),
 /// from the relative velocity at `c` INCLUDING spin, scaled by `w` (the caller passes 1/activeContacts so
@@ -106,7 +110,10 @@ contact_impulse :: func(c: pos, n: pos, e: float, mu: float, hit: float, w: floa
   kn0 := ma.x + mb.x + ma.y * rnA * rnA + mb.y * rnB * rnB;
   kn  := select(kn0 > 0.0, kn0, 1.0);            // guard the divide (static–static / self pair)
   closing := select(vn < 0.0, 1.0, 0.0);
-  jn  := (0.0 - (1.0 + e)) * vn / kn * hit * closing;
+  // Restitution only for a real impact: below REST_SLOP closing speed treat e as 0, so a body resting on a
+  // stack (closing ≈ gravity per frame) does NOT keep bouncing — the main source of settle jitter.
+  e_eff := select(0.0 - vn > REST_SLOP, e, 0.0);
+  jn  := (0.0 - (1.0 + e_eff)) * vn / kn * hit * closing;
   t   := perp(n);
   vt  := vec.dot(vrel, t);
   rtA := cross(rA, t);  rtB := cross(rB, t);
@@ -169,14 +176,24 @@ pair_response :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta:
   sref := vec.dot(rp, rn) + obb_radius(rax, ray, rext, rn);
   tr := perp(rn);
   rc := vec.dot(rp, tr);  rr := obb_radius(rax, ray, rext, tr);
+  lo := rc - rr;  hi := rc + rr;
   pen1 := sref - vec.dot(v1, rn);   t1 := vec.dot(v1, tr);
   pen2 := sref - vec.dot(v2, rn);   t2 := vec.dot(v2, tr);
-  hit1 := hit * select(pen1 > 0.0 && t1 > rc - rr && t1 < rc + rr, 1.0, 0.0);
-  hit2 := hit * select(pen2 > 0.0 && t2 > rc - rr && t2 < rc + rr, 1.0, 0.0);
+  // CLIP each incident vertex into the reference face's tangential span [lo,hi] (Sutherland-Hodgman): slide
+  // it along the face tangent to the span edge. Rejecting out-of-span vertices instead (the old test) loses
+  // BOTH contacts whenever the incident box is larger than the reference — e.g. any box on a wide floor, its
+  // corners sit far past the box, so nothing registers and the contact resolves by position only (velocity
+  // jitter). Clamping turns the floor's far corners into the two points directly under the box's edges.
+  t1c := select(t1 < lo, lo, select(t1 > hi, hi, t1));
+  t2c := select(t2 < lo, lo, select(t2 > hi, hi, t2));
+  c1 := v1 + tr * (t1c - t1);
+  c2 := v2 + tr * (t2c - t2);
+  hit1 := hit * select(pen1 > 0.0, 1.0, 0.0);
+  hit2 := hit * select(pen2 > 0.0, 1.0, 0.0);
   cnt := hit1 + hit2;
   w   := select(cnt > 0.5, 1.0 / cnt, 0.0);              // split the load across the active contacts
-  r1  := contact_impulse(v1, n, e, mu, hit1, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
-  r2  := contact_impulse(v2, n, e, mu, hit2, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
+  r1  := contact_impulse(c1, n, e, mu, hit1, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
+  r2  := contact_impulse(c2, n, e, mu, hit2, w, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
   return (r1.x + r2.x, r1.y + r2.y, r1.z + r2.z);
 }
 
@@ -226,9 +243,9 @@ solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat } as All) {
 }
 
 /// Under-relaxation factor for the Jacobi solve: applying only a FRACTION of each iteration's impulse and
-/// iterating more converges (full Jacobi over many simultaneous contacts overshoots and diverges — bodies
-/// gain energy and fly apart). Run the solve trio ~6–8× per frame with this.
-RELAX :: 1.0;
+/// iterating more converges (full Jacobi over many simultaneous contacts overshoots — a dense pile picks up
+/// a persistent velocity limit-cycle / jitter otherwise). Run the solve trio ~5–8× per frame with this.
+RELAX :: 0.3;
 
 /// Solver phase 2: commit a relaxed share of the accumulated linear + angular impulses to the velocities.
 apply :: map (query { lvel, spin, dimp, dang })(lvel, spin) {
@@ -236,21 +253,46 @@ apply :: map (query { lvel, spin, dimp, dang })(lvel, spin) {
   spin.x = spin.x + dang.x * RELAX;
 }
 
+/// Resting stabilization ("sleep"), run once per frame after the solve: a body moving below the thresholds
+/// is snapped to a dead stop, killing the last of the settle jitter once under-relaxation has let its
+/// velocity decay. (No always-on damping — that would slow free-fall too.)
+/// V_SLEEP must stay BELOW the driver's per-frame gravity so a free-falling (or momentarily-slowed) body
+/// always exceeds it — otherwise gravity can't out-run the clamp and a body freezes in mid-air.
+V_SLEEP :: 0.3;
+W_SLEEP :: 0.02;
+// Angular damping only (ADAMP): a box toppling from an angle ROCKS on the floor, and that spin re-energises
+// it above the sleep threshold forever; bleeding angular velocity lets the rock die. Linear velocity is NOT
+// damped (that would slow free-fall). Squared thresholds + NO func call — `vec.len`/`vec.absf` inside a
+// MULTI-archetype map mis-compile (the vec arg is read as an int); plain arithmetic + select are safe.
+ADAMP :: 0.90;
+rest :: map (query { lvel, spin })(lvel, spin) {
+  dw := spin.x * ADAMP;
+  v2 := lvel.x * lvel.x + lvel.y * lvel.y;
+  w2 := dw * dw;
+  awake := select(v2 > V_SLEEP * V_SLEEP, 1.0, select(w2 > W_SLEEP * W_SLEEP, 1.0, 0.0));
+  lvel   = lvel * awake;
+  spin.x = dw * awake;
+}
+
 // --- positional de-penetration (Baumgarte-free split, like physics.collide) --
 
 /// The positional correction body A receives from overlapping B: move A along −n by a mass-weighted share
 /// of the penetration (× BETA so a stack settles without jitter). `n` points A→B, so A backs off along −n.
 /// Zero for a separated or self/coincident pair. Reads positions only (writes `cor`); `apply_pos` commits.
-BETA :: 0.8;
+// Baumgarte-style: correct only the penetration BEYOND a small slop, and gently (low BETA). Leaving a thin
+// tolerated overlap stops the correct-overshoot / re-penetrate oscillation that is the other jitter source.
+BETA     :: 0.2;
+PEN_SLOP :: 0.5;
 cor_of :: func(pa: pos, ra: pos, ea: pos, ma: mi, pb: pos, rb: pos, eb: pos, mb: mi) -> pos {
   st  := sat(pa, ra, ea, pb, rb, eb);
   n   := vec.mk(st.x, st.y);
   sep := pb - pa;
   far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
   hit := select(st.z > 0.0, far, 0.0);
+  pen := select(st.z > PEN_SLOP, st.z - PEN_SLOP, 0.0);  // only resolve overlap beyond the slop
   wsum := ma.x + mb.x;
   wa   := select(wsum > 0.0, ma.x / wsum, 0.0);          // A's share of the separation (0 if A static)
-  return n * (0.0 - st.z * wa * BETA * hit);
+  return n * (0.0 - pen * wa * BETA * hit);
 }
 
 /// Positional solver (phase 1): each body folds its de-penetration offset into `cor` (positions snapshot).

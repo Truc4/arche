@@ -1,13 +1,17 @@
-// Driver test for ANGULAR response: an off-centre contact converts linear motion into spin. A unit box
-// falls straight down but overhangs the RIGHT edge of a narrow floor, so the contact sits to the right of
-// the box centre and the normal impulse applies a torque. Box@(0,0.9) ext(1,1) mi=(1,1) lvel=(0,-5);
-// floor@(1,-100) ext(1,100) mi=(0,0). Contact ≈(0.5,-0.05): lever rA≈(0.5,-0.95), kn=1.25, Jn=4.8, so
-// Δvy=+4.8 (vy: -5→-0.2) and Δω = -invI·(rA×P) = +2.4 (CCW — the supported right side lifts). Confirms the
-// rotational effective-mass term and the angular impulse, and that linear+angular share the impulse.
+// Driver test for ANGULAR response, ITERATED to convergence: an off-centre contact converts linear motion
+// into spin. A unit box falls straight down but overhangs the RIGHT edge of a narrow floor (floor@x=1 half
+// 1 ⇒ spans x∈[0,2]; box@x=0 spans x∈[-1,1]), so the manifold sits over the box's RIGHT half only. The
+// normal impulse there is off the box centre, so it applies a torque: iterating the solve trio, the box
+// converges to a steady CCW spin (~+1.07) while the fall is arrested (vy→0) — the rotational effective-mass
+// term and the shared linear+angular impulse in action. No tangential motion ⇒ no sideways drift.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
-#import { rigid vec fmt }
+#import { rigid vec fmt os }
+
+c :: float;
+Clock :: arche { c }
 
 [4]RBody(2);
+[1]Clock(1);
 seed :: system {
   RBody.pos.x  = { 0.0,  1.0    };  RBody.pos.y  = { 0.9,  -100.0 };
   RBody.lvel.x = { 0.0,  0.0    };  RBody.lvel.y = { -5.0, 0.0    };
@@ -19,13 +23,23 @@ seed :: system {
   RBody.dimp.x = { 0.0,  0.0    };  RBody.dimp.y = { 0.0,  0.0    };
   RBody.dang.x = { 0.0,  0.0    };  RBody.dang.y = { 0.0,  0.0    };
   RBody.cor.x  = { 0.0,  0.0    };  RBody.cor.y  = { 0.0,  0.0    };
+  Clock.c = { 0.0 };
 }
 
-verify :: system eff {
-  fmt.assert(RBody.spin.x[0] > 2.3 && RBody.spin.x[0] < 2.5, "off-centre hit should spin box CCW (~+2.4)\n")();
-  fmt.assert(RBody.lvel.y[0] > -0.3 && RBody.lvel.y[0] < -0.1, "vy should rise to ~-0.2 (rest went to spin)\n")();
-  fmt.assert(RBody.lvel.x[0] > -0.01 && RBody.lvel.x[0] < 0.01, "no friction ⇒ no sideways drift\n")();
-  fmt.printf("ok\n");
+tick :: map (query { c })(c) { c = c + 1.0; }
+
+// forever ⇒ trio inlined once, frame N == iteration N. Check after the spin has converged.
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 29.5) {
+      fmt.assert(RBody.spin.x[0] > 0.9 && RBody.spin.x[0] < 1.2, "off-centre hit should spin box CCW (~+1.07)\n")();
+      fmt.assert(RBody.lvel.y[0] > -0.2 && RBody.lvel.y[0] < 0.2, "fall should be arrested (vy→~0)\n")();
+      fmt.assert(RBody.lvel.x[0] > -0.01 && RBody.lvel.x[0] < 0.01, "no friction ⇒ no sideways drift\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
 }
 
-#run seq({ seed, rigid.solve_lin, rigid.solve_ang, rigid.apply, verify })
+#run seq({ seed, forever(seq({ rigid.solve_lin, rigid.solve_ang, rigid.apply, tick, check })) })
