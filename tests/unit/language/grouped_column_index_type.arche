@@ -1,0 +1,20 @@
+// RED until a grouped-column indexed element types correctly. `T.p.x[0]` where `p(x,y)` is a component
+// GROUP must have the subfield's scalar type (float). Today index_base_type_id (semantic.c) resolves the
+// column off only the LAST field name ("x") — missing the group "p" — so archetype_field_type_id fails,
+// the element type is UNKNOWN, and codegen defaults it to int: `a := T.p.x[0]; a*a` emits `mul i32` on a
+// float operand and LLVM rejects the IR. A SCALAR column (`T.w[0]`) types fine; only grouped subfields
+// break — so the fix is to resolve `T.group.sub[i]` via the group's tuple type, then the subfield member.
+// Found building the `rigid` device (reading body state in a driver). Workaround: pass the indexed read
+// through a func arg, or use it directly in a comparison (both coerce); avoid `:= then arithmetic`.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { fmt }
+p(x, y) :: float;
+T :: arche { p }
+[4]T(1);
+seed :: system { T.p.x = { 3.0 }; T.p.y = { 4.0 }; }
+verify :: system eff {
+  a := T.p.x[0];
+  fmt.assert(a * a == 9.0, "grouped subfield index mis-typed as int\n")();
+  fmt.printf("ok\n");
+}
+#run seq({ seed, verify })

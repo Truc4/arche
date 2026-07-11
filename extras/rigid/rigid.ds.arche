@@ -1,0 +1,33 @@
+/// Datasheet for the `rigid` device — a 2D RIGID-BODY engine with ROTATION over oriented boxes (OBBs),
+/// the full-fat companion to the branch-free AABB `physics` device. Separate device, distinct component
+/// names, so a driver may use both side by side.
+///
+/// A rigid body (`RBody`, defined in rigid.arche) is a centre `pos` (the shared `vec` 2-vector) plus:
+///   `lvel` = linear velocity (x, y)
+///   `spin` = (ANGULAR velocity, —)            — a 1-scalar packed in a 2-vector's x (see note)
+///   `rot`  = (cos θ, sin θ)                    — orientation as a UNIT VECTOR (no trig intrinsic exists)
+///   `ext`  = (half-width, half-height)         — the box is centre ± rotate(ext)
+///   `mi`   = (inverse mass, inverse inertia)   — both 0 ⇒ an immovable static body
+///   `mat`  = (restitution, friction)           — material response coefficients
+///   `dimp` = linear-impulse accumulator (x, y)         — the Jacobi solver's velocity accumulators…
+///   `dang` = (angular-impulse accumulator, —)          — …committed by `apply`
+///   `cor`  = positional de-penetration accumulator (x, y)
+/// EVERY per-body scalar is packed into the x of a 2-vector ON PURPOSE: a scalar-float column read through
+/// a self-join (`All.scalar`) mis-types as int, and 3-VECTOR components mis-handle in kernels — only plain
+/// 2-vectors read/write cleanly both directly and through the boids reduce. The driver owns and sizes the
+/// pool; `[4]RBody` is a mild storage floor (the device works with any count).
+/// A 3-vector used only as a `func` return/local (normal.xy + penetration from `sat`); it never sits on a
+/// body — 3-vector KERNEL columns mis-handle, but 3-vectors are fine inside funcs.
+pos3(x, y, z) :: float;
+
+lvel(x, y) :: float;
+spin(x, y) :: float;
+rot(x, y)  :: float;
+ext(x, y)  :: float;
+mi(x, y)   :: float;
+mat(x, y)  :: float;
+dimp(x, y) :: float;
+dang(x, y) :: float;
+cor(x, y)  :: float;
+
+[4]RBody;

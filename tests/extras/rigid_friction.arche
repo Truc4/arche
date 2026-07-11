@@ -1,0 +1,31 @@
+// Driver test for the Coulomb FRICTION impulse. A box is driven into a static floor moving right AND down
+// (lvel=(4,-10)); one solve+apply. The normal impulse kills the −10 closing speed (Jn=10); friction then
+// applies a TANGENT impulse opposing the sideways motion, clamped to μ·|Jn| (μ=0.3 ⇒ cone limit 3). Here
+// the unclamped tangent impulse (~2.1) is inside the cone, so it applies fully: vx 4 → ~1.9 (friction bit),
+// vy → 0, and the tangent force at the contact below the centre spins the box (Δω ≈ −2). A frictionless
+// run would leave vx=4 — so vx<3 proves friction acted.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt }
+
+[4]RBody(2);
+seed :: system {
+  RBody.pos.x  = { 0.0,  0.0    };  RBody.pos.y  = { 0.9,  -100.0 };
+  RBody.lvel.x = { 4.0,  0.0    };  RBody.lvel.y = { -10.0, 0.0   };
+  RBody.spin.x = { 0.0,  0.0    };  RBody.spin.y = { 0.0,  0.0    };
+  RBody.rot.x  = { 1.0,  1.0    };  RBody.rot.y  = { 0.0,  0.0    };
+  RBody.ext.x  = { 1.0,  1000.0 };  RBody.ext.y  = { 1.0,  100.0  };
+  RBody.mi.x   = { 1.0,  0.0    };  RBody.mi.y   = { 1.0,  0.0    };
+  RBody.mat.x  = { 0.0,  0.0    };  RBody.mat.y  = { 0.3,  0.3    };
+  RBody.dimp.x = { 0.0,  0.0    };  RBody.dimp.y = { 0.0,  0.0    };
+  RBody.dang.x = { 0.0,  0.0    };  RBody.dang.y = { 0.0,  0.0    };
+  RBody.cor.x  = { 0.0,  0.0    };  RBody.cor.y  = { 0.0,  0.0    };
+}
+
+verify :: system eff {
+  fmt.assert(RBody.lvel.x[0] > 1.6 && RBody.lvel.x[0] < 2.2, "friction should cut vx from 4 to ~1.9\n")();
+  fmt.assert(RBody.lvel.y[0] > -0.1 && RBody.lvel.y[0] < 0.1, "normal impulse should stop the fall\n")();
+  fmt.assert(RBody.spin.x[0] > -2.2 && RBody.spin.x[0] < -1.8, "tangent force should spin the box (~-2)\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, rigid.solve_lin, rigid.solve_ang, rigid.apply, verify })

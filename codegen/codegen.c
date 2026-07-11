@@ -7640,7 +7640,9 @@ static int rhs_forces_scalar(CodegenContext *ctx, const HirExpr *e) {
  * (a float literal, a float column/singleton read) is left untouched. Returns the operand to use. */
 static const char *float_promote_operand(CodegenContext *ctx, const HirExpr *rhs, const char *buf, char *out,
                                          size_t outsz) {
-	if (rhs && rhs->kind == HIR_EXPR_LITERAL && strchr(buf, '.') == NULL && strchr(buf, '%') == NULL) {
+	if (rhs && rhs->kind == HIR_EXPR_LITERAL &&
+	    (rhs->resolved.tag == HIR_TYPE_INT || rhs->resolved.tag == HIR_TYPE_CHAR) && strchr(buf, '.') == NULL &&
+	    strchr(buf, '%') == NULL) {
 		snprintf(out, outsz, "%s.0", buf);
 		return out;
 	}

@@ -1,0 +1,46 @@
+// Driver test for the FULL step run to rest: gravity + integrate + impulse solve (restitution 0) +
+// positional de-penetration, looped. A unit box dropped straight down from y=5 onto a big static floor
+// (top y=0) must SETTLE at rest ON the surface (pos.y→1), velocities →0, no spin, without sinking through.
+// The loop is `forever` (so the solver is inlined ONCE — a per-frame unroll overflows llc) with a frame
+// counter; at frame 120 it checks the rest state, prints, flushes, and exits.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt os }
+
+G :: 0.05;
+c :: float;
+Clock :: arche { c }
+
+[4]RBody(2);
+[1]Clock(1);
+seed :: system {
+  RBody.pos.x  = { 0.0,  0.0    };  RBody.pos.y  = { 5.0,  -100.0 };
+  RBody.lvel.x = { 0.0,  0.0    };  RBody.lvel.y = { 0.0,  0.0    };
+  RBody.spin.x = { 0.0,  0.0    };  RBody.spin.y = { 0.0,  0.0    };
+  RBody.rot.x  = { 1.0,  1.0    };  RBody.rot.y  = { 0.0,  0.0    };
+  RBody.ext.x  = { 1.0,  1000.0 };  RBody.ext.y  = { 1.0,  100.0  };
+  RBody.mi.x   = { 1.0,  0.0    };  RBody.mi.y   = { 1.0,  0.0    };
+  RBody.mat.x  = { 0.0,  0.0    };  RBody.mat.y  = { 0.3,  0.3    };
+  RBody.dimp.x = { 0.0,  0.0    };  RBody.dimp.y = { 0.0,  0.0    };
+  RBody.dang.x = { 0.0,  0.0    };  RBody.dang.y = { 0.0,  0.0    };
+  RBody.cor.x  = { 0.0,  0.0    };  RBody.cor.y  = { 0.0,  0.0    };
+  Clock.c = { 0.0 };
+}
+
+grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - G * select(mi.x > 0.0, 1.0, 0.0); }
+tick :: map (query { c })(c) { c = c + 1.0; }
+
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 119.5) {
+      fmt.assert(RBody.pos.y[0] > 0.9 && RBody.pos.y[0] < 1.1, "box should rest ON the floor (pos.y~1)\n")();
+      fmt.assert(RBody.lvel.y[0] > -0.12 && RBody.lvel.y[0] < 0.12, "vy should settle to ~0\n")();
+      fmt.assert(RBody.spin.x[0] > -0.05 && RBody.spin.x[0] < 0.05, "no spin from a centred drop\n")();
+      fmt.assert(RBody.pos.y[1] > -100.01 && RBody.pos.y[1] < -99.99, "static floor must not move\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
+}
+
+#run seq({ seed, forever(seq({ grav, integrate, rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.solve_pos, rigid.apply_pos, tick, check })) })

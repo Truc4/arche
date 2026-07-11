@@ -1,0 +1,51 @@
+// A query names the components an entity must ALL have, and must iterate exactly the entities that have
+// every listed component — independent of how any pool is sized. Only `One` has `mrk`, so
+// `query { mrk, pos }` must match ONLY the single `One` entity (pos.x = 100).
+//
+// BUG (RED until fixed): when a `[1]`-extent pool shares a device-datasheet column (`pos`, also declared
+// by the physics `Body` datasheet) with wider pools, the query anchors on the shared column and ALSO
+// matches the `pos`-only `Two` entities, broadcasting `One`'s `mrk` onto them. So the sum over the
+// matched `pos.x` comes out 100+1000+2000 = 3100 instead of 100.
+//
+// Minimal repro of an arche-portfolio physics bug: the kinematic player `Player{ppx,pos,half}` declared
+// as `[1]Player(1)` over-matched the `Box`/`Ball` body pools on `query { ppx, pos }`. Factors, each
+// bisected: (a) the marker pool has extent `[1]` — `[2]One(1)` makes it correct; (b) the physics `Body`
+// datasheet pool is present — dropping it makes it correct; (c) `pos` is a datasheet column shared across
+// the pools. Plain (non-datasheet) shared columns never reproduce it.
+//
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { physics vec fmt }
+mrk   :: float;
+total :: float;
+
+One :: arche { mrk, pos }   // the sole `mrk` holder — extent [1] is the trigger
+Two :: arche { pos }        // shares only `pos`; must NOT match `query { mrk, pos }`
+Sum :: arche { total }
+
+[1]One(1);
+[4]Two(2);
+[4]Body;                    // physics datasheet storage floor; its presence is part of the trigger
+[4]Sum(1);
+
+seed :: system {
+  One.mrk   = { 7.0 };
+  One.pos.x = { 100.0 };  One.pos.y = { 0.0 };
+  Two.pos.x = { 1000.0, 2000.0 };  Two.pos.y = { 0.0, 0.0 };
+  Sum.total = { 0.0 };
+}
+
+// Fold pos.x over everything `query { mrk, pos }` matches. Correct = 100 (just One); broadcast = 3100.
+accumulate :: system (query { mrk, pos } as Q) {
+  map (query { total })(total) {
+    total = reduce(+, Q.pos.x);
+  };
+}
+
+verify :: system eff {
+  map (query { total }) eff {
+    fmt.assert(total == 100.0, "query {mrk,pos} over-matched via broadcast — sum should be 100, got 3100\n")();
+    fmt.printf("ok\n");
+  };
+}
+
+#run seq({ seed, accumulate, verify })

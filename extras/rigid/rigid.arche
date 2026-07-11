@@ -1,0 +1,233 @@
+/// Behavior for the `rigid` device — 2D rigid-body dynamics with ROTATION over oriented boxes (OBBs):
+/// SAT collision detection, a contact point, and an impulse solver with restitution + friction + angular
+/// response, plus a positional de-penetration pass. The full-fat companion to the AABB `physics` device.
+///
+/// Unlike `physics` (a single branch-free `select` kernel), a rigid solver needs real vector algebra, so
+/// the geometry lives in pure value `func`s (rotate/cross/SAT/contact/impulse) and the per-frame work is
+/// the boids self-join `reduce`: each body folds the pairwise impulses from every other body into an
+/// accumulator (a velocity SNAPSHOT read), then a second pass applies it — Jacobi, data-parallel,
+/// order-independent. The impulse response is split into a LINEAR and an ANGULAR reduce (`solve_lin` /
+/// `solve_ang`) because each fold is a 2-vector (the impulse is 3 numbers); both read the same pre-`apply`
+/// snapshot. Iterate by listing the trio several times in the schedule. Orientation is a unit vector (no
+/// trig): a body is spun by renormalising `rot + perp(rot)·ω`.
+///
+/// Per-body scalars are packed into 2-vector `x` (`spin`/`mi`/`mat`/`dang`) — see the datasheet for why.
+/// Systems are device-qualified in a driver's schedule (`rigid.solve_lin`, …), like the `physics` device.
+#import { vec }
+
+/// An oriented rigid body. `lvel`=linear vel, `spin.x`=angular vel, `rot`=orientation unit-vec,
+/// `ext`=half-extents, `mi`=(invMass,invInertia), `mat`=(restitution,friction), `dimp`/`dang`/`cor`=solver
+/// accumulators. Seed `rot=(1,0)` for angle 0 and `mi=(0,0)` for a static body.
+RBody :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor }
+
+// --- vector helpers (pure, branch-free) --------------------------------------
+
+/// Rotate a local-frame vector `v` into world by the orientation unit-vector `r` — a complex multiply.
+rotate :: func(v: pos, r: pos) -> pos {
+  return (v.x * r.x - v.y * r.y, v.x * r.y + v.y * r.x);
+}
+
+/// Left perpendicular (90° CCW): `(x, y) -> (-y, x)`.
+perp :: func(v: pos) -> pos {
+  return (0.0 - v.y, v.x);
+}
+
+/// 2D scalar cross product `a × b = ax·by − ay·bx` — the lever-arm term.
+cross :: func(a: pos, b: pos) -> float {
+  return a.x * b.y - a.y * b.x;
+}
+
+/// Angular-velocity (scalar) crossed with a radius vector: `ω × r = (−ω·ry, ω·rx)`.
+crossw :: func(w: float, r: pos) -> pos {
+  return (0.0 - w * r.y, w * r.x);
+}
+
+/// Normalise to unit length.
+normalize :: func(v: pos) -> pos {
+  l := sqrt(v.x * v.x + v.y * v.y);
+  return v * (1.0 / l);
+}
+
+// --- collision detection (separating-axis test over oriented boxes) ----------
+
+/// Half-width of an OBB projected onto a unit axis `n`, given its world axes `ax`/`ay` and half-extents.
+obb_radius :: func(ax: pos, ay: pos, ext: pos, n: pos) -> float {
+  return ext.x * vec.absf(vec.dot(ax, n)) + ext.y * vec.absf(vec.dot(ay, n));
+}
+
+/// Signed overlap of boxes A and B along unit axis `n`: `(radiusA + radiusB) − |(cB−cA)·n|`. >0 overlap.
+axis_overlap :: func(n: pos, pa: pos, axa: pos, aya: pos, ea: pos, pb: pos, axb: pos, ayb: pos, eb: pos) -> float {
+  ra := obb_radius(axa, aya, ea, n);
+  rb := obb_radius(axb, ayb, eb, n);
+  return ra + rb - vec.absf(vec.dot(pb - pa, n));
+}
+
+/// The 2D separating-axis test between two OBBs. Returns `(normal.x, normal.y, penetration)` as a `pos3`:
+/// the normal is the least-overlap axis (MTV direction), signed A→B; `penetration < 0` ⇒ disjoint.
+sat :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos) -> pos3 {
+  axa := ra;  aya := perp(ra);
+  axb := rb;  ayb := perp(rb);
+  o0 := axis_overlap(axa, pa, axa, aya, ea, pb, axb, ayb, eb);
+  o1 := axis_overlap(aya, pa, axa, aya, ea, pb, axb, ayb, eb);
+  o2 := axis_overlap(axb, pa, axa, aya, ea, pb, axb, ayb, eb);
+  o3 := axis_overlap(ayb, pa, axa, aya, ea, pb, axb, ayb, eb);
+  bx := axa.x;  by := axa.y;  bo := o0;
+  c1 := o1 < bo;  bx = select(c1, aya.x, bx);  by = select(c1, aya.y, by);  bo = select(c1, o1, bo);
+  c2 := o2 < bo;  bx = select(c2, axb.x, bx);  by = select(c2, axb.y, by);  bo = select(c2, o2, bo);
+  c3 := o3 < bo;  bx = select(c3, ayb.x, bx);  by = select(c3, ayb.y, by);  bo = select(c3, o3, bo);
+  nrm  := vec.mk(bx, by);
+  flip := vec.dot(pb - pa, nrm) < 0.0;
+  sx := select(flip, 0.0 - bx, bx);
+  sy := select(flip, 0.0 - by, by);
+  return (sx, sy, bo);
+}
+
+// --- contact resolution (impulse solver with restitution + friction + spin) --
+
+/// The contact point for boxes A and B given the contact normal `n` (A→B), by 1-D clipping. Laterally
+/// (along the tangent `t = perp(n)`) it is the CENTRE of the overlap of the two boxes' projections — so
+/// it sits under the actual overlap region, not between the centres (a laterally-offset box on a wide
+/// floor gets a contact under the box, not a huge spurious lever arm). Along the normal it is the midpoint
+/// of the two touching faces. Reduces to the face centre for a centred rest (no torque) and to the overlap
+/// edge for an overhang (correct torque). A clipped 2-POINT manifold (M5) improves off-centre stacking.
+contact_point :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos, n: pos) -> pos {
+  t   := perp(n);
+  axa := ra;  aya := perp(ra);
+  axb := rb;  ayb := perp(rb);
+  cat := vec.dot(pa, t);  rat := obb_radius(axa, aya, ea, t);   // A's span along the tangent
+  cbt := vec.dot(pb, t);  rbt := obb_radius(axb, ayb, eb, t);   // B's span along the tangent
+  lo  := select(cat - rat > cbt - rbt, cat - rat, cbt - rbt);
+  hi  := select(cat + rat < cbt + rbt, cat + rat, cbt + rbt);
+  mid := (lo + hi) * 0.5;                                        // centre of the tangential overlap
+  can := vec.dot(pa, n) + obb_radius(axa, aya, ea, n);           // A's surface along the normal
+  cbn := vec.dot(pb, n) - obb_radius(axb, ayb, eb, n);           // B's surface along the normal
+  midn := (can + cbn) * 0.5;
+  return t * mid + n * midn;
+}
+
+/// The contact IMPULSE VECTOR applied at the contact of boxes A and B (B receives +P, A receives −P). The
+/// full response: SAT normal + penetration, symmetric contact point, relative velocity there INCLUDING
+/// spin (`ω × r`), a NORMAL impulse with pair restitution `max(A,B)` + the rotational effective mass, plus a
+/// TANGENT (friction) impulse clamped to the Coulomb cone `min(A,B)·|Jn|`. Zero unless the boxes overlap
+/// AND are approaching, so a self-pair or a separating pair contributes nothing. `sa`/`sb` are the packed
+/// spins (`.x`=ω), `ma`/`mb` = (invM,invI), `ta`/`tb` = (rest,fric).
+contact_P :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
+                  pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> pos {
+  e  := select(ta.x < tb.x, tb.x, ta.x);   // restitution = max of the pair
+  mu := select(ta.y < tb.y, ta.y, tb.y);   // friction    = min of the pair
+  st  := sat(pa, ra, ea, pb, rb, eb);
+  n   := vec.mk(st.x, st.y);
+  sep := pb - pa;
+  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);   // 0 for a self/coincident pair
+  hit := select(st.z > 0.0, far, 0.0);
+  c   := contact_point(pa, ra, ea, pb, rb, eb, n);
+  rA  := c - pa;
+  rB  := c - pb;
+  vA  := lva + crossw(sa.x, rA);
+  vB  := lvb + crossw(sb.x, rB);
+  vrel := vB - vA;
+  // normal impulse
+  vn  := vec.dot(vrel, n);
+  rnA := cross(rA, n);
+  rnB := cross(rB, n);
+  kn0 := ma.x + mb.x + ma.y * rnA * rnA + mb.y * rnB * rnB;
+  kn  := select(kn0 > 0.0, kn0, 1.0);         // guard the divide (a static–static/self pair has kn=0, vn=0)
+  closing := select(vn < 0.0, 1.0, 0.0);
+  jn  := (0.0 - (1.0 + e)) * vn / kn * hit * closing;
+  // friction (tangent) impulse, clamped to the Coulomb cone
+  t   := perp(n);
+  vt  := vec.dot(vrel, t);
+  rtA := cross(rA, t);
+  rtB := cross(rB, t);
+  kt0 := ma.x + mb.x + ma.y * rtA * rtA + mb.y * rtB * rtB;
+  kt  := select(kt0 > 0.0, kt0, 1.0);
+  jt0 := (0.0 - vt) / kt * hit;
+  lim := mu * vec.absf(jn);
+  jt  := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
+  return n * jn + t * jt;
+}
+
+/// Linear velocity change body A receives from a contact with B: `−P · invMassA`. (Folded over all B.)
+imp_lin :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
+                pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> pos {
+  p := contact_P(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
+  return p * (0.0 - ma.x);
+}
+
+/// Angular velocity change body A receives from a contact with B: `−invInertiaA · (rA × P)`, packed as a
+/// `spin` 2-vector (`.x` = Δω) so it folds through a plain 2-vec reduce.
+imp_ang :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat,
+                pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat) -> spin {
+  st := sat(pa, ra, ea, pb, rb, eb);
+  n  := vec.mk(st.x, st.y);
+  c  := contact_point(pa, ra, ea, pb, rb, eb, n);
+  rA := c - pa;
+  p  := contact_P(pa, ra, ea, lva, sa, ma, ta, pb, rb, eb, lvb, sb, mb, tb);
+  return ((0.0 - ma.y) * cross(rA, p), 0.0);
+}
+
+// --- integration -------------------------------------------------------------
+
+/// Semi-implicit Euler step (dt = 1 frame): advance the centre by `lvel` and spin `rot` by `spin.x`
+/// (small-angle `rot + perp(rot)·ω`, renormalised — no trig, no drift). The driver adds gravity to `lvel`
+/// first. A temp holds the spun vector (writing `rot` from an RHS that reads it twice self-aliases).
+integrate :: map (query { pos, lvel, spin, rot })(pos, rot) {
+  spun := rot + perp(rot) * spin.x;
+  pos = pos + lvel;
+  rot = normalize(spun);
+}
+
+// --- solver ------------------------------------------------------------------
+
+/// Solver phase 1a (Jacobi, LINEAR): each body folds the linear impulse from every other body into `dimp`,
+/// reading a velocity snapshot. Run the solve trio several times in the schedule for a stiffer solve.
+solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat } as All) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, dimp } as me)(dimp) {
+    dimp = reduce(+, imp_lin(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat,
+                             All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat));
+  };
+}
+
+/// Solver phase 1b (Jacobi, ANGULAR): each body folds the angular impulse into `dang.x` from the SAME
+/// pre-`apply` snapshot as `solve_lin`.
+solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat } as All) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, dang } as me)(dang) {
+    dang = reduce(+, imp_ang(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat,
+                             All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat));
+  };
+}
+
+/// Solver phase 2: commit the accumulated linear + angular impulses to the body's velocities.
+apply :: map (query { lvel, spin, dimp, dang })(lvel, spin) {
+  lvel   = lvel + dimp;
+  spin.x = spin.x + dang.x;
+}
+
+// --- positional de-penetration (Baumgarte-free split, like physics.collide) --
+
+/// The positional correction body A receives from overlapping B: move A along −n by a mass-weighted share
+/// of the penetration (× BETA so a stack settles without jitter). `n` points A→B, so A backs off along −n.
+/// Zero for a separated or self/coincident pair. Reads positions only (writes `cor`); `apply_pos` commits.
+BETA :: 0.8;
+cor_of :: func(pa: pos, ra: pos, ea: pos, ma: mi, pb: pos, rb: pos, eb: pos, mb: mi) -> pos {
+  st  := sat(pa, ra, ea, pb, rb, eb);
+  n   := vec.mk(st.x, st.y);
+  sep := pb - pa;
+  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
+  hit := select(st.z > 0.0, far, 0.0);
+  wsum := ma.x + mb.x;
+  wa   := select(wsum > 0.0, ma.x / wsum, 0.0);          // A's share of the separation (0 if A static)
+  return n * (0.0 - st.z * wa * BETA * hit);
+}
+
+/// Positional solver (phase 1): each body folds its de-penetration offset into `cor` (positions snapshot).
+solve_pos :: system (query { pos, rot, ext, mi } as All) {
+  map (query { pos, rot, ext, mi, cor } as me)(cor) {
+    cor = reduce(+, cor_of(me.pos, me.rot, me.ext, me.mi, All.pos, All.rot, All.ext, All.mi));
+  };
+}
+
+/// Positional solver (phase 2): commit the de-penetration offset to the centre.
+apply_pos :: map (query { pos, cor })(pos) {
+  pos = pos + cor;
+}

@@ -1,0 +1,31 @@
+// Driver test for ANGULAR response: an off-centre contact converts linear motion into spin. A unit box
+// falls straight down but overhangs the RIGHT edge of a narrow floor, so the contact sits to the right of
+// the box centre and the normal impulse applies a torque. Box@(0,0.9) ext(1,1) mi=(1,1) lvel=(0,-5);
+// floor@(1,-100) ext(1,100) mi=(0,0). Contact ≈(0.5,-0.05): lever rA≈(0.5,-0.95), kn=1.25, Jn=4.8, so
+// Δvy=+4.8 (vy: -5→-0.2) and Δω = -invI·(rA×P) = +2.4 (CCW — the supported right side lifts). Confirms the
+// rotational effective-mass term and the angular impulse, and that linear+angular share the impulse.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt }
+
+[4]RBody(2);
+seed :: system {
+  RBody.pos.x  = { 0.0,  1.0    };  RBody.pos.y  = { 0.9,  -100.0 };
+  RBody.lvel.x = { 0.0,  0.0    };  RBody.lvel.y = { -5.0, 0.0    };
+  RBody.spin.x = { 0.0,  0.0    };  RBody.spin.y = { 0.0,  0.0    };
+  RBody.rot.x  = { 1.0,  1.0    };  RBody.rot.y  = { 0.0,  0.0    };
+  RBody.ext.x  = { 1.0,  1.0    };  RBody.ext.y  = { 1.0,  100.0  };
+  RBody.mi.x   = { 1.0,  0.0    };  RBody.mi.y   = { 1.0,  0.0    };
+  RBody.mat.x  = { 0.2,  0.2    };  RBody.mat.y  = { 0.0,  0.0    };
+  RBody.dimp.x = { 0.0,  0.0    };  RBody.dimp.y = { 0.0,  0.0    };
+  RBody.dang.x = { 0.0,  0.0    };  RBody.dang.y = { 0.0,  0.0    };
+  RBody.cor.x  = { 0.0,  0.0    };  RBody.cor.y  = { 0.0,  0.0    };
+}
+
+verify :: system eff {
+  fmt.assert(RBody.spin.x[0] > 2.3 && RBody.spin.x[0] < 2.5, "off-centre hit should spin box CCW (~+2.4)\n")();
+  fmt.assert(RBody.lvel.y[0] > -0.3 && RBody.lvel.y[0] < -0.1, "vy should rise to ~-0.2 (rest went to spin)\n")();
+  fmt.assert(RBody.lvel.x[0] > -0.01 && RBody.lvel.x[0] < 0.01, "no friction ⇒ no sideways drift\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, rigid.solve_lin, rigid.solve_ang, rigid.apply, verify })
