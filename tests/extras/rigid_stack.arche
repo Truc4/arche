@@ -32,7 +32,8 @@ sub :: func() -> Schedule {
   return seq({ grav, rigid.contacts,
                rigid.solve_lin, rigid.solve_ang, rigid.apply,
                rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.integrate });
+               rigid.integrate,
+               rigid.solve_lin_relax, rigid.solve_ang_relax, rigid.apply });
 }
 
 check :: system eff {
