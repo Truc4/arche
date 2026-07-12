@@ -31,4 +31,15 @@ dimp(x, y) :: float;
 dang(x, y) :: float;
 cor(x, y)  :: float;
 
+/// `sup` = the SUMMED CONTACT NORMAL on a body: Σ (normal A→B) over every body B it is currently touching,
+/// written by the optional `supports` pass. It answers "what am I touching, and in what DIRECTION?" — which
+/// the contact COUNT in `cor.x` cannot. World +y is down, so a body resting ON something has `sup.y > 0`
+/// (the normal points from it down into its support), and a body pressed against a wall to its RIGHT has
+/// `sup.x > 0`. A character controller needs exactly this: `sup.y > 0` is a real GROUNDED test (a wall
+/// contact alone must not let you jump), and the sign of `sup.x` says which way a wall is, so you can stop
+/// driving into it (driving into a wall generates a large normal impulse, and friction against that impulse
+/// dwarfs gravity — that is what makes a character STICK to walls). `supports` is optional and cheap enough
+/// to run once per FRAME rather than per substep.
+sup(x, y)  :: float;
+
 [4]RBody;

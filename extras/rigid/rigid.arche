@@ -23,7 +23,7 @@
 /// `ext`=half-extents, `mi`=(invMass,invInertia), `mat`=(restitution,friction), `dimp`/`dang`=impulse
 /// accumulators, `cor.x`=per-body active-contact count (for mass-splitting). Seed `rot=(1,0)` for angle 0
 /// and `mi=(0,0)` for a static body.
-RBody :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor }
+RBody :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, sup }
 
 // --- vector helpers (pure, branch-free) --------------------------------------
 
@@ -432,6 +432,61 @@ integrate :: map (query { pos, lvel, spin, rot })(pos, rot) {
 contacts :: system (query { pos, rot, ext, spin } as All) {
   map (query { pos, rot, ext, spin, cor } as me)(cor) {
     cor = reduce(+, pair_count(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin));
+  };
+}
+
+/// The two thresholds that classify a contact by the WORLD orientation of its surface. World +y is down, so
+/// the contact normal A→B points from the body INTO whatever it is touching: n.y = 1 means the surface is
+/// directly beneath, n.y = 0 means it is a vertical face beside.
+///
+///   SUP_GROUND — a contact counts as GROUND BENEATH ME if n.y > this. 0.4 admits any walkable surface
+///                (flat floor = 1.0, a 35° ramp = 0.82, a body tilted 45° on a corner ≈ 0.71) and rejects a
+///                vertical wall (0.0). Note this is about the SURFACE's slope, not the standing body's
+///                rotation: a tumbling box resting on flat ground still sees n = (0, 1).
+///   SUP_WALL   — a contact counts as a WALL blocking me if |n.y| < this, i.e. the face is near-vertical.
+///
+/// They are deliberately SEPARATE tests, not two sides of one threshold. A ramp is BOTH standable and NOT a
+/// wall; one threshold cannot say that. (With a single cutoff, a ramp either could not be jumped from, or —
+/// worse — walking up it read as "driving into a wall" and got suppressed, so it could not be climbed at all.)
+SUP_GROUND :: 0.4;
+SUP_WALL   :: 0.5;
+
+/// The contact NORMAL body A sees from body B (A→B, unit), or (0,0) if they are not touching. Folded over B
+/// by `supports` to give A the SUM of the normals pressing on it. Mirrors `pair_count`'s contact gate exactly
+/// — same SAT, same speculative distance, same circle branch — but returns the direction instead of the count.
+///
+/// The two components are NOT symmetric, on purpose:
+///   `.x` sums n.x over the NEAR-VERTICAL contacts only (|n.y| < SUP_WALL) — "is a WALL blocking me, and on
+///        which side". A floor or a ramp must NOT contribute: pressing up a ramp would otherwise look
+///        identical to pressing into a wall, and get suppressed.
+///   `.y` sums n.y over the STANDABLE contacts only (n.y > SUP_GROUND) — "is there ground beneath me". A wall
+///        contributes nothing, so it cannot be jumped from; a ramp does, so it can.
+pair_normal :: func(pa: pos, ra: pos, ea: pos, sa: spin, pb: pos, rb: pos, eb: pos, sb: spin) -> sup {
+  st  := sat(pa, ra, ea, pb, rb, eb);
+  n   := vec.mk(st.x, st.y);
+  sep := pb - pa;
+  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
+  hit := select(st.z > 0.0 - SPEC_DIST, far, 0.0);
+  anyC := select(sa.y > 0.5, 1, select(sb.y > 0.5, 1, 0));
+  cc3  := circ_contact(pa, ra, ea, sa.y, pb, rb, eb, sb.y);
+  circHit := far * select(cc3.z > 0.0 - SPEC_DIST, 1.0, 0.0);
+  nx := select(anyC == 1, cc3.x, n.x);
+  ny := select(anyC == 1, cc3.y, n.y);
+  h  := select(anyC == 1, circHit, hit);
+  ground := select(ny > SUP_GROUND, 1.0, 0.0);            // a surface I can stand on (floor, stair, ramp)
+  wall := select(vec.absf(ny) < SUP_WALL, 1.0, 0.0);       // a near-vertical face that blocks me
+  // bind before the return tuple: a bare binary op in a return slot mis-types as int (compiler bug)
+  ox := nx * h * wall;
+  oy := ny * h * ground;
+  return (ox, oy);
+}
+
+/// SUPPORT pass (optional; run ONCE PER FRAME, not per substep): each body folds the contact normal from every
+/// body it touches into `sup`. See the datasheet — this is what makes a real GROUNDED test possible (`sup.y > 0`
+/// = something is under me) and lets a character stop walking into a wall it is already flush against.
+supports :: system (query { pos, rot, ext, spin } as All) {
+  map (query { pos, rot, ext, spin, sup } as me)(sup) {
+    sup = reduce(+, pair_normal(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin));
   };
 }
 
