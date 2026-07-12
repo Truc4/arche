@@ -137,3 +137,8 @@ int gfx_be_coarse_pointer(void *handle) {
 	(void)handle;
 	return 0;
 }
+
+int gfx_be_axis_y(void *handle) {
+	(void)handle;
+	return 0;
+}

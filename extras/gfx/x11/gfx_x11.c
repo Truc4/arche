@@ -24,6 +24,7 @@ typedef struct {
 	Atom wm_delete;
 	int open;
 	int left, right; /* ←/→ arrow key held state, updated in poll, read by gfx_be_axis_x */
+	int up, down;    /* ↑/↓ (+ Space/W/S) held state, read by gfx_be_axis_y */
 	/* Discrete key FIFO for gfx_be_key (an editor needs each keypress, not held state). Printable keys are
 	 * their ASCII byte; special keys use the sentinels below. */
 	int keyq[64];
@@ -171,6 +172,13 @@ int gfx_be_poll(void *handle) {
 			char buf[16];
 			KeySym ks;
 			int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
+			/* Vertical HELD state for gfx_be_axis_y: ↑/W/Space = up, ↓/S = down. Tracked here rather than in
+			 * the chain below because Space/W/S are PRINTABLE — an editor must still receive them, so the
+			 * movement handling must not swallow them. */
+			if (ks == XK_Up || ks == XK_space || ks == XK_w || ks == XK_W)
+				g->up = down;
+			if (ks == XK_Down || ks == XK_s || ks == XK_S)
+				g->down = down;
 			if (ks == XK_Left) {
 				g->left = down;
 				if (down)
@@ -217,6 +225,15 @@ int gfx_be_axis_x(void *handle) {
 	if (!g)
 		return 0;
 	return (g->right ? 1 : 0) - (g->left ? 1 : 0);
+}
+
+/* The vertical partner to gfx_be_axis_x: -1 while up is held, +1 while down is. HELD, not pressed — see
+ * gfx.arche's `axis_y` for why the drained key queue cannot answer this. */
+int gfx_be_axis_y(void *handle) {
+	GfxX11 *g = handle;
+	if (!g)
+		return 0;
+	return (g->down ? 1 : 0) - (g->up ? 1 : 0);
 }
 
 /* Next discrete key press (ASCII byte, or a GFX_KEY_* sentinel), or 0 if the queue is empty. Non-blocking:

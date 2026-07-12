@@ -58,7 +58,7 @@
       this.texW = 0; this.texH = 0;
       this.handle = 1n; // opaque window handle: arche `window` lowers to i64 → crosses as BigInt
       this.tex = null; this.frames = 0;
-      this.keys = { left: false, right: false }; // ←/→ (or A/D) held state, read by gfx_be_axis_x
+      this.keys = { left: false, right: false, up: false, down: false }; // held state, read by gfx_be_axis_x/y
       this.keyQueue = [];                          // discrete presses, drained by gfx_be_key
       // Named-key → code map; MUST match gfx_x11.c's XLookupString bytes + GFX_KEY_* sentinels.
       const NAMED = { Enter: 13, Backspace: 8, Tab: 9, Escape: 27, ArrowLeft: 1000, ArrowRight: 1001, ArrowUp: 1002, ArrowDown: 1003 };
@@ -76,12 +76,14 @@
         // Releases are always safe to observe; only presses are the text field's to keep.
         if (this.textFocused()) {
           if (down) return;
-          this.keys.left = false; this.keys.right = false;
+          this.keys.left = false; this.keys.right = false; this.keys.up = false; this.keys.down = false;
           return;
         }
         const k = e.key;
         if (k === "ArrowLeft" || k === "a" || k === "A") this.keys.left = down;
         else if (k === "ArrowRight" || k === "d" || k === "D") this.keys.right = down;
+        else if (k === "ArrowUp" || k === "w" || k === "W" || k === " ") this.keys.up = down;
+        else if (k === "ArrowDown" || k === "s" || k === "S") this.keys.down = down;
         if (down) {
           let code = NAMED[k];
           if (code === undefined && k.length === 1) code = k.charCodeAt(0);
@@ -270,6 +272,7 @@
         },
         gfx_be_poll() { return 1; }, // the tab is always open; native inserts Closed here to exit
         gfx_be_axis_x() { return (self.keys.right ? 1 : 0) - (self.keys.left ? 1 : 0); },
+        gfx_be_axis_y() { return (self.keys.down ? 1 : 0) - (self.keys.up ? 1 : 0); },
         gfx_be_key() { return self.keyQueue.length ? self.keyQueue.shift() : 0; },
         gfx_be_mouse_x() { return self.mx; },
         gfx_be_mouse_y() { return self.my; },

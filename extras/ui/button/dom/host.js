@@ -23,6 +23,19 @@
       // single `clicked` flag), so a driver with two Button rows saw them both drive the same element and
       // drain the same flag — the second button silently did not exist.
       this.btns = new Map();
+      // Pointers currently down ANYWHERE. A button only knows it was entered, not whether a finger is actually
+      // pressed — this is what tells `pointerenter` the difference between a slide-in and a hover.
+      this.down = new Set();
+      const lift = (ev) => {
+        this.down.delete(ev.pointerId);
+        // Last finger up ⇒ nothing can be held. A release that lands outside every button (lifting off the
+        // edge of one) would otherwise never reach a `pointerup` handler, and the pad would stay stuck down.
+        if (!this.down.size) { this.btns.forEach((e) => e.release && e.release()); }
+      };
+      if (typeof addEventListener === "function") {
+        addEventListener("pointerup", lift);
+        addEventListener("pointercancel", lift);
+      }
     },
     seams(rt) {
       const self = this;
@@ -47,19 +60,34 @@
         // `pointer*` covers mouse AND touch in one path, and setPointerCapture keeps the press ours even if the
         // finger slides off the pad — without it, `pointerup` would fire on some other element and the pad
         // would stay stuck down, walking the player forever.
+        const press = () => { e.clicked = true; e.held = true; b.classList.add("is-down"); };
+        const release = () => { e.held = false; b.classList.remove("is-down"); };
+        e.release = release;
         b.addEventListener("pointerdown", (ev) => {
           ev.preventDefault();
-          e.clicked = true;
-          e.held = true;
-          b.classList.add("is-down"); // the pressed look — see the stylesheet
-          if (b.setPointerCapture) { try { b.setPointerCapture(ev.pointerId); } catch (_) {} }
+          // RELEASE the implicit capture. A touch pointer is captured to whatever element got `pointerdown`,
+          // so every later event — including the ones over OTHER buttons — is delivered here. That makes it
+          // impossible to slide a thumb from LEFT onto RIGHT: the second button never hears a thing. Letting
+          // the capture go restores the boundary events (pointerenter/pointerleave) that make sliding work.
+          if (b.releasePointerCapture && b.hasPointerCapture && b.hasPointerCapture(ev.pointerId)) {
+            try { b.releasePointerCapture(ev.pointerId); } catch (_) {}
+          }
+          self.down.add(ev.pointerId);
+          press();
         });
-        const up = () => { e.held = false; b.classList.remove("is-down"); };
-        b.addEventListener("pointerup", up);
-        b.addEventListener("pointercancel", up);
-        // Holding a movement pad IS a long press, so the browser offers its context menu / text-selection
-        // callout right on top of the controls. CSS alone does not stop it (Android fires `contextmenu`
-        // regardless of -webkit-touch-callout), so refuse the event outright.
+        // Sliding: a finger already down that crosses into this button presses it, and leaving un-presses it.
+        b.addEventListener("pointerenter", () => { if (self.down.size) press(); });
+        b.addEventListener("pointerleave", release);
+        b.addEventListener("pointerup", release);
+        b.addEventListener("pointercancel", release);
+        // Holding a movement pad IS a long press, so the browser wants to offer its context menu / selection
+        // callout — with a haptic buzz — right on top of the controls.
+        //
+        // Cancelling `contextmenu` is NOT enough: on Android the long-press haptic fires BEFORE that event, so
+        // you still feel the buzz even though no menu appears. The GESTURE itself has to be refused, and the
+        // only thing that does that is preventDefault on `touchstart` (which must be a non-passive listener,
+        // or the browser ignores it). preventDefault on `pointerdown` does not cover it.
+        b.addEventListener("touchstart", (ev) => { ev.preventDefault(); }, { passive: false });
         b.addEventListener("contextmenu", (ev) => { ev.preventDefault(); });
         self.btns.set(bid, e);
         return e;

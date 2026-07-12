@@ -18,6 +18,18 @@ axis_x :: func(h: window) -> Eff(int) {
   return gfx_be_axis_x(h);
 }
 
+/// The window's VERTICAL input axis, the symmetric partner to `axis_x`: -1 while an up key (↑/W/Space) is
+/// held, +1 while a down key (↓/S) is held, 0 otherwise. World +y is down, so "up" is negative — the same
+/// convention as the screen.
+///
+/// This exists because HELD is not the same question as PRESSED, and `key` can only answer the latter. `key`
+/// is a drained queue fed by OS auto-repeat (~30/s), so against a 60fps loop roughly every other frame finds
+/// it empty. A driver polling `key` for a held jump therefore jumps only about HALF the times you land while
+/// holding it — a coin flip, not a bug you can tune away. Level state has to come from level state.
+axis_y :: func(h: window) -> Eff(int) {
+  return gfx_be_axis_y(h);
+}
+
 /// The next discrete key press as one Eff — the typed ASCII byte (Enter=13, Backspace=8, Tab=9…) or a
 /// GFX_KEY_* sentinel (arrows: left=1000, right=1001, up=1002, down=1003), or 0 when nothing is queued. A
 /// step system drains it each frame — `gfx.key(handle)(k:)` — to feed an editor/text field. Non-blocking.
