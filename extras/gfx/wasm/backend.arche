@@ -21,5 +21,7 @@ gfx_be_mouse_x    :: proc(win: window)(x: int);
 gfx_be_mouse_y    :: proc(win: window)(y: int);
 gfx_be_mouse_down :: proc(win: window)(down: int);
 gfx_be_scroll     :: proc(win: window)(d: int);
+gfx_be_text_focus :: proc(win: window)(f: int);
+gfx_be_release_text :: proc(win: window)(r: int);
 @drop(window)
 gfx_be_close :: proc(own win: window);

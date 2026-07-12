@@ -62,11 +62,23 @@
       this.keyQueue = [];                          // discrete presses, drained by gfx_be_key
       // Named-key → code map; MUST match gfx_x11.c's XLookupString bytes + GFX_KEY_* sentinels.
       const NAMED = { Enter: 13, Backspace: 8, Tab: 9, Escape: 27, ArrowLeft: 1000, ArrowRight: 1001, ArrowUp: 1002, ArrowDown: 1003 };
-      const set = (down) => (e) => {
-        // If a text field is focused (e.g. an embedded editor <textarea>), let it own the keyboard — don't
-        // steal a/d/arrows for movement or preventDefault typing. Movement resumes when the canvas/body is focused.
+      // Does a foreign TEXT FIELD own the keyboard? (An embedded editor <textarea>, say.) Exposed to the
+      // driver as gfx_be_text_focus so it can hold a real focus flag — see gfx.arche's `text_focus`.
+      this.textFocused = () => {
         const ae = document.activeElement;
-        if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable)) return;
+        return !!(ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable));
+      };
+      const set = (down) => (e) => {
+        // A focused text field OWNS the keyboard: never steal a/d/arrows for movement, never preventDefault
+        // its typing. But the KEYUP must still clear the held axis. The guard used to early-return on keyup
+        // too, so holding → and then clicking into the <textarea> mid-hold swallowed the keyup and left
+        // keys.right stuck true — axis_x returned +1 forever and the player walked away with no key held.
+        // Releases are always safe to observe; only presses are the text field's to keep.
+        if (this.textFocused()) {
+          if (down) return;
+          this.keys.left = false; this.keys.right = false;
+          return;
+        }
         const k = e.key;
         if (k === "ArrowLeft" || k === "a" || k === "A") this.keys.left = down;
         else if (k === "ArrowRight" || k === "d" || k === "D") this.keys.right = down;
@@ -248,6 +260,16 @@
         gfx_be_mouse_x() { return self.mx; },
         gfx_be_mouse_y() { return self.my; },
         gfx_be_mouse_down() { return self.mdown; },
+        gfx_be_text_focus() { return self.textFocused() ? 1 : 0; },
+        // Take the keyboard back for the world: blur the focused text field and focus the canvas. Also clear
+        // the held axis — the blur means we will never see the keyup for anything currently held.
+        gfx_be_release_text() {
+          if (!self.textFocused()) return 0;
+          document.activeElement.blur();
+          if (self.canvas.focus) self.canvas.focus();
+          self.keys.left = false; self.keys.right = false;
+          return 1;
+        },
         gfx_be_scroll() { const s = self.scroll; self.scroll = 0; return s; }, // drain-and-clear
         gfx_be_close() {},
       };

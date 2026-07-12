@@ -255,6 +255,18 @@ int gfx_be_scroll(void *handle) {
 	return s;
 }
 
+/* No foreign text widget on this backend: gfx always owns the keyboard, so focus is entirely the driver's
+ * business (it hit-tests its own editor rect). See gfx.arche's `text_focus` / `release_text`. */
+int gfx_be_text_focus(void *handle) {
+	(void)handle;
+	return 0;
+}
+
+int gfx_be_release_text(void *handle) {
+	(void)handle;
+	return 0;
+}
+
 /* Expose the scene window's X11 identity to sibling native backends (see gfx_x11.h). */
 Display *gfx_x11_display(void *handle) {
 	GfxX11 *g = handle;

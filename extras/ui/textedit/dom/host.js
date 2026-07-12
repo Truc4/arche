@@ -32,7 +32,12 @@
             while (end < n && mem[end] !== 0) end++;
             self.ta.value = self.dec.decode(mem.subarray(0, end));
           }
-          self.ta.focus();
+          // Deliberately NOT self.ta.focus(). `open` runs once at boot, so focusing here handed the editor the
+          // keyboard before the user had asked for it — and gfx goes silent whenever a text field is focused,
+          // so the app booted with the world unable to move until you clicked the canvas. Worse, the editor is
+          // often positioned off-screen (it lives at a world anchor), and arrow keys landing on a focused
+          // off-screen element make the browser scroll its container to reveal it, dragging the canvas away.
+          // The world owns the keyboard by default; the user clicks the editor to take it.
         },
         textedit_be_text(bufPtr, cap) {
           const bytes = self.enc.encode(self.ta.value);

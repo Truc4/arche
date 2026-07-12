@@ -45,6 +45,28 @@ scroll :: func(h: window) -> Eff(int) {
   return gfx_be_scroll(h);
 }
 
+/// WHO OWNS THE KEYBOARD — 1 if a native TEXT FIELD outside gfx currently has focus, 0 if gfx does.
+///
+/// A driver that embeds a real text widget (the web backend's editor is an actual DOM <textarea>) has two
+/// consumers for one keyboard, and gfx CANNOT arbitrate it alone: on the web the browser routes keys straight
+/// into the focused element, so gfx never sees them, and the driver never sees them either. `axis_x` and `key`
+/// therefore go SILENT whenever a text field owns the keyboard — which is correct, but leaves the driver
+/// unable to tell "no key is pressed" from "someone else is getting the keys". This reports which it is, so a
+/// driver can hold a real focus flag and gate its own input (don't walk the player while the user is typing).
+///
+/// Backends with no foreign text widget (x11 / wayland / headless) always report 0: gfx owns the keyboard,
+/// and focus is entirely the driver's business.
+text_focus :: func(h: window) -> Eff(int) {
+  return gfx_be_text_focus(h);
+}
+
+/// RELEASE the keyboard back to gfx: blur whatever text field holds it and focus the gfx surface. Returns 1 if
+/// it actually took focus back, 0 if gfx already had it. The driver calls this when the user clicks away from
+/// an embedded text widget — the counterpart to `text_focus`. A no-op (0) on backends with no text widget.
+release_text :: func(h: window) -> Eff(int) {
+  return gfx_be_release_text(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {
