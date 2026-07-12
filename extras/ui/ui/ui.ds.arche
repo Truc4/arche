@@ -7,9 +7,16 @@ len        :: int;
 cursor     :: int;
 submit     :: int;
 key        :: int;
-clicked    :: int;
+clicked    :: int; // rising edge: went down THIS frame
+held       :: int; // level: is down RIGHT NOW. `clicked` alone cannot express hold-to-repeat (a movement pad).
 wasdown    :: int;
 mouse_down :: int;
+
+/// A stable per-element id, owned by the driver. Elements are rows in a pool, and a pool has no natural
+/// identity a BACKEND can key on — the DOM button host needs it to map a row to its own <button> element, and
+/// a driver needs it to tell one button from another (which one was clicked?). Without it the DOM backend can
+/// only ever manage a single element.
+bid :: int;
 
 // Theme — the DRIVER owns the palette (0xRRGGBB) and seeds it per element; every backend renders these
 // instead of hardcoding its own colours. `bg`/`fg` are the element's fill + text/foreground colour.

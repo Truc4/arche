@@ -288,3 +288,10 @@ int gfx_be_release_text(void *handle) {
 	(void)handle;
 	return 0;
 }
+
+/* No touch input on this backend — a real mouse is a FINE pointer, so on-screen touch controls are never
+ * wanted here. See gfx.arche's `coarse_pointer`. */
+int gfx_be_coarse_pointer(void *handle) {
+	(void)handle;
+	return 0;
+}

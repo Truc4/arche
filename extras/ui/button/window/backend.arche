@@ -61,11 +61,18 @@ render :: system (query { framebuffer })(framebuffer) eff {
   };
 }
 
+// `clicked` is the rising EDGE (went down this frame); `held` is the LEVEL (is down right now). A movement
+// pad needs the level — an edge would step the player once per tap instead of walking while pressed.
 poll :: system eff {
-  map (query { screen, size, clicked, wasdown, mouse, mouse_down })(clicked, wasdown) eff {
+  map (query { screen, size, clicked, held, wasdown, mouse, mouse_down })(clicked, held, wasdown) eff {
+    inside := mouse.x >= screen.x && mouse.x < screen.x + size.w && mouse.y >= screen.y && mouse.y < screen.y + size.h;
     clicked = 0;
-    if (mouse_down == 1 && wasdown == 0 && mouse.x >= screen.x && mouse.x < screen.x + size.w && mouse.y >= screen.y && mouse.y < screen.y + size.h) {
-      clicked = 1;
+    held = 0;
+    if (mouse_down == 1 && inside) {
+      held = 1;
+      if (wasdown == 0) {
+        clicked = 1;
+      }
     }
     wasdown = mouse_down;
   };

@@ -100,10 +100,17 @@
         this.mx = Math.round((e.clientX - r.left) * (c.width / (r.width || 1)));
         this.my = Math.round((e.clientY - r.top) * (c.height / (r.height || 1)));
       };
+      // A Touch has clientX/clientY just like a MouseEvent, so the same conversion serves both.
+      const toRenderTouch = (t) => toRender(t);
       if (typeof c.addEventListener === "function") {
         c.addEventListener("mousemove", toRender);
         c.addEventListener("mousedown", (e) => { toRender(e); if (e.button === 0) this.mdown = 1; });
         addEventListener("mouseup", (e) => { if (e.button === 0) this.mdown = 0; });
+      }
+      // Touch releases anywhere end the press — a finger can leave the canvas before lifting.
+      if (typeof addEventListener === "function") {
+        addEventListener("touchend", () => { this.mdown = 0; }, { passive: true });
+        addEventListener("touchcancel", () => { this.mdown = 0; }, { passive: true });
       }
 
       // Horizontal scroll accumulator (render px), drained by gfx_be_scroll — fed by the mouse WHEEL and a TOUCH
@@ -132,6 +139,12 @@
         c.addEventListener("touchstart", (e) => {
           stopMomentum(); // a fresh touch grabs the world — kill any in-flight fling
           if (e.touches.length) { const r = c.getBoundingClientRect(); lastTouchX = (e.touches[0].clientX - r.left) * scaleX(); samples = [{ x: lastTouchX, t: nowMs() }]; }
+          // A touch on the canvas is a POINTER PRESS on the world, not just a scroll gesture. Without this,
+          // `mdown` is only ever written by mouse events, so on a phone nothing can observe a press on the
+          // world: a driver could never take keyboard focus BACK from an embedded <textarea> (it has no click
+          // edge to react to) and the player would stay dead forever. The scroll/fling accumulation above is
+          // untouched — a swipe both pans the world AND counts as touching it, which is what you want.
+          if (e.touches.length) { toRenderTouch(e.touches[0]); this.mdown = 1; }
         }, { passive: false });
         c.addEventListener("touchmove", (e) => {
           if (e.touches.length) {
@@ -143,6 +156,7 @@
             const t = nowMs();
             samples.push({ x: tx, t });
             while (samples.length > 2 && t - samples[0].t > 80) samples.shift(); // keep only the last ~80ms
+            toRenderTouch(e.touches[0]); // keep the pointer position live under a dragging finger
           }
           e.preventDefault();
         }, { passive: false });
@@ -261,6 +275,13 @@
         gfx_be_mouse_y() { return self.my; },
         gfx_be_mouse_down() { return self.mdown; },
         gfx_be_text_focus() { return self.textFocused() ? 1 : 0; },
+        // Is this a TOUCH device? `pointer: coarse` is the standard test — it asks about the primary input's
+        // precision, not the screen size, so a narrow desktop window stays "fine" and a landscape phone stays
+        // "coarse". A driver uses it to show on-screen controls; native backends report 0 (they have a mouse).
+        gfx_be_coarse_pointer() {
+          if (typeof matchMedia !== "function") return 0;
+          return matchMedia("(pointer: coarse)").matches ? 1 : 0;
+        },
         // Take the keyboard back for the world: blur the focused text field and focus the canvas. Also clear
         // the held axis — the blur means we will never see the keyup for anything currently held.
         gfx_be_release_text() {

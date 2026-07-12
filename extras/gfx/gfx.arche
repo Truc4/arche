@@ -67,6 +67,14 @@ release_text :: func(h: window) -> Eff(int) {
   return gfx_be_release_text(h);
 }
 
+/// Is the primary pointer COARSE — i.e. is this a touch device? Standard CSS `pointer: coarse`, which asks
+/// about the input's PRECISION, not the screen size: a narrow desktop window stays fine-pointered, and a phone
+/// held in landscape stays coarse. A driver uses this to decide whether to show on-screen controls, since a
+/// touch device has no keyboard. Backends with a real mouse (x11 / wayland / headless) always report 0.
+coarse_pointer :: func(h: window) -> Eff(int) {
+  return gfx_be_coarse_pointer(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {
