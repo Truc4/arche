@@ -14,7 +14,7 @@
           ".arche-btn{cursor:pointer;touch-action:none;user-select:none;-webkit-user-select:none;" +
           "-webkit-touch-callout:none;" +
           "-webkit-tap-highlight-color:transparent;border:none;border-radius:0.4em;background:#e4694e;" +
-          "color:#160d0a;z-index:6;font:600 1em ui-sans-serif,system-ui,sans-serif;" +
+          "color:#160d0a;font:600 1em ui-sans-serif,system-ui,sans-serif;" +
           "transition:transform 50ms linear, box-shadow 50ms linear, background 50ms linear;}" +
           ".arche-btn.is-down{filter:brightness(0.88);}";
         document.head.appendChild(st);
@@ -40,7 +40,7 @@
     seams(rt) {
       const self = this;
 
-      const get = (bid) => {
+      const get = (bid, layer) => {
         let e = self.btns.get(bid);
         if (e) return e;
         const b = document.createElement("button");
@@ -50,7 +50,11 @@
         // Only LAYOUT is inline (the driver owns the rect). APPEARANCE lives in the injected stylesheet below,
         // keyed off `.arche-btn` — inline styles beat author CSS, so baking the look in here would make the
         // button unskinnable by the page embedding it.
-        b.style.cssText = "position:absolute;box-sizing:border-box;";
+        // Depth comes from the button's LAYER, straddling the two gfx canvases exactly as a panel's does: a
+        // background button (2) sits UNDER the world's foreground canvas, so the player walks in front of it,
+        // while a foreground control (6) floats over everything. A background button still takes clicks — the
+        // foreground canvas is pointer-events:none, so the press falls straight through to it.
+        b.style.cssText = "position:absolute;box-sizing:border-box;z-index:" + (layer === 0 ? 2 : 6) + ";";
         // Appended to the app root, NOT into #ui-panel. The old host reparented into the panel div (which is
         // overflow:hidden) and positioned relative to it, so a button anchored anywhere else on the viewport —
         // an on-screen movement pad, say — was clipped out of existence. The driver's rect is already in the
@@ -94,8 +98,8 @@
       };
 
       return {
-        button_be_label(bid, ptr, n, x, y, w, h) {
-          const e = get(bid);
+        button_be_label(bid, layer, ptr, n, x, y, w, h) {
+          const e = get(bid, layer);
           const t = self.dec.decode(new Uint8Array(rt.memory().buffer, ptr, n));
           if (e.el.textContent !== t) e.el.textContent = t;
           // A ZERO-SIZED button is the driver saying "not now" (e.g. touch controls on a desktop). Hide it
@@ -109,8 +113,8 @@
           e.el.style.height = (h * s) + "px";
         },
         // `clicked` DRAINS (it is an edge, consumed once); `held` does not (it is a level, sampled).
-        button_be_clicked(bid) { const e = get(bid); const c = e.clicked; e.clicked = false; return c ? 1 : 0; },
-        button_be_held(bid) { return get(bid).held ? 1 : 0; },
+        button_be_clicked(bid) { const e = get(bid, 1); const c = e.clicked; e.clicked = false; return c ? 1 : 0; },
+        button_be_held(bid) { return get(bid, 1).held ? 1 : 0; },
       };
     },
   });
