@@ -103,8 +103,10 @@ INV_DT   :: 16.0;     // SUBSTEPS
 
 /// Soft-constraint contact parameters (Box2D-v3 "TGS-Soft"), precomputed for a target stiffness of ≈3 contact
 /// cycles per frame at critical damping (ζ=1) and step dt = DT: with ω = 2π·3, c = DT·ω·(2ζ+DT·ω),
-/// biasRate = ω/(2ζ+DT·ω) ≈ 5.93, massScale = c/(1+c) ≈ 0.789. (impulseScale — the warm-start-λ leak term —
-/// arrives with Stage-2 warm-starting; Stage 1 has no persisted λ, so it is 0.)
+/// biasRate = ω/(2ζ+DT·ω), massScale = c/(1+c). These are DERIVED FROM DT — change SUBSTEPS and they must be
+/// recomputed, or the contacts are the wrong stiffness for the step and bodies buzz or sink.
+/// (impulseScale — the warm-start-λ leak term — arrives with Stage-2 warm-starting; Stage 1 has no persisted
+/// λ, so it is 0.)
 BIAS_RATE  :: 5.93;
 MASS_SCALE :: 0.789;
 MAX_BIAS   :: 4.0;    // max de-penetration (bias) velocity px/frame — caps blow-up from deep overlap

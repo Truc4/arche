@@ -96,6 +96,18 @@
       this.fg = mkSurface(fc, true);
       if (c.style) { c.style.position = c.style.position || "absolute"; c.style.zIndex = "0"; }
       this.cur = this.bg; // the surface the next present lands on; `split` flips it
+      // CACHE the pointer-coarseness. A driver reads this every frame (often several times), and building a
+      // fresh MediaQueryList per call is not free — under browser device EMULATION, which intercepts and
+      // overrides media queries, it is dramatically not free. Evaluate once and let the browser tell us when it
+      // changes; that is what the change event is for.
+      this.coarse = 0;
+      if (typeof matchMedia === "function") {
+        const mq = matchMedia("(pointer: coarse)");
+        this.coarse = mq.matches ? 1 : 0;
+        const onChange = (e) => { this.coarse = e.matches ? 1 : 0; };
+        if (mq.addEventListener) mq.addEventListener("change", onChange);
+        else if (mq.addListener) mq.addListener(onChange);
+      }
       this.w = 0; this.h = 0; this.renderH = 0;
       this.handle = 1n; // opaque window handle: arche `window` lowers to i64 → crosses as BigInt
       this.frames = 0;
@@ -334,10 +346,7 @@
           new Uint8Array(rt.memory().buffer, pxPtr, w * h * 4).fill(0);
           self.cur = self.fg;
         },
-        gfx_be_coarse_pointer() {
-          if (typeof matchMedia !== "function") return 0;
-          return matchMedia("(pointer: coarse)").matches ? 1 : 0;
-        },
+        gfx_be_coarse_pointer() { return self.coarse; },
         // Take the keyboard back for the world: blur the focused text field and focus the canvas. Also clear
         // the held axis — the blur means we will never see the keyup for anything currently held.
         gfx_be_release_text() {
