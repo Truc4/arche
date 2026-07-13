@@ -77,9 +77,9 @@ render :: system (query { framebuffer })(framebuffer) eff {
               gx0 := tx + i * adv + col * scale;
               gy0 := ty + row * scale;
               for (py := gy0; py < gy0 + scale; py += 1) {
-                if (py >= 0 && py < view.h) {
+                if (py >= iy0 && py < iy1) {
                   for (px := gx0; px < gx0 + scale; px += 1) {
-                    if (px >= 0 && px < view.w) {
+                    if (px >= ix0 && px < ix1) {
                       framebuffer[py * view.w + px] = TITLE_COL;
                     }
                   }
@@ -108,9 +108,9 @@ render :: system (query { framebuffer })(framebuffer) eff {
               gx0 := sx + i * sadv + col * sscale;
               gy0 := sy + row * sscale;
               for (py := gy0; py < gy0 + sscale; py += 1) {
-                if (py >= 0 && py < view.h) {
+                if (py >= iy0 && py < iy1) {
                   for (px := gx0; px < gx0 + sscale; px += 1) {
-                    if (px >= 0 && px < view.w) {
+                    if (px >= ix0 && px < ix1) {
                       framebuffer[py * view.w + px] = SUB_COL;
                     }
                   }
@@ -193,9 +193,9 @@ render_bg :: system (query { framebuffer })(framebuffer) eff {
               gx0 := tx + i * adv + col * scale;
               gy0 := ty + row * scale;
               for (py := gy0; py < gy0 + scale; py += 1) {
-                if (py >= 0 && py < view.h) {
+                if (py >= iy0 && py < iy1) {
                   for (px := gx0; px < gx0 + scale; px += 1) {
-                    if (px >= 0 && px < view.w) {
+                    if (px >= ix0 && px < ix1) {
                       framebuffer[py * view.w + px] = TITLE_COL;
                     }
                   }
@@ -224,9 +224,9 @@ render_bg :: system (query { framebuffer })(framebuffer) eff {
               gx0 := sx + i * sadv + col * sscale;
               gy0 := sy + row * sscale;
               for (py := gy0; py < gy0 + sscale; py += 1) {
-                if (py >= 0 && py < view.h) {
+                if (py >= iy0 && py < iy1) {
                   for (px := gx0; px < gx0 + sscale; px += 1) {
-                    if (px >= 0 && px < view.w) {
+                    if (px >= ix0 && px < ix1) {
                       framebuffer[py * view.w + px] = SUB_COL;
                     }
                   }

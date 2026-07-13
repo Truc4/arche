@@ -1,0 +1,26 @@
+// Control/GREEN twin of `reduce_multicomp_writeback_in_if.arche`: a SCALAR `reduce` write-back inside the same
+// always-true `if` is written back correctly. Only the MULTI-COMPONENT target (the twin) loses its write-back.
+// Keeping both makes the regression's scope unambiguous: it is the 2-field write-back under a conditional, not
+// `reduce`-in-`map` or `if`-in-`map` on their own.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "a=6 6 6"
+#import { fmt }
+val :: float;
+acc :: float;
+B :: arche { val, acc }
+[3]B(3);
+
+seed :: system {
+  B.val = { 1.0, 2.0, 3.0 };
+}
+
+foldit :: map (query { val, acc })(acc) {
+  if (1 == 1) {
+    acc = reduce(+, val);
+  }
+}
+
+show :: system eff {
+  fmt.printf("a=%.0f %.0f %.0f\n", B.acc[0], B.acc[1], B.acc[2]);
+}
+
+#run seq({ seed, foldit, show })

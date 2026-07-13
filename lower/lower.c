@@ -2578,11 +2578,35 @@ static int expr_needs_tuple_value_write(HirExpr *e) {
 	}
 }
 
-static void expand_group_assigns(HirKernelDecl *as) {
-	for (int sx = 0; sx < as->stmt_count; sx++) {
-		HirStmt *s = as->stmts[sx];
-		if (!s || s->kind != HIR_STMT_ASSIGN)
+/* Expand every whole-group assignment in a statement list — recursing into nested control-flow bodies
+ * (`if`/`for`/`{}`/nested `map`) so a group write-back inside a branch is fanned out too, not only the body's
+ * top-level statements. Codegen and the tuple_rewrite pass both already recurse into blocks; this pass was the
+ * outlier, so `pos = reduce(...)` under an `if` never fanned and codegen dropped it. Re-visiting an
+ * already-expanded block is a no-op: its targets are now scalar `x`/`y` names that `tgroup_lookup` rejects. */
+static void expand_group_assigns_list(HirStmt **stmts, int count) {
+	for (int sx = 0; sx < count; sx++) {
+		HirStmt *s = stmts[sx];
+		if (!s)
 			continue;
+		switch (s->kind) {
+		case HIR_STMT_IF:
+			expand_group_assigns_list(s->data.if_stmt.then_body, s->data.if_stmt.then_count);
+			expand_group_assigns_list(s->data.if_stmt.else_body, s->data.if_stmt.else_count);
+			continue;
+		case HIR_STMT_FOR:
+			expand_group_assigns_list(s->data.for_stmt.body, s->data.for_stmt.body_count);
+			continue;
+		case HIR_STMT_BLOCK:
+			expand_group_assigns_list(s->data.block.stmts, s->data.block.count);
+			continue;
+		case HIR_STMT_EACH:
+			expand_group_assigns_list(s->data.each_stmt->stmts, s->data.each_stmt->stmt_count);
+			continue;
+		case HIR_STMT_ASSIGN:
+			break;
+		default:
+			continue;
+		}
 		HirExpr *tgt = s->data.assign_stmt.target;
 		if (!tgt || tgt->kind != HIR_EXPR_NAME)
 			continue;
@@ -2615,8 +2639,12 @@ static void expand_group_assigns(HirKernelDecl *as) {
 			cs->data.assign_stmt.value = cv;
 			blk->data.block.stmts[blk->data.block.count++] = cs;
 		}
-		as->stmts[sx] = blk; /* old single-assign stmt intentionally leaked (arena-style lowering) */
+		stmts[sx] = blk; /* old single-assign stmt intentionally leaked (arena-style lowering) */
 	}
+}
+
+static void expand_group_assigns(HirKernelDecl *as) {
+	expand_group_assigns_list(as->stmts, as->stmt_count);
 }
 
 /* `Name :: query {cols}` → a HirQueryDecl carrying the tuple-flattened column names. Emits no code;

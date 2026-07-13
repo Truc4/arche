@@ -1,9 +1,9 @@
 #module
 #foreign
-textview_be_render :: proc(buf: []char, n: int, x: int, y: int, w: int, h: int)(buf: []char);
+textview_be_render :: proc(bid: int, buf: []char, n: int, x: int, y: int, w: int, h: int)(buf: []char);
 
 render :: system eff {
-  map (query { output, len, screen, size }) eff {
-    textview_be_render(output, len, screen.x, screen.y, size.w, size.h)(_:);
+  map (query { bid, output, len, screen, size }) eff {
+    textview_be_render(bid, output, len, screen.x, screen.y, size.w, size.h)(_:);
   };
 }
