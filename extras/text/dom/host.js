@@ -45,7 +45,12 @@
 
       const place = (rec) => {
         const s = scale();
-        rec.el.style.left = rec.x * s + "px";
+        // CENTRE-anchor. The driver hands `x` already offset to the LEFT edge by half the BITMAP width
+        // (`tx = centre - len*size/2`), which centres perfectly on the framebuffer backend. But a browser font
+        // renders a DIFFERENT (proportional) width, so left-anchoring here left every run off-centre by a
+        // per-string amount. Recover the true centre (`x + len*size/2`) and pin the span to it with
+        // translateX(-50%), so DOM text centres exactly like the framebuffer regardless of the rendered width.
+        rec.el.style.left = rec.cx * s + "px";
         rec.el.style.top = rec.y * s + "px";
         rec.el.style.fontSize = rec.size * s + "px";
       };
@@ -63,16 +68,16 @@
             const el = document.createElement("span");
             // Absolutely positioned; the layer is pointer-events:none so empty areas pass through to the canvas,
             // but each span opts back IN so the text is highlightable/selectable (whitespace:pre keeps spaces).
-            el.style.cssText = "position:absolute;pointer-events:auto;user-select:text;-webkit-user-select:text;cursor:text;white-space:pre;";
+            el.style.cssText = "position:absolute;pointer-events:auto;user-select:text;-webkit-user-select:text;cursor:text;white-space:pre;transform:translateX(-50%);";
             self.layer.appendChild(el);
-            rec = { x: 0, y: 0, size: 0, text: null, el };
+            rec = { x: 0, y: 0, cx: 0, size: 0, text: null, el };
             self.spans[self._cursor] = rec;
           }
           self._cursor++;
           if (rec.el.style.display === "none") rec.el.style.display = "";
           if (rec.text !== str) { rec.el.textContent = str; rec.text = str; }
           rec.el.style.color = "#" + ((color >>> 0) & 0xffffff).toString(16).padStart(6, "0");
-          rec.x = x; rec.y = y; rec.size = size;
+          rec.x = x; rec.y = y; rec.size = size; rec.cx = x + (n * size) / 2;
           place(rec);
         },
         // text_be_clear(): BEGIN a frame — keep the pooled nodes (a selection on a reused span survives), hide
