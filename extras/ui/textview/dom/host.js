@@ -17,13 +17,18 @@
       const self = this;
       return {
         textview_be_render(ptr, n, x, y, w, h) {
-          const f = document.getElementById("ui-panel");
-          if (f && self.el.parentNode !== f) f.appendChild(self.el);
+          // The driver's rect is already in SCREEN space, so place it absolutely in the app root — do NOT reparent
+          // into the panel div and subtract the panel's origin. That coupling made the element depend on the panel
+          // existing FIRST, and the panel is now created lazily on its first render, which happens after `open`
+          // runs at boot: the element never found it, stayed a child of the root, and had panel-relative
+          // coordinates applied absolutely — so it sat glued to the screen instead of scrolling with the world.
+          // z-index 6 keeps it above the foreground panel (5) it visually sits in.
           const t = self.dec.decode(new Uint8Array(rt.memory().buffer, ptr, n));
           if (self.el.textContent !== t) self.el.textContent = t;
           const s = rt._uiScale || window.innerHeight / (rt.renderH || 1080);
-          self.el.style.left = ((x - (rt._uiPanelX || 0)) * s) + "px";
-          self.el.style.top = ((y - (rt._uiPanelY || 0)) * s) + "px";
+          self.el.style.zIndex = "6";
+          self.el.style.left = (x * s) + "px";
+          self.el.style.top = (y * s) + "px";
           self.el.style.width = (w * s) + "px";
           self.el.style.height = (h * s) + "px";
         },

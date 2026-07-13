@@ -8,23 +8,32 @@
 // `render` are separate systems so a driver can schedule them on opposite sides of `gfx.split` — which is what
 // the framebuffer backend genuinely needs, and what keeps the two backends' depth order identical.
 //
-// A panel whose layer does not match the pass gets a zero-size rect, which the host reads as "not now" and
-// hides — the same convention the button device uses.
+// `pass` says which layer is being drawn. A map visits EVERY row, so each pass sees every panel and must
+// IGNORE the ones that are not its own — it cannot zero them out, because the other pass already positioned
+// them and the last writer would win. (It did: `render` ran after `render_bg` and blanked the background panel
+// straight back out of existence.)
 #foreign
-panel_be_render :: proc(bid: int, layer: int, x: int, y: int, width: int, height: int, title: []char, n: int)(
+panel_be_render :: proc(
+  bid: int, layer: int, pass: int, x: int, y: int, width: int, height: int, title: []char, n: int,
+)(
   title: []char,
 );
+// The SUBTITLE is a second line under the title rule — a caption, a hint, a status. Its own seam rather than
+// more parameters on `render`: a foreign proc borrows each array it takes, and two `[]char` in one call is a
+// borrow pattern nothing else in the device library uses.
+#foreign
+panel_be_sub :: proc(bid: int, layer: int, pass: int, sub: []char, n: int)(sub: []char);
 
 render :: system eff {
-  map (query { bid, layer, screen, size, title, len }) eff {
-    fg := select(layer == 1, 1, 0);
-    panel_be_render(bid, layer, screen.x, screen.y, size.w * fg, size.h * fg, title, len)(_:);
+  map (query { bid, layer, screen, size, title, len, sub, sublen }) eff {
+    panel_be_render(bid, layer, 1, screen.x, screen.y, size.w, size.h, title, len)(_:);
+    panel_be_sub(bid, layer, 1, sub, sublen)(_:);
   };
 }
 
 render_bg :: system eff {
-  map (query { bid, layer, screen, size, title, len }) eff {
-    bg := select(layer == 0, 1, 0);
-    panel_be_render(bid, layer, screen.x, screen.y, size.w * bg, size.h * bg, title, len)(_:);
+  map (query { bid, layer, screen, size, title, len, sub, sublen }) eff {
+    panel_be_render(bid, layer, 0, screen.x, screen.y, size.w, size.h, title, len)(_:);
+    panel_be_sub(bid, layer, 0, sub, sublen)(_:);
   };
 }

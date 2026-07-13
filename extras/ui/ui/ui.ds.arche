@@ -4,6 +4,7 @@ view(w, h)   :: int;
 mouse(x, y)  :: int;
 
 len        :: int;
+sublen     :: int; // length of a panel's `sub` (subtitle) string; see the panel device
 cursor     :: int;
 submit     :: int;
 key        :: int;

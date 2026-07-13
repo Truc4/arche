@@ -4,12 +4,14 @@ FRAME_BG     :: 0x0b0e14;
 FRAME_BORDER :: 0x232838;
 TITLE_COL    :: 0xcdd6f4;
 TITLE_TSZ    :: 24;
+SUB_COL      :: 0x9298cc;
+SUB_TSZ      :: 16;
 
 // Two passes, one kernel. `render` draws the FOREGROUND panels (layer 1) and `render_bg` the BACKGROUND ones
 // (layer 0). A panel whose layer does not match collapses to a zero-size rect, so its scan loops never run —
 // the same branch-free trick the rest of the device uses instead of control flow.
 render :: system (query { framebuffer })(framebuffer) eff {
-  map (query { screen, size, title, len, view, layer }) eff {
+  map (query { screen, size, title, len, sub, sublen, view, layer }) eff {
     live := select(layer == 1, 1, 0);
     bx0 := screen.x;
     by0 := screen.y;
@@ -90,11 +92,42 @@ render :: system (query { framebuffer })(framebuffer) eff {
         }
       }
     }
+    sscale := SUB_TSZ / 8;
+    sadv   := 8 * sscale;
+    sx     := screen.x + ui.PAD;
+    sy     := screen.y + ui.PAD + ui.TITLE_H + 12;
+    ns     := sublen * live;
+    for (i := 0; i < ns; i += 1) {
+      c := sub[i];
+      if (c >= 32 && c <= 126) {
+        gi := c - 32;
+        for (row := 0; row < 8; row += 1) {
+          b := ui.GLYPHS[gi * 8 + row];
+          for (col := 0; col < 8; col += 1) {
+            if (b >= 128) {
+              gx0 := sx + i * sadv + col * sscale;
+              gy0 := sy + row * sscale;
+              for (py := gy0; py < gy0 + sscale; py += 1) {
+                if (py >= 0 && py < view.h) {
+                  for (px := gx0; px < gx0 + sscale; px += 1) {
+                    if (px >= 0 && px < view.w) {
+                      framebuffer[py * view.w + px] = SUB_COL;
+                    }
+                  }
+                }
+              }
+              b = b - 128;
+            }
+            b = b * 2;
+          }
+        }
+      }
+    }
   };
 }
 
 render_bg :: system (query { framebuffer })(framebuffer) eff {
-  map (query { screen, size, title, len, view, layer }) eff {
+  map (query { screen, size, title, len, sub, sublen, view, layer }) eff {
     live := select(layer == 0, 1, 0);
     bx0 := screen.x;
     by0 := screen.y;
@@ -164,6 +197,37 @@ render_bg :: system (query { framebuffer })(framebuffer) eff {
                   for (px := gx0; px < gx0 + scale; px += 1) {
                     if (px >= 0 && px < view.w) {
                       framebuffer[py * view.w + px] = TITLE_COL;
+                    }
+                  }
+                }
+              }
+              b = b - 128;
+            }
+            b = b * 2;
+          }
+        }
+      }
+    }
+    sscale := SUB_TSZ / 8;
+    sadv   := 8 * sscale;
+    sx     := screen.x + ui.PAD;
+    sy     := screen.y + ui.PAD + ui.TITLE_H + 12;
+    ns     := sublen * live;
+    for (i := 0; i < ns; i += 1) {
+      c := sub[i];
+      if (c >= 32 && c <= 126) {
+        gi := c - 32;
+        for (row := 0; row < 8; row += 1) {
+          b := ui.GLYPHS[gi * 8 + row];
+          for (col := 0; col < 8; col += 1) {
+            if (b >= 128) {
+              gx0 := sx + i * sadv + col * sscale;
+              gy0 := sy + row * sscale;
+              for (py := gy0; py < gy0 + sscale; py += 1) {
+                if (py >= 0 && py < view.h) {
+                  for (px := gx0; px < gx0 + sscale; px += 1) {
+                    if (px >= 0 && px < view.w) {
+                      framebuffer[py * view.w + px] = SUB_COL;
                     }
                   }
                 }

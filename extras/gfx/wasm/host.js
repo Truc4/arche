@@ -82,11 +82,15 @@
       // The foreground canvas mirrors the background one's geometry exactly and never takes input — pointer
       // events must fall THROUGH it to the DOM and the background canvas beneath, or it would swallow every
       // click in the world.
+      //
+      // z-index 3 leaves room for the host's DOM to stack UNDERNEATH it in a deliberate order (a driver's
+      // scenery text at 1, its background panels at 2), which is the whole point of the split: those layers
+      // must be occluded by the world's foreground, and DOM over a single canvas never can be.
       let fc = document.getElementById("gfx-fg");
       if (!fc) {
         fc = document.createElement("canvas");
         fc.id = "gfx-fg";
-        fc.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:2;";
+        fc.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:3;";
         (c.parentNode || host).appendChild(fc);
       }
       this.fg = mkSurface(fc, true);

@@ -34,24 +34,35 @@
           const isBg = layer === 0;
           el.style.cssText = "position:absolute;box-sizing:border-box;background:#0b0e14;" +
             "border:1px solid #232838;border-radius:0.6em;box-shadow:0 10px 34px rgba(0,0,0,0.5);overflow:hidden;" +
-            "z-index:" + (isBg ? 1 : 5) + ";" + (isBg ? "pointer-events:none;" : "");
+            "z-index:" + (isBg ? 2 : 5) + ";" + (isBg ? "pointer-events:none;" : "");
           const t = document.createElement("div");
           t.id = id + "-title";
           t.style.cssText = "position:absolute;font:700 1.15em/1 ui-sans-serif,system-ui,sans-serif;" +
             "letter-spacing:0.08em;color:#cdd6f4;white-space:nowrap;";
           el.appendChild(t);
+          const sb = document.createElement("div");
+          sb.id = id + "-sub";
+          sb.style.cssText = "position:absolute;font:400 0.9em/1 ui-sans-serif,system-ui,sans-serif;" +
+            "letter-spacing:0.06em;color:#9298cc;white-space:nowrap;";
+          el.appendChild(sb);
           (rt.root || document.body).appendChild(el);
         }
-        f = { el: el, title: document.getElementById(id + "-title") };
+        f = {
+          el: el,
+          title: document.getElementById(id + "-title"),
+          sub: document.getElementById(id + "-sub"),
+        };
         self.panels.set(bid, f);
         return f;
       };
 
       return {
-        panel_be_render(bid, layer, x, y, w, h, ptr, n) {
+        panel_be_render(bid, layer, pass, x, y, w, h, ptr, n) {
+          // Not our pass: leave this panel entirely alone. Both passes see every row, so touching a panel that
+          // belongs to the other one would undo whatever it just did.
+          if (layer !== pass) return;
           const f = get(bid, layer);
-          // A zero-size rect means "not this pass" — the layer did not match. Hide it rather than collapsing it
-          // to a dot. Same convention as the button device.
+          // A zero-size rect is the DRIVER saying "not now" — hide it. (The button device uses the same rule.)
           if (w <= 0 || h <= 0) { f.el.style.display = "none"; return; }
           f.el.style.display = "";
           const s = window.innerHeight / (rt.renderH || 1080);
@@ -70,6 +81,19 @@
             f.title.style.left = (18 * s) + "px";
             f.title.style.top = (18 * s) + "px";
           }
+          f.scale = s;
+        },
+        panel_be_sub(bid, layer, pass, ptr, n) {
+          if (layer !== pass) return;
+          const f = self.panels.get(bid);
+          if (!f || !f.sub) return;
+          const t = n > 0 ? self.dec.decode(new Uint8Array(rt.memory().buffer, ptr, n)) : "";
+          if (f.sub.textContent !== t) f.sub.textContent = t;
+          const s = f.scale || 1;
+          // Under the title RULE (PAD + TITLE_H), so it reads as a caption on the panel rather than a second
+          // title. The framebuffer backend places it at exactly the same offset.
+          f.sub.style.left = (18 * s) + "px";
+          f.sub.style.top = ((18 + 34 + 12) * s) + "px";
         },
       };
     },

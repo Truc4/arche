@@ -24,8 +24,6 @@
       const self = this;
       return {
         textedit_be_open(ptr, n) {
-          const f = document.getElementById("ui-panel");
-          if (f && self.ta.parentNode !== f) f.appendChild(self.ta);
           if (!self.ta.value) {
             const mem = new Uint8Array(rt.memory().buffer, ptr, n);
             let end = 0;
@@ -47,12 +45,18 @@
           new Uint8Array(mem.buffer)[bufPtr + k] = 0;
         },
         textedit_be_poll_run() { const f = self.runPending; self.runPending = false; return f ? 1 : 0; },
-        // Position the <textarea> from the driver's projected rect (render px), relative to the panel origin.
+        // The driver's rect is already in SCREEN space, so place it absolutely in the app root — do NOT reparent
+        // into the panel div and subtract the panel's origin. That coupling made the element depend on the panel
+        // existing FIRST, and the panel is now created lazily on its first render, which happens after `open`
+        // runs at boot: the element never found it, stayed a child of the root, and had panel-relative
+        // coordinates applied absolutely — so it sat glued to the screen instead of scrolling with the world.
+        // z-index 6 keeps it above the foreground panel (5) it visually sits in.
         textedit_be_place(x, y, w, h) {
           const s = rt._uiScale || window.innerHeight / (rt.renderH || 1080);
           const ta = self.ta;
-          ta.style.left = ((x - (rt._uiPanelX || 0)) * s) + "px";
-          ta.style.top = ((y - (rt._uiPanelY || 0)) * s) + "px";
+          ta.style.zIndex = "6";
+          ta.style.left = (x * s) + "px";
+          ta.style.top = (y * s) + "px";
           ta.style.width = (w * s) + "px";
           ta.style.height = (h * s) + "px";
         },
