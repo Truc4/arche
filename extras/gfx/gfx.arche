@@ -11,16 +11,20 @@ dims :: func(h: window) -> Eff(int, int) {
   return zip(gfx_be_w(h), gfx_be_h(h));
 }
 
-/// The window's horizontal input axis as one Eff: -1 while a left key (←/A) is held, +1 while a right key
-/// (→/D) is held, 0 otherwise. A step system binds it — `gfx.axis_x(handle)(dx:)` — and folds `dx` into a
-/// position. Backends that have no keyboard wired (headless, wayland) report 0.
+/// The window's horizontal input axis as one Eff: -1 while ← is held, +1 while → is held, 0 otherwise. A step
+/// system binds it — `gfx.axis_x(handle)(dx:)` — and folds `dx` into a position. Backends with no keyboard
+/// wired (headless, wayland) report 0.
+///
+/// The key set is part of the CONTRACT, not a per-backend detail: ARROWS ONLY (plus Space on `axis_y`). WASD
+/// was tried and removed. Letter keys are PRINTABLE, so a backend has to track them ALONGSIDE its key dispatch
+/// rather than inside it, or it swallows the keystrokes an editor needs — and the two backends promptly
+/// drifted doing exactly that, leaving A/D working on the web and dead natively. Arrows carry no such tax.
 axis_x :: func(h: window) -> Eff(int) {
   return gfx_be_axis_x(h);
 }
 
-/// The window's VERTICAL input axis, the symmetric partner to `axis_x`: -1 while an up key (↑/W/Space) is
-/// held, +1 while a down key (↓/S) is held, 0 otherwise. World +y is down, so "up" is negative — the same
-/// convention as the screen.
+/// The window's VERTICAL input axis, the symmetric partner to `axis_x`: -1 while ↑ or Space is held, +1 while
+/// ↓ is held, 0 otherwise. World +y is down, so "up" is negative — the same convention as the screen.
 ///
 /// This exists because HELD is not the same question as PRESSED, and `key` can only answer the latter. `key`
 /// is a drained queue fed by OS auto-repeat (~30/s), so against a 60fps loop roughly every other frame finds
@@ -104,6 +108,28 @@ present :: system (query { framebuffer }) eff {
   map (query { handle }) eff {
     dims(handle)(w:, h:);
     gfx_be_present(handle, framebuffer, w, h)(_:);
+  };
+}
+
+/// LAYER BREAK. Everything drawn before `split` lands on a BACKGROUND surface; everything after it lands on a
+/// FOREGROUND surface composited over the top. Between the two sits whatever the host stacks there — on the web
+/// that is the DOM (text, panels, widgets), which otherwise ALWAYS paints above a canvas and can never be
+/// occluded by it.
+///
+/// Without this a driver embedding DOM UI has an impossible ordering problem: a DOM panel must sit BEHIND the
+/// bodies drawn on top of it, and a DOM sign must sit BEHIND the walls it is standing near — but DOM over one
+/// opaque canvas can only ever be all-above or all-below. Splitting the canvas gives the DOM a middle to live
+/// in, and makes the web's depth order match the native one exactly.
+///
+/// `split` presents what has been drawn so far to the background surface and CLEARS the framebuffer to
+/// transparent, so the second half of the frame composites rather than overwrites. Backends with no DOM (x11 /
+/// wayland / headless) have nothing to sandwich and no ordering problem: `split` is a NO-OP there, the frame
+/// accumulates in one buffer, and plain draw order already gives the right answer. A driver that never calls
+/// `split` is unaffected — everything simply presents to the background surface as before.
+split :: system (query { framebuffer })(framebuffer) eff {
+  map (query { handle }) eff {
+    dims(handle)(w:, h:);
+    gfx_be_split(handle, framebuffer, w, h)(framebuffer);
   };
 }
 

@@ -1,15 +1,30 @@
 #module
+// Keyed by `bid`, like the button device. A pool ROW has no identity a backend can key on, and this host owns
+// a real <div> per row — without the key it could only ever manage one (it used to: a hardcoded
+// getElementById("ui-panel"), so a second Panel silently repositioned the first).
+//
+// `layer` picks the depth. On the web that is a z-index relative to the two gfx canvases (see gfx.arche's
+// `split`): a layer-0 panel sits BEHIND the world's foreground, a layer-1 panel in front of it. `render_bg` and
+// `render` are separate systems so a driver can schedule them on opposite sides of `gfx.split` — which is what
+// the framebuffer backend genuinely needs, and what keeps the two backends' depth order identical.
+//
+// A panel whose layer does not match the pass gets a zero-size rect, which the host reads as "not now" and
+// hides — the same convention the button device uses.
 #foreign
-panel_be_render :: proc(x: int, y: int, width: int, height: int, title: []char, n: int)(
+panel_be_render :: proc(bid: int, layer: int, x: int, y: int, width: int, height: int, title: []char, n: int)(
   title: []char,
 );
 
 render :: system eff {
-  map (query { screen, size, title, len }) eff {
-    x := screen.x;
-    y := screen.y;
-    w := size.w;
-    h := size.h;
-    panel_be_render(x, y, w, h, title, len)(_:);
+  map (query { bid, layer, screen, size, title, len }) eff {
+    fg := select(layer == 1, 1, 0);
+    panel_be_render(bid, layer, screen.x, screen.y, size.w * fg, size.h * fg, title, len)(_:);
+  };
+}
+
+render_bg :: system eff {
+  map (query { bid, layer, screen, size, title, len }) eff {
+    bg := select(layer == 0, 1, 0);
+    panel_be_render(bid, layer, screen.x, screen.y, size.w * bg, size.h * bg, title, len)(_:);
   };
 }

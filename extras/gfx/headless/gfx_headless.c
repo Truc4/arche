@@ -138,6 +138,15 @@ int gfx_be_coarse_pointer(void *handle) {
 	return 0;
 }
 
+/* No DOM to sandwich: a single framebuffer and plain draw order already give the right depth, so the layer
+ * break is a no-op. See gfx.arche's `split`. */
+void gfx_be_split(void *handle, int *px, int w, int h) {
+	(void)handle;
+	(void)px;
+	(void)w;
+	(void)h;
+}
+
 int gfx_be_axis_y(void *handle) {
 	(void)handle;
 	return 0;

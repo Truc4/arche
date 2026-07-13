@@ -172,19 +172,22 @@ int gfx_be_poll(void *handle) {
 			char buf[16];
 			KeySym ks;
 			int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
-			/* Vertical HELD state for gfx_be_axis_y: ↑/W/Space = up, ↓/S = down. Tracked here rather than in
-			 * the chain below because Space/W/S are PRINTABLE — an editor must still receive them, so the
-			 * movement handling must not swallow them. */
-			if (ks == XK_Up || ks == XK_space || ks == XK_w || ks == XK_W)
+			/* HELD movement state for gfx_be_axis_x / gfx_be_axis_y. Arrows + Space only: WASD are PRINTABLE
+			 * characters that an editor must still receive, so a movement binding for them has to be tracked
+			 * alongside the dispatch below rather than inside it — and the two backends drifted apart doing
+			 * exactly that. Space is the one exception, and it is tracked here for the same reason. */
+			if (ks == XK_Left)
+				g->left = down;
+			if (ks == XK_Right)
+				g->right = down;
+			if (ks == XK_Up || ks == XK_space)
 				g->up = down;
-			if (ks == XK_Down || ks == XK_s || ks == XK_S)
+			if (ks == XK_Down)
 				g->down = down;
 			if (ks == XK_Left) {
-				g->left = down;
 				if (down)
 					keyq_push(g, GFX_KEY_LEFT);
 			} else if (ks == XK_Right) {
-				g->right = down;
 				if (down)
 					keyq_push(g, GFX_KEY_RIGHT);
 			} else if (ks == XK_Up) {
@@ -289,6 +292,15 @@ int gfx_be_release_text(void *handle) {
 int gfx_be_coarse_pointer(void *handle) {
 	(void)handle;
 	return 0;
+}
+
+/* No DOM to sandwich: a single framebuffer and plain draw order already give the right depth, so the layer
+ * break is a no-op. See gfx.arche's `split`. */
+void gfx_be_split(void *handle, int *px, int w, int h) {
+	(void)handle;
+	(void)px;
+	(void)w;
+	(void)h;
 }
 
 /* Expose the scene window's X11 identity to sibling native backends (see gfx_x11.h). */

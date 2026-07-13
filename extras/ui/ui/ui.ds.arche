@@ -12,6 +12,13 @@ held       :: int; // level: is down RIGHT NOW. `clicked` alone cannot express h
 wasdown    :: int;
 mouse_down :: int;
 
+/// Which DEPTH an element renders at. 1 = foreground (normal UI, over the world); 0 = background (behind the
+/// world's foreground layer). An element is a rectangle somewhere in a scene, and a scene has depth: a framed
+/// section BEHIND the bodies standing in it is the same widget as a dialog IN FRONT of them, and should not be
+/// a second, hand-rolled implementation just because it sits lower. Backends render the two in separate passes
+/// (`render_bg` / `render`), which on the web means opposite sides of `gfx.split`.
+layer :: int;
+
 /// A stable per-element id, owned by the driver. Elements are rows in a pool, and a pool has no natural
 /// identity a BACKEND can key on — the DOM button host needs it to map a row to its own <button> element, and
 /// a driver needs it to tell one button from another (which one was clicked?). Without it the DOM backend can
