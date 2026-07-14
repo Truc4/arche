@@ -1,0 +1,31 @@
+/// Datasheet for the `embed` device — a DUMB website/image card. It shows ONE external resource inside a
+/// SCREEN-SPACE rect the DRIVER hands it; it owns no layout, no world position, no open/close animation. Where
+/// the card is, how big it is, and whether it is open at all — all live in the driver. The device only turns a
+/// projected rect + a source string into a live web view (or a picture of one).
+///
+/// A backend `render` system reads the driver-provided columns (the driver declares these types and puts them
+/// on its own archetype, exactly as textview's `render` reads the driver's `output`/`len`/`screen`/`size`):
+///   bid          — which card; ONE real element per bid, so N cards are independent
+///   esrc, elen   — the resource: an http(s) URL when ekind == 0, an image path when ekind == 1
+///   elink, ellen — the click-through target (may be empty); only meaningful when ekind == 1
+///   ekind        — 0 = LIVE: the site itself, embedded and interactive
+///                  1 = SHOT: a still picture of the site; clicking it opens `elink` in a new tab
+///   screen, size — the card's rect in RENDER pixels (already projected by the driver)
+///
+/// `ekind` exists because not every site can be embedded. A site is only LIVE-able if it is served over TLS
+/// (a page on https cannot frame an http one — the browser hard-blocks it as mixed content) and does not deny
+/// framing via `X-Frame-Options` / CSP `frame-ancestors`. When a site fails either test, the driver seeds it as
+/// a SHOT and nothing else about the card changes. Flipping it back is a one-character edit.
+///
+/// A ZERO-SIZE RECT MEANS "NOT NOW" — the device hides the card. That is the same contract panel and textview
+/// use, and it is how a driver's proximity animation collapses a card without the device knowing what proximity
+/// is. The dom backend also uses it to decide when to FETCH: a card that has never been open has never had a
+/// non-zero rect, so its site is never loaded. Three cards do not mean three sites downloaded at page load.
+///
+/// Backends (interchangeable variants of this ONE lib; pick with `[select] embed = "..."`, never both):
+///   dom    — one <iframe> (LIVE) or <a><img></a> (SHOT) per bid, absolutely positioned over the gfx canvas.
+///            The JS host (co-located host.js) fulfils the `embed_be_*` seams.
+///   window — the native placeholder. A browser engine is not something a framebuffer can host, so this blits
+///            a card-shaped rect with the URL in it: the native build still LINKS, still RUNS, and still shows
+///            you which site lives at that spot in the world. It is honest about being a placeholder.
+// RUN: true
