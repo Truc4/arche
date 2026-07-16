@@ -7,12 +7,12 @@ TITLE_TSZ    :: 24;
 SUB_COL      :: 0x9298cc;
 SUB_TSZ      :: 16;
 
-// Two passes, one kernel. `render` draws the FOREGROUND panels (layer 1) and `render_bg` the BACKGROUND ones
-// (layer 0). A panel whose layer does not match collapses to a zero-size rect, so its scan loops never run —
-// the same branch-free trick the rest of the device uses instead of control flow.
+// Two passes, one kernel. `render` draws the FOREGROUND panels (z >= SPLIT_Z) and `render_bg` the BACKGROUND
+// ones (z < SPLIT_Z). A panel on the wrong side of the split collapses to a zero-size rect, so its scan loops
+// never run — the same branch-free trick the rest of the device uses instead of control flow.
 render :: system (query { framebuffer })(framebuffer) eff {
-  map (query { screen, size, title, len, sub, sublen, view, layer }) eff {
-    live := select(layer == 1, 1, 0);
+  map (query { screen, size, title, len, sub, sublen, view, z }) eff {
+    live := select(z >= ui.SPLIT_Z, 1, 0);
     bx0 := screen.x;
     by0 := screen.y;
     bx1 := screen.x + size.w * live;
@@ -127,8 +127,8 @@ render :: system (query { framebuffer })(framebuffer) eff {
 }
 
 render_bg :: system (query { framebuffer })(framebuffer) eff {
-  map (query { screen, size, title, len, sub, sublen, view, layer }) eff {
-    live := select(layer == 0, 1, 0);
+  map (query { screen, size, title, len, sub, sublen, view, z }) eff {
+    live := select(z < ui.SPLIT_Z, 1, 0);
     bx0 := screen.x;
     by0 := screen.y;
     bx1 := screen.x + size.w * live;

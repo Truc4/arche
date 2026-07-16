@@ -4,7 +4,7 @@
 // hardcoded getElementById("ui-button") plus a single shared `clicked` flag, so a second Button row silently
 // repositioned the same element and drained the same flag.
 #foreign
-button_be_label :: proc(bid: int, layer: int, s: []char, n: int, x: int, y: int, w: int, h: int)(s: []char);
+button_be_label :: proc(bid: int, z: int, s: []char, n: int, x: int, y: int, w: int, h: int)(s: []char);
 // Two seams, not one returning a pair: a foreign proc crosses the wasm ABI with a SINGLE return value, and
 // nothing else in the device library returns a tuple from one.
 #foreign
@@ -16,11 +16,11 @@ button_be_held :: proc(bid: int)(h: int);
 // panel must sit at that panel's depth, not float in front of the whole world.
 //
 // Unlike the framebuffer backend, DOM has no draw ORDER to sit inside: depth is a z-index, which the host reads
-// straight off `layer`. So one pass places every button regardless of layer, and `render_bg` is empty — it
-// exists only so a driver can schedule the same systems against either backend.
+// straight off `z`. So one pass places every button regardless of side, and `render_bg` is empty — it exists
+// only so a driver can schedule the same systems against either backend.
 render :: system eff {
-  map (query { bid, layer, label, len, screen, size }) eff {
-    button_be_label(bid, layer, label, len, screen.x, screen.y, size.w, size.h)(_:);
+  map (query { bid, z, label, len, screen, size }) eff {
+    button_be_label(bid, z, label, len, screen.x, screen.y, size.w, size.h)(_:);
   };
 }
 

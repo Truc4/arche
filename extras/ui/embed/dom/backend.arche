@@ -9,7 +9,7 @@
 /// whose `screen`/`size` the driver reprojects per frame tracks the scrolling world.
 #module
 #foreign
-embed_be_render :: proc(bid: int, src: []char, n: int, kind: int, x: int, y: int, w: int, h: int)(src: []char);
+embed_be_render :: proc(bid: int, src: []char, n: int, kind: int, x: int, y: int, w: int, h: int, z: int)(src: []char);
 // OPENING the real site is not the card's job — a card is not a link. The driver owns a `button` row per card
 // (the same device the playground's RUN uses), reads its `clicked`, and raises `eopen` for one frame. This is
 // the only seam that knows what a URL is.
@@ -24,8 +24,8 @@ embed_be_focused :: proc(bid: int)(f: int);
 
 /// Place/size every card.
 render :: system eff {
-  map (query { bid, esrc, elen, ekind, screen, size }) eff {
-    embed_be_render(bid, esrc, elen, ekind, screen.x, screen.y, size.w, size.h)(_:);
+  map (query { bid, esrc, elen, ekind, screen, size, z }) eff {
+    embed_be_render(bid, esrc, elen, ekind, screen.x, screen.y, size.w, size.h, z)(_:);
   };
 }
 

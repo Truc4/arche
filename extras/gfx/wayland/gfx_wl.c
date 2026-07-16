@@ -305,6 +305,14 @@ void gfx_be_split(void *handle, int *px, int w, int h) {
 	(void)h;
 }
 
+/* No stacked surfaces to order: stacking is a no-op here. See gfx.arche's `layers`. */
+int gfx_be_layers(void *handle, int bgz, int fgz) {
+	(void)handle;
+	(void)bgz;
+	(void)fgz;
+	return 0;
+}
+
 int gfx_be_axis_y(void *handle) {
 	(void)handle;
 	return 0;

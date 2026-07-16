@@ -50,11 +50,11 @@
         // existing FIRST, and the panel is now created lazily on its first render, which happens after `open`
         // runs at boot: the element never found it, stayed a child of the root, and had panel-relative
         // coordinates applied absolutely — so it sat glued to the screen instead of scrolling with the world.
-        // z-index 6 keeps it above the foreground panel (5) it visually sits in.
-        textedit_be_place(x, y, w, h) {
+        // Depth is echoed from the driver's `z`, keeping it above the foreground panel it visually sits in.
+        textedit_be_place(x, y, w, h, z) {
           const s = rt._uiScale || window.innerHeight / (rt.renderH || 1080);
           const ta = self.ta;
-          ta.style.zIndex = "6";
+          ta.style.zIndex = z;
           ta.style.left = (x * s) + "px";
           ta.style.top = (y * s) + "px";
           ta.style.width = (w * s) + "px";

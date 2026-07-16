@@ -15,6 +15,7 @@ gfx_be_w          :: proc(win: window)(w: int);
 gfx_be_h          :: proc(win: window)(h: int);
 gfx_be_present    :: proc(win: window, px: []int, w: int, h: int)(px: []int);
 gfx_be_split      :: proc(win: window, px: []int, w: int, h: int)(px: []int);
+gfx_be_layers     :: proc(win: window, bgz: int, fgz: int)(r: int);
 gfx_be_poll       :: proc(win: window)(is_open: int);
 gfx_be_axis_x     :: proc(win: window)(dx: int);
 gfx_be_axis_y     :: proc(win: window)(dy: int);

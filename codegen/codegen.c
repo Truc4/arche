@@ -4121,12 +4121,29 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 		return;
 	}
 
-	/* index buffer idx[0,count) = identity, then sorted by key. Compile-time-sized (pool is static). */
+	/* gen_counters[] base — per-slot liveness/generation, sign bit = dead (static pool: struct index
+	 * field_count+3, an inline [cap x i32]). Sorting must read this so it orders only LIVE rows. */
+	char *genbase = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n", genbase,
+	                  arch_name, arch_name, base_buf, arch->field_count + 3);
+
+	/* Live-first permutation of [0,count): live slots (gen>=0) fill [0,live) and are the only rows sorted;
+	 * dead/tombstoned slots (gen<0) are parked in [live,count). The permutation still spans all of [0,count)
+	 * so the cycle-apply below is unchanged; afterwards count is trimmed to `live` and gen_counters reset.
+	 * This makes `sort` correct on a pool that has had `delete`s. (The old code built the index over every
+	 * slot and permuted column DATA only — never the per-slot gen bits — so it moved live rows into
+	 * dead-flagged slots, dropping them, and holes into live-flagged slots, resurrecting stale rows.) */
 	char *idxarr = gen_value_name(ctx), *idxbase = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca [%d x i64]\n", idxarr, cap);
 	buffer_append_fmt(ctx, "  %s = getelementptr [%d x i64], [%d x i64]* %s, i64 0, i64 0\n", idxbase, cap, cap,
 	                  idxarr);
-	{
+	char *livec = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", livec);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", livec);
+	char *live = NULL;
+	/* pass 0 appends live slots, pass 1 appends dead slots; one shared write cursor `livec` walks the whole
+	 * index and `live` (its value after pass 0) is the sorted-prefix length. */
+	for (int pass = 0; pass < 2; pass++) {
 		char *ii = gen_value_name(ctx);
 		emit_alloca(ctx, "  %s = alloca i64\n", ii);
 		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", ii);
@@ -4138,22 +4155,41 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, cii, count);
 		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, b, e);
 		buffer_append_fmt(ctx, "%s:\n", b + 1);
-		emit_store_idx(ctx, idxbase, cii, cii);
+		char *gep = gen_value_name(ctx), *g = gen_value_name(ctx), *dead = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", gep, genbase, cii);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", g, gep);
+		buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", dead, g);
+		char *take = gen_value_name(ctx), *nx = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", dead, pass == 0 ? nx : take,
+		                  pass == 0 ? take : nx);
+		buffer_append_fmt(ctx, "%s:\n", take + 1);
+		char *l = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", l, livec);
+		emit_store_idx(ctx, idxbase, l, cii);
+		char *l1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", l1, l);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", l1, livec);
+		buffer_append_fmt(ctx, "  br label %s\n", nx);
+		buffer_append_fmt(ctx, "%s:\n", nx + 1);
 		char *ni = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, cii);
 		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, ii);
 		buffer_append_fmt(ctx, "  br label %s\n", c);
 		buffer_append_fmt(ctx, "%s:\n", e + 1);
+		if (pass == 0) {
+			live = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", live, livec);
+		}
 	}
 
 	/* sort the index array: insertion (small n) vs the type-chosen large-n algorithm. */
 	int passes = sort_radix_passes(key_kind, key_width);
 	char *small = gen_value_name(ctx), *sins = gen_value_name(ctx), *sbig = gen_value_name(ctx),
 	     *sapply = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 32\n", small, count);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 32\n", small, live);
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", small, sins, sbig);
 	buffer_append_fmt(ctx, "%s:\n", sins + 1);
-	emit_index_insertion(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, count);
+	emit_index_insertion(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, live);
 	buffer_append_fmt(ctx, "  br label %s\n", sapply);
 	buffer_append_fmt(ctx, "%s:\n", sbig + 1);
 	if (passes > 0) {
@@ -4162,9 +4198,9 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i64], [%d x i64]* %s, i64 0, i64 0\n", idx2, cap, cap,
 		                  idx2arr);
 		emit_alloca(ctx, "  %s = alloca [256 x i32]\n", hist);
-		emit_index_radix(ctx, idxbase, idx2, hist, cptr[key_col], key_ty, key_kind, key_width, descending, count);
+		emit_index_radix(ctx, idxbase, idx2, hist, cptr[key_col], key_ty, key_kind, key_width, descending, live);
 	} else {
-		emit_index_heapsort(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, count);
+		emit_index_heapsort(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, live);
 	}
 	buffer_append_fmt(ctx, "  br label %s\n", sapply);
 	buffer_append_fmt(ctx, "%s:\n", sapply + 1);
@@ -4240,6 +4276,37 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", sni, si);
 	buffer_append_fmt(ctx, "  br label %s\n", ac);
 	buffer_append_fmt(ctx, "%s:\n", ae + 1);
+
+	/* Trim to the live prefix: [0,live) now holds the sorted live rows, the dead tail is dropped.
+	 * count=live, free list empty, and every slot's gen cleared to 0 (live) so the dropped tail is clean
+	 * frontier for future inserts and no stale dead-bit hides a reused slot. (cgep already points at the
+	 * count field; free_count is static struct index field_count+2.) */
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", live, cgep);
+	char *fcgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fcgep, arch_name,
+	                  arch_name, base_buf, arch->field_count + 2);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", fcgep);
+	{
+		char *gi = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", gi);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", gi);
+		char *gc = gen_value_name(ctx), *gb = gen_value_name(ctx), *ge = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", gc);
+		buffer_append_fmt(ctx, "%s:\n", gc + 1);
+		char *cgi = gen_value_name(ctx), *glt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cgi, gi);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", glt, cgi, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", glt, gb, ge);
+		buffer_append_fmt(ctx, "%s:\n", gb + 1);
+		char *ggep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", ggep, genbase, cgi);
+		buffer_append_fmt(ctx, "  store i32 0, i32* %s\n", ggep);
+		char *ngi = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ngi, cgi);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ngi, gi);
+		buffer_append_fmt(ctx, "  br label %s\n", gc);
+		buffer_append_fmt(ctx, "%s:\n", ge + 1);
+	}
 	free(tmp);
 	free(cptr);
 	free(cty);

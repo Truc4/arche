@@ -92,7 +92,7 @@
       };
 
       return {
-        embed_be_render(bid, sPtr, n, kind, x, y, w, h) {
+        embed_be_render(bid, sPtr, n, kind, x, y, w, h, z) {
           const c = get(bid, kind);
           // A zero-size rect is the DRIVER saying "not now" — hide it. Don't touch `src`: hiding must not
           // unload a site the visitor already opened.
@@ -101,7 +101,7 @@
 
           const s = rt._uiScale || window.innerHeight / (rt.renderH || 1080);
           const px = x * s, py = y * s, pw = w * s, ph = h * s;
-          c.el.style.zIndex = "6";
+          c.el.style.zIndex = z;
           c.el.style.left = px + "px";
           c.el.style.top = py + "px";
           c.el.style.width = pw + "px";

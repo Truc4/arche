@@ -13,12 +13,20 @@ held       :: int; // level: is down RIGHT NOW. `clicked` alone cannot express h
 wasdown    :: int;
 mouse_down :: int;
 
-/// Which DEPTH an element renders at. 1 = foreground (normal UI, over the world); 0 = background (behind the
-/// world's foreground layer). An element is a rectangle somewhere in a scene, and a scene has depth: a framed
-/// section BEHIND the bodies standing in it is the same widget as a dialog IN FRONT of them, and should not be
-/// a second, hand-rolled implementation just because it sits lower. Backends render the two in separate passes
-/// (`render_bg` / `render`), which on the web means opposite sides of `gfx.split`.
-layer :: int;
+/// Which DEPTH an element renders at: a portable z ordinal on one scale shared by every drawable (widgets AND
+/// the world's bodies), higher = nearer the viewer. The backend merely ECHOES it — on the web straight into a
+/// CSS `z-index`, on the framebuffer into paint order — so draw order is decided entirely by the driver, never
+/// by a per-backend constant. `SPLIT_Z` is the surface cut: `z < SPLIT_Z` renders on the BACKGROUND surface
+/// (behind the world's foreground), `z >= SPLIT_Z` on the FOREGROUND surface. Backends that composite over DOM
+/// still render the two sides in separate passes (`render_bg` / `render`) around `gfx.split`; the pass a row
+/// belongs to is decided by `z` against `SPLIT_Z`, not a stored flag.
+z :: int;
+
+/// The surface cut on the shared `z` scale. `z < SPLIT_Z` → background surface; `z >= SPLIT_Z` → foreground
+/// surface. The gfx foreground canvas's own stacking sits AT this value, so a body's z deciding its surface and
+/// a widget's z deciding whether the fg canvas occludes it are the same comparison. Single source of truth for
+/// the split: the driver passes it to `gfx.layers`, and the native `window` backends read it for pass membership.
+SPLIT_Z :: 500;
 
 /// A stable per-element id, owned by the driver. Elements are rows in a pool, and a pool has no natural
 /// identity a BACKEND can key on — the DOM button host needs it to map a row to its own <button> element, and

@@ -303,6 +303,14 @@ void gfx_be_split(void *handle, int *px, int w, int h) {
 	(void)h;
 }
 
+/* No stacked surfaces to order: stacking is a no-op here. See gfx.arche's `layers`. */
+int gfx_be_layers(void *handle, int bgz, int fgz) {
+	(void)handle;
+	(void)bgz;
+	(void)fgz;
+	return 0;
+}
+
 /* Expose the scene window's X11 identity to sibling native backends (see gfx_x11.h). */
 Display *gfx_x11_display(void *handle) {
 	GfxX11 *g = handle;

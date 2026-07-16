@@ -10,7 +10,7 @@
     seams(rt) {
       const self = this;
 
-      const get = (bid, layer) => {
+      const get = (bid) => {
         let f = self.panels.get(bid);
         if (f) return f;
         // bid 0 keeps the id "ui-panel": the editor / output hosts reparent themselves into it BY THAT ID, so
@@ -21,20 +21,10 @@
           el = document.createElement("div");
           el.id = id;
           // No flexbox/padding: children are absolutely positioned from the driver's projected rects (the same
-          // `layout` the native window backend reads), so native + browser lay out identically.
-          //
-          // The z-index STRADDLES the two gfx canvases (see gfx.arche's `split`). A background panel gets 1 —
-          // above the background canvas, but BELOW the transparent foreground one, so the world's bodies draw
-          // over it. A foreground panel gets 5, above both. That is the whole trick: DOM always paints above a
-          // canvas, so the only way a DOM panel can sit behind the world is for the world to have a second
-          // canvas on top.
-          //
-          // A background panel is scenery, so it must not eat pointer events either — a click on it has to fall
-          // through to the world underneath it.
-          const isBg = layer === 0;
+          // `layout` the native window backend reads), so native + browser lay out identically. Depth (z-index)
+          // and pointer-events are set per-frame in panel_be_render from the driver's `z`, not baked here.
           el.style.cssText = "position:absolute;box-sizing:border-box;background:#0b0e14;" +
-            "border:1px solid #232838;border-radius:0.6em;box-shadow:0 10px 34px rgba(0,0,0,0.5);overflow:hidden;" +
-            "z-index:" + (isBg ? 2 : 5) + ";" + (isBg ? "pointer-events:none;" : "");
+            "border:1px solid #232838;border-radius:0.6em;box-shadow:0 10px 34px rgba(0,0,0,0.5);overflow:hidden;";
           const t = document.createElement("div");
           t.id = id + "-title";
           t.style.cssText = "position:absolute;font:700 1.15em/1 ui-sans-serif,system-ui,sans-serif;" +
@@ -57,11 +47,13 @@
       };
 
       return {
-        panel_be_render(bid, layer, pass, x, y, w, h, ptr, n) {
-          // Not our pass: leave this panel entirely alone. Both passes see every row, so touching a panel that
-          // belongs to the other one would undo whatever it just did.
-          if (layer !== pass) return;
-          const f = get(bid, layer);
+        panel_be_render(bid, z, x, y, w, h, ptr, n) {
+          const f = get(bid);
+          // Depth is a straight echo of the driver's `z`. Below the foreground canvas's z (SPLIT_Z, published as
+          // rt._splitZ by the gfx host) the panel is scenery — behind the world's bodies AND click-through, so a
+          // press falls to the world underneath; at/above it the panel is foreground chrome and takes clicks.
+          f.el.style.zIndex = z;
+          f.el.style.pointerEvents = (z < rt._splitZ) ? "none" : "";
           // A zero-size rect is the DRIVER saying "not now" — hide it. (The button device uses the same rule.)
           if (w <= 0 || h <= 0) { f.el.style.display = "none"; return; }
           f.el.style.display = "";
@@ -83,8 +75,7 @@
           }
           f.scale = s;
         },
-        panel_be_sub(bid, layer, pass, ptr, n) {
-          if (layer !== pass) return;
+        panel_be_sub(bid, ptr, n) {
           const f = self.panels.get(bid);
           if (!f || !f.sub) return;
           const t = n > 0 ? self.dec.decode(new Uint8Array(rt.memory().buffer, ptr, n)) : "";

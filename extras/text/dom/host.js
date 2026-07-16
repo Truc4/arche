@@ -56,12 +56,15 @@
       };
 
       return {
-        // text_be_draw(x, y, sPtr, n, size, color): a []char lowers to (ptr, len) = (sPtr, n). REUSE the
+        // text_be_draw(x, y, sPtr, n, size, color, z): a []char lowers to (ptr, len) = (sPtr, n). REUSE the
         // pooled span at the cursor, update in place, advance. Rewriting textContent only on change keeps a
         // text selection alive across the per-frame redraw. Decode from wasm memory each call (it can grow and
-        // detach its ArrayBuffer). color is 0xRRGGBB.
-        text_be_draw(x, y, sPtr, n, size, color) {
+        // detach its ArrayBuffer). color is 0xRRGGBB. `z` is the driver's depth ordinal: the overlay div is
+        // position:fixed and so is its own stacking context, so the div carries z (its runs share one depth)
+        // to place scenery text in the ROOT stack — above the background canvas, below the panels above it.
+        text_be_draw(x, y, sPtr, n, size, color, z) {
           ensureLayer();
+          self.layer.style.zIndex = z;
           const str = self._dec.decode(new Uint8Array(rt.memory().buffer, sPtr, n));
           let rec = self.spans[self._cursor];
           if (!rec) {

@@ -4,13 +4,13 @@ BTN_BG    :: 0xe4694e;
 BTN_LABEL :: 0x160d0a;
 BTN_TSZ   :: 16;
 
-// Two passes, one kernel — same as the panel device. `render` draws the FOREGROUND buttons (layer 1) and
-// `render_bg` the BACKGROUND ones (layer 0), so a control on a background panel is drawn at that panel's depth
-// rather than floating in front of the world. A button whose layer does not match collapses to a zero-size
-// rect, so its scan loops never run.
+// Two passes, one kernel — same as the panel device. `render` draws the FOREGROUND buttons (z >= SPLIT_Z) and
+// `render_bg` the BACKGROUND ones (z < SPLIT_Z), so a control on a background panel is drawn at that panel's
+// depth rather than floating in front of the world. A button on the wrong side of the split collapses to a
+// zero-size rect, so its scan loops never run.
 render :: system (query { framebuffer })(framebuffer) eff {
-  map (query { screen, size, label, len, view, layer }) eff {
-    live := select(layer == 1, 1, 0);
+  map (query { screen, size, label, len, view, z }) eff {
+    live := select(z >= ui.SPLIT_Z, 1, 0);
     fx0 := screen.x;
     fy0 := screen.y;
     fx1 := screen.x + size.w * live;
@@ -68,8 +68,8 @@ render :: system (query { framebuffer })(framebuffer) eff {
 }
 
 render_bg :: system (query { framebuffer })(framebuffer) eff {
-  map (query { screen, size, label, len, view, layer }) eff {
-    live := select(layer == 0, 1, 0);
+  map (query { screen, size, label, len, view, z }) eff {
+    live := select(z < ui.SPLIT_Z, 1, 0);
     fx0 := screen.x;
     fy0 := screen.y;
     fx1 := screen.x + size.w * live;

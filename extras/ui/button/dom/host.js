@@ -40,7 +40,7 @@
     seams(rt) {
       const self = this;
 
-      const get = (bid, layer) => {
+      const get = (bid) => {
         let e = self.btns.get(bid);
         if (e) return e;
         const b = document.createElement("button");
@@ -50,11 +50,11 @@
         // Only LAYOUT is inline (the driver owns the rect). APPEARANCE lives in the injected stylesheet below,
         // keyed off `.arche-btn` — inline styles beat author CSS, so baking the look in here would make the
         // button unskinnable by the page embedding it.
-        // Depth comes from the button's LAYER, straddling the two gfx canvases exactly as a panel's does: a
-        // background button (2) sits UNDER the world's foreground canvas, so the player walks in front of it,
-        // while a foreground control (6) floats over everything. A background button still takes clicks — the
+        // Depth is echoed from the driver's `z` per-frame in button_be_label, straddling the two gfx canvases
+        // exactly as a panel's does: a button below the foreground canvas's z sits UNDER it, so the player walks
+        // in front, while one above floats over everything. A background button still takes clicks — the
         // foreground canvas is pointer-events:none, so the press falls straight through to it.
-        b.style.cssText = "position:absolute;box-sizing:border-box;z-index:" + (layer === 0 ? 2 : 6) + ";";
+        b.style.cssText = "position:absolute;box-sizing:border-box;";
         // Appended to the app root, NOT into #ui-panel. The old host reparented into the panel div (which is
         // overflow:hidden) and positioned relative to it, so a button anchored anywhere else on the viewport —
         // an on-screen movement pad, say — was clipped out of existence. The driver's rect is already in the
@@ -98,8 +98,9 @@
       };
 
       return {
-        button_be_label(bid, layer, ptr, n, x, y, w, h) {
-          const e = get(bid, layer);
+        button_be_label(bid, z, ptr, n, x, y, w, h) {
+          const e = get(bid);
+          e.el.style.zIndex = z;
           const t = self.dec.decode(new Uint8Array(rt.memory().buffer, ptr, n));
           if (e.el.textContent !== t) e.el.textContent = t;
           // A ZERO-SIZED button is the driver saying "not now" (e.g. touch controls on a desktop). Hide it
@@ -113,8 +114,8 @@
           e.el.style.height = (h * s) + "px";
         },
         // `clicked` DRAINS (it is an edge, consumed once); `held` does not (it is a level, sampled).
-        button_be_clicked(bid) { const e = get(bid, 1); const c = e.clicked; e.clicked = false; return c ? 1 : 0; },
-        button_be_held(bid) { return get(bid, 1).held ? 1 : 0; },
+        button_be_clicked(bid) { const e = get(bid); const c = e.clicked; e.clicked = false; return c ? 1 : 0; },
+        button_be_held(bid) { return get(bid).held ? 1 : 0; },
       };
     },
   });

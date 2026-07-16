@@ -3,18 +3,14 @@
 // a real <div> per row — without the key it could only ever manage one (it used to: a hardcoded
 // getElementById("ui-panel"), so a second Panel silently repositioned the first).
 //
-// `layer` picks the depth. On the web that is a z-index relative to the two gfx canvases (see gfx.arche's
-// `split`): a layer-0 panel sits BEHIND the world's foreground, a layer-1 panel in front of it. `render_bg` and
-// `render` are separate systems so a driver can schedule them on opposite sides of `gfx.split` — which is what
-// the framebuffer backend genuinely needs, and what keeps the two backends' depth order identical.
-//
-// `pass` says which layer is being drawn. A map visits EVERY row, so each pass sees every panel and must
-// IGNORE the ones that are not its own — it cannot zero them out, because the other pass already positioned
-// them and the last writer would win. (It did: `render` ran after `render_bg` and blanked the background panel
-// straight back out of existence.)
+// `z` picks the depth: the host echoes it straight into the <div>'s CSS z-index, relative to the two gfx
+// canvases (see gfx.arche's `split`). A panel below the foreground canvas's z sits BEHIND the world's bodies,
+// one above it in front. DOM stacking is a z-index, not a paint ORDER, so this device needs no two passes:
+// `render` places every panel regardless of side, and `render_bg` is an empty stub kept only so a driver that
+// schedules both (for the framebuffer backend, which DOES need two passes) still binds.
 #foreign
 panel_be_render :: proc(
-  bid: int, layer: int, pass: int, x: int, y: int, width: int, height: int, title: []char, n: int,
+  bid: int, z: int, x: int, y: int, width: int, height: int, title: []char, n: int,
 )(
   title: []char,
 );
@@ -22,18 +18,14 @@ panel_be_render :: proc(
 // more parameters on `render`: a foreign proc borrows each array it takes, and two `[]char` in one call is a
 // borrow pattern nothing else in the device library uses.
 #foreign
-panel_be_sub :: proc(bid: int, layer: int, pass: int, sub: []char, n: int)(sub: []char);
+panel_be_sub :: proc(bid: int, sub: []char, n: int)(sub: []char);
 
 render :: system eff {
-  map (query { bid, layer, screen, size, title, len, sub, sublen }) eff {
-    panel_be_render(bid, layer, 1, screen.x, screen.y, size.w, size.h, title, len)(_:);
-    panel_be_sub(bid, layer, 1, sub, sublen)(_:);
+  map (query { bid, z, screen, size, title, len, sub, sublen }) eff {
+    panel_be_render(bid, z, screen.x, screen.y, size.w, size.h, title, len)(_:);
+    panel_be_sub(bid, sub, sublen)(_:);
   };
 }
 
 render_bg :: system eff {
-  map (query { bid, layer, screen, size, title, len, sub, sublen }) eff {
-    panel_be_render(bid, layer, 0, screen.x, screen.y, size.w, size.h, title, len)(_:);
-    panel_be_sub(bid, layer, 0, sub, sublen)(_:);
-  };
 }

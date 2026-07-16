@@ -30,9 +30,9 @@
       };
 
       return {
-        textview_be_render(bid, ptr, n, x, y, w, h) {
-          // The driver's rect is already in SCREEN space, so place it absolutely in the app root. z-index 6 keeps
-          // it above the foreground panel (5) it visually sits in.
+        textview_be_render(bid, ptr, n, x, y, w, h, z) {
+          // The driver's rect is already in SCREEN space, so place it absolutely in the app root. Depth is
+          // echoed from the driver's `z`, keeping it above the foreground panel it visually sits in.
           const el = get(bid);
           // A zero-size rect is the DRIVER saying "not now" — hide it (an info card collapsed shut).
           if (w <= 0 || h <= 0) { el.style.display = "none"; return; }
@@ -40,7 +40,7 @@
           const t = self.dec.decode(new Uint8Array(rt.memory().buffer, ptr, n));
           if (el.textContent !== t) el.textContent = t;
           const s = rt._uiScale || window.innerHeight / (rt.renderH || 1080);
-          el.style.zIndex = "6";
+          el.style.zIndex = z;
           el.style.left = (x * s) + "px";
           el.style.top = (y * s) + "px";
           el.style.width = (w * s) + "px";

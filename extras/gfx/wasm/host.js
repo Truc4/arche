@@ -83,18 +83,20 @@
       // events must fall THROUGH it to the DOM and the background canvas beneath, or it would swallow every
       // click in the world.
       //
-      // z-index 3 leaves room for the host's DOM to stack UNDERNEATH it in a deliberate order (a driver's
-      // scenery text at 1, its background panels at 2), which is the whole point of the split: those layers
-      // must be occluded by the world's foreground, and DOM over a single canvas never can be.
+      // The two canvases' stacking is NOT hardcoded here: the driver sets it via gfx_be_layers (gfx.arche's
+      // `layers`), so the host owns no z-index constant. The foreground canvas ends up at the driver's SPLIT_Z,
+      // leaving room for the DOM (scenery text, background panels) to stack underneath it in the driver's own
+      // z order — the whole point of the split: those layers must be occluded by the world's foreground, and
+      // DOM over a single canvas never can be.
       let fc = document.getElementById("gfx-fg");
       if (!fc) {
         fc = document.createElement("canvas");
         fc.id = "gfx-fg";
-        fc.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:3;";
+        fc.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;";
         (c.parentNode || host).appendChild(fc);
       }
       this.fg = mkSurface(fc, true);
-      if (c.style) { c.style.position = c.style.position || "absolute"; c.style.zIndex = "0"; }
+      if (c.style) { c.style.position = c.style.position || "absolute"; }
       this.cur = this.bg; // the surface the next present lands on; `split` flips it
       // CACHE the pointer-coarseness. A driver reads this every frame (often several times), and building a
       // fresh MediaQueryList per call is not free — under browser device EMULATION, which intercepts and
@@ -343,8 +345,21 @@
         // The zeroing is the only per-pixel work the host does, and it is a plain fill.
         gfx_be_split(_win, pxPtr, w, h) {
           present(self.bg, pxPtr, w, h);
-          new Uint8Array(rt.memory().buffer, pxPtr, w * h * 4).fill(0);
+          // Zero the framebuffer so the foreground pass composites over the DOM (black = transparent sentinel).
+          // Fill as u32 (one write per pixel, not four) — the u8 fill of this ~9MB buffer sat on a slow path and
+          // was ~40% of the frame; the widened fill drops onto the engine's memset fast path. pxPtr is the base
+          // of the wasm int framebuffer, so it is 4-byte aligned as Uint32Array requires.
+          new Uint32Array(rt.memory().buffer, pxPtr, w * h).fill(0);
           self.cur = self.fg;
+        },
+        // The driver's ONE source of truth for stacking: echo bgz/fgz onto the two canvases, and publish fgz as
+        // rt._splitZ so the DOM element hosts (panel/button/embed/…) derive "am I below the foreground canvas?"
+        // from the same number instead of a private constant.
+        gfx_be_layers(_win, bgz, fgz) {
+          self.bg.canvas.style.zIndex = bgz;
+          self.fg.canvas.style.zIndex = fgz;
+          rt._splitZ = fgz;
+          return 0;
         },
         gfx_be_coarse_pointer() { return self.coarse; },
         // Take the keyboard back for the world: blur the focused text field and focus the canvas. Also clear
