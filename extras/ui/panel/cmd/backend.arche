@@ -1,0 +1,41 @@
+#import { paint ui }
+
+FRAME_BG     :: 0x0b0e14;
+FRAME_BORDER :: 0x232838;
+TITLE_COL    :: 0xcdd6f4;
+TITLE_TSZ    :: 24;
+SUB_COL      :: 0x9298cc;
+SUB_TSZ      :: 16;
+
+render :: system eff {
+  map (query { z, screen, size, title, len, sub, sublen }) eff {
+    if (size.w > 0 && size.h > 0) {
+      insert(Cmd { z: z, ckind: CK_RECT, crx: screen.x, cry: screen.y, crw: size.w, crh: size.h, ccolor: FRAME_BORDER, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+      insert(Cmd { z: z, ckind: CK_RECT, crx: screen.x + 2, cry: screen.y + 2, crw: size.w - 4, crh: size.h - 4, ccolor: FRAME_BG, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+      insert(Cmd { z: z, ckind: CK_RECT, crx: screen.x + 2, cry: screen.y + ui.PAD + ui.TITLE_H, crw: size.w - 4, crh: 1, ccolor: FRAME_BORDER, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+      map (query { ach, boff })(ach, boff) eff {
+        off := boff;
+        if (off + len <= ach.length) {
+          for (i := 0; i < len; i += 1) {
+            ach[off + i] = title[i];
+          }
+          boff = off + len;
+          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: screen.x + ui.PAD, cry: screen.y + ui.PAD, crw: 0, crh: 0, ccolor: TITLE_COL, ctoff: off, ctlen: len, ctsz: TITLE_TSZ, cclx0: screen.x + 2, ccly0: screen.y + 2, cclx1: screen.x + size.w - 2, ccly1: screen.y + size.h - 2, cnl: 0 })(_:, _ok:);
+        }
+      };
+      map (query { ach, boff })(ach, boff) eff {
+        off := boff;
+        if (off + sublen <= ach.length) {
+          for (i := 0; i < sublen; i += 1) {
+            ach[off + i] = sub[i];
+          }
+          boff = off + sublen;
+          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: screen.x + ui.PAD, cry: screen.y + ui.PAD + ui.TITLE_H + 12, crw: 0, crh: 0, ccolor: SUB_COL, ctoff: off, ctlen: sublen, ctsz: SUB_TSZ, cclx0: screen.x + 2, ccly0: screen.y + 2, cclx1: screen.x + size.w - 2, ccly1: screen.y + size.h - 2, cnl: 0 })(_:, _ok:);
+        }
+      };
+    }
+  };
+}
+
+render_bg :: system eff {
+}

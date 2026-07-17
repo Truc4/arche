@@ -1,0 +1,18 @@
+// RED (codegen bug, qualify pass): a module-qualified const (`constmod.SCALAR`) used directly as a field
+// VALUE in an insert(Archetype{...}) was never folded — the qualify pass (`hir_q_expr`) recursed into ALLOC
+// and array-literal field values but NOT into HIR_EXPR_ENTITY_LIT, so the `mod.const` stayed a bare FIELD and
+// codegen emitted the field name as a literal token → malformed LLVM IR ("opt: out.ll: error: expected value
+// token"). Same class as insert_grouped_subfield_from_query, but module-qualified access rather than a grouped
+// sub-field. Expected once fixed: prints "v=42".
+// RUN: rm -rf %t.cm && mkdir -p %t.cm && cp -r %repo/tests/unit/language/declarations/constmod %t.cm/ && cp %s %t.cm/app.arche && cd %t.cm && %arche build -o app app.arche && ./app | grep -qx "v=42"
+#import { constmod fmt }
+val :: int;
+Dst :: arche { val }
+[4]Dst ?abort;
+emit :: system eff {
+  insert(Dst { val: constmod.SCALAR })(_:, _ok:);
+}
+show :: system eff {
+  map (query { val }) eff { fmt.printf("v=%d\n", val); };
+}
+#run seq({ emit, show })

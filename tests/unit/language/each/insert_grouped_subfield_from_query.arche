@@ -1,0 +1,30 @@
+// RED (codegen bug): using a GROUPED-component sub-field read from a queried source archetype (`pt.x`,
+// `pt.y`) as a field VALUE in an `insert(OtherArchetype{...})` inside that map emits malformed LLVM IR —
+// `opt: out.ll: error: expected value token`. A SCALAR queried field used the same way is fine (only the
+// grouped sub-field access breaks). Minimal, no devices. Surfaced building a z-sorted UI command buffer:
+// `emit :: map (query { screen, size }) { insert(Cmd { crx: screen.x, crw: size.w, ... }) }`.
+// Expected once fixed: prints "gx=10 gy=20".
+// RUN: %arche build -o %t %s && %t | grep -qF "gx=10 gy=20"
+#import { fmt }
+pt(x, y) :: int;
+val :: int;
+gx :: int;
+gy :: int;
+Src :: arche { val, pt }
+[4]Src ?abort;
+Dst :: arche { val, gx, gy }
+[4]Dst ?abort;
+seed :: system eff {
+  insert(Src { val: 7, pt: (10, 20) })(_:, _ok:);
+}
+emit :: system eff {
+  map (query { val, pt }) eff {
+    insert(Dst { val: val, gx: pt.x, gy: pt.y })(_:, _ok:);
+  };
+}
+show :: system eff {
+  map (query { gx, gy }) eff {
+    fmt.printf("gx=%d gy=%d\n", gx, gy);
+  };
+}
+#run seq({ seed, emit, show })

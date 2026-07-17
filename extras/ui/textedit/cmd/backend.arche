@@ -1,0 +1,157 @@
+#import { paint }
+
+EDIT_BG  :: 0x0e121b;
+EDIT_COL :: 0xe0e0e0;
+EDIT_TSZ :: 16;
+
+render :: system eff {
+  map (query { z, source, len, cursor, screen, size }) eff {
+    if (size.w > 0 && size.h > 0) {
+      insert(Cmd { z: z, ckind: CK_RECT, crx: screen.x, cry: screen.y, crw: size.w, crh: size.h, ccolor: EDIT_BG, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+      map (query { ach, boff })(ach, boff) eff {
+        off := boff;
+        if (off + len <= ach.length) {
+          for (i := 0; i < len; i += 1) {
+            ach[off + i] = source[i];
+          }
+          boff = off + len;
+          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: screen.x + 8, cry: screen.y + 6, crw: 0, crh: 0, ccolor: EDIT_COL, ctoff: off, ctlen: len, ctsz: EDIT_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 1 })(_:, _ok:);
+        }
+      };
+      s     := EDIT_TSZ / 8;
+      adv   := 8 * s;
+      pitch := EDIT_TSZ + 4;
+      left  := screen.x + 8;
+      top   := screen.y + 6;
+      penx  := left;
+      peny  := top;
+      curx  := left;
+      cury  := top;
+      for (i := 0; i < len; i += 1) {
+        if (i == cursor) {
+          curx = penx;
+          cury = peny;
+        }
+        c := source[i];
+        if (c == 10) {
+          penx = left;
+          peny = peny + pitch;
+          continue;
+        }
+        if (c >= 32 && c <= 126) {
+          penx = penx + adv;
+        }
+      }
+      if (cursor >= len) {
+        curx = penx;
+        cury = peny;
+      }
+      cx0 := curx;
+      cy0 := cury;
+      cx1 := curx + 2;
+      cy1 := cury + EDIT_TSZ;
+      if (cx0 < screen.x) {
+        cx0 = screen.x;
+      }
+      if (cy0 < screen.y) {
+        cy0 = screen.y;
+      }
+      if (cx1 > screen.x + size.w) {
+        cx1 = screen.x + size.w;
+      }
+      if (cy1 > screen.y + size.h) {
+        cy1 = screen.y + size.h;
+      }
+      if (cx1 > cx0 && cy1 > cy0) {
+        insert(Cmd { z: z, ckind: CK_RECT, crx: cx0, cry: cy0, crw: cx1 - cx0, crh: cy1 - cy0, ccolor: EDIT_COL, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+      }
+    }
+  };
+}
+
+render_bg :: system eff {
+}
+
+step :: system eff {
+  map (query { source, len, cursor, submit, key })(source, len, cursor, submit) eff {
+    k := key;
+    if (k == 18) {
+      submit = 1;
+    }
+    if (k == 1000 && cursor > 0) {
+      cursor = cursor - 1;
+    }
+    if (k == 1001 && cursor < len) {
+      cursor = cursor + 1;
+    }
+    if (k == 1002) {
+      ls := cursor;
+      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) {
+      }
+      c := cursor - ls;
+      if (ls > 0) {
+        ps := ls - 1;
+        for (; ps > 0 && source[ps - 1] != 10; ps -= 1) {
+        }
+        plen := ls - 1 - ps;
+        if (c > plen) {
+          cursor = ls - 1;
+        }
+        else {
+          cursor = ps + c;
+        }
+      }
+    }
+    if (k == 1003) {
+      ls := cursor;
+      for (; ls > 0 && source[ls - 1] != 10; ls -= 1) {
+      }
+      c  := cursor - ls;
+      le := cursor;
+      for (; le < len && source[le] != 10; le += 1) {
+      }
+      if (le < len) {
+        ns := le + 1;
+        ne := ns;
+        for (; ne < len && source[ne] != 10; ne += 1) {
+        }
+        nlen := ne - ns;
+        if (c > nlen) {
+          cursor = ne;
+        }
+        else {
+          cursor = ns + c;
+        }
+      }
+    }
+    if (k == 8 && cursor > 0) {
+      for (j := cursor - 1; j < len - 1; j += 1) {
+        source[j] = source[j + 1];
+      }
+      len    = len - 1;
+      cursor = cursor - 1;
+    }
+    ch := 0;
+    if (k >= 32 && k < 127) {
+      ch = k;
+    }
+    if (k == 13) {
+      ch = 10;
+    }
+    if (ch > 0 && len < source.length - 1) {
+      for (j := len; j > cursor; j -= 1) {
+        source[j] = source[j - 1];
+      }
+      source[cursor] = ch;
+      len            = len + 1;
+      cursor         = cursor + 1;
+    }
+  };
+}
+
+open :: system eff {
+}
+text :: system eff {
+}
+poll_run :: system eff {
+}

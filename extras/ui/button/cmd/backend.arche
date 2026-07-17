@@ -1,0 +1,46 @@
+#import { paint ui }
+
+BTN_BG    :: 0xe4694e;
+BTN_LABEL :: 0x160d0a;
+BTN_TSZ   :: 16;
+
+render :: system eff {
+  map (query { z, screen, size, label, len }) eff {
+    if (size.w > 0 && size.h > 0) {
+      insert(Cmd { z: z, ckind: CK_RECT, crx: screen.x, cry: screen.y, crw: size.w, crh: size.h, ccolor: BTN_BG, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+      s   := BTN_TSZ / 8;
+      adv := 8 * s;
+      lw  := len * adv;
+      lx  := screen.x + (size.w - lw) / 2;
+      ly  := screen.y + (size.h - BTN_TSZ) / 2;
+      map (query { ach, boff })(ach, boff) eff {
+        off := boff;
+        if (off + len <= ach.length) {
+          for (i := 0; i < len; i += 1) {
+            ach[off + i] = label[i];
+          }
+          boff = off + len;
+          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: lx, cry: ly, crw: 0, crh: 0, ccolor: BTN_LABEL, ctoff: off, ctlen: len, ctsz: BTN_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 0 })(_:, _ok:);
+        }
+      };
+    }
+  };
+}
+
+render_bg :: system eff {
+}
+
+poll :: system eff {
+  map (query { screen, size, clicked, held, wasdown, mouse, mouse_down })(clicked, held, wasdown) eff {
+    inside := mouse.x >= screen.x && mouse.x < screen.x + size.w && mouse.y >= screen.y && mouse.y < screen.y + size.h;
+    clicked = 0;
+    held = 0;
+    if (mouse_down == 1 && inside) {
+      held = 1;
+      if (wasdown == 0) {
+        clicked = 1;
+      }
+    }
+    wasdown = mouse_down;
+  };
+}

@@ -136,6 +136,17 @@ static void tuple_rewrite_expr(HirExpr *e, const char *base) {
 		for (int i = 0; i < e->data.call.arg_count; i++)
 			tuple_rewrite_expr(e->data.call.args[i], base);
 		break;
+	case HIR_EXPR_ENTITY_LIT:
+		/* `insert(Arch { col: pt.x, grp: (pt.x, pt.y) })` — the entity literal's field values are expressions
+		 * too; without this a grouped sub-field (`pt.x`) inside them never flattens to `pt_x` and codegen emits
+		 * the bare sub-field name. */
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			tuple_rewrite_expr(e->data.entity.field_values[i], base);
+		break;
+	case HIR_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			tuple_rewrite_expr(e->data.array_literal.elements[i], base);
+		break;
 	default:
 		break;
 	}
@@ -213,6 +224,15 @@ static void self_bind_rewrite_expr(HirExpr *e, const char *self, int to_self) {
 		self_bind_rewrite_expr(e->data.call.callee, self, to_self);
 		for (int i = 0; i < e->data.call.arg_count; i++)
 			self_bind_rewrite_expr(e->data.call.args[i], self, to_self);
+		break;
+	case HIR_EXPR_ENTITY_LIT:
+		/* self-binder sub-fields inside an `insert(Arch { ... })` value — mirror of the tuple-rewrite fix. */
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			self_bind_rewrite_expr(e->data.entity.field_values[i], self, to_self);
+		break;
+	case HIR_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			self_bind_rewrite_expr(e->data.array_literal.elements[i], self, to_self);
 		break;
 	default:
 		break;
@@ -2087,6 +2107,10 @@ static void tuple_collapse_expr(HirExpr *e) {
 			tuple_collapse_expr(e->data.alloc.field_values[i]);
 		tuple_collapse_expr(e->data.alloc.init_length);
 		break;
+	case HIR_EXPR_ENTITY_LIT:
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			tuple_collapse_expr(e->data.entity.field_values[i]);
+		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < e->data.array_literal.element_count; i++)
 			tuple_collapse_expr(e->data.array_literal.elements[i]);
@@ -3810,6 +3834,11 @@ static void hir_rn_expr(HirExpr *e, const char *prefix, char **set, int count) {
 			hir_rn_expr(e->data.alloc.field_values[i], prefix, set, count);
 		hir_rn_expr(e->data.alloc.init_length, prefix, set, count);
 		break;
+	case HIR_EXPR_ENTITY_LIT:
+		rn_owned(&e->data.entity.type_name, prefix, set, count);
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			hir_rn_expr(e->data.entity.field_values[i], prefix, set, count);
+		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < e->data.array_literal.element_count; i++)
 			hir_rn_expr(e->data.array_literal.elements[i], prefix, set, count);
@@ -4083,6 +4112,10 @@ static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 		for (int i = 0; i < e->data.alloc.field_count; i++)
 			hir_q_expr(e->data.alloc.field_values[i], q);
 		hir_q_expr(e->data.alloc.init_length, q);
+		break;
+	case HIR_EXPR_ENTITY_LIT:
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			hir_q_expr(e->data.entity.field_values[i], q);
 		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < e->data.array_literal.element_count; i++)
