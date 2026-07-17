@@ -9,7 +9,7 @@ render :: system eff {
   map (query { z, esrc, elen, screen, size }) eff {
     if (size.w > 0 && size.h > 0) {
       insert(Cmd { z: z, ckind: CK_RECT, crx: screen.x, cry: screen.y, crw: size.w, crh: size.h, ccolor: CARD_EDGE, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
-      insert(Cmd { z: z, ckind: CK_RECT, crx: screen.x + 2, cry: screen.y + 2, crw: size.w - 4, crh: size.h - 4, ccolor: CARD_BG, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+      insert(Cmd { z: z + 1, ckind: CK_RECT, crx: screen.x + 2, cry: screen.y + 2, crw: size.w - 4, crh: size.h - 4, ccolor: CARD_BG, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
       map (query { ach, boff })(ach, boff) eff {
         off := boff;
         if (off + elen <= ach.length) {
@@ -17,7 +17,7 @@ render :: system eff {
             ach[off + i] = esrc[i];
           }
           boff = off + elen;
-          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: screen.x + ui.PAD, cry: screen.y + ui.PAD, crw: 0, crh: 0, ccolor: CARD_TXT, ctoff: off, ctlen: elen, ctsz: CARD_TSZ, cclx0: screen.x + 2, ccly0: screen.y + 2, cclx1: screen.x + size.w - 2, ccly1: screen.y + size.h - 2, cnl: 0 })(_:, _ok:);
+          insert(Cmd { z: z + 3, ckind: CK_TEXTRUN, crx: screen.x + ui.PAD, cry: screen.y + ui.PAD, crw: 0, crh: 0, ccolor: CARD_TXT, ctoff: off, ctlen: elen, ctsz: CARD_TSZ, cclx0: screen.x + 2, ccly0: screen.y + 2, cclx1: screen.x + size.w - 2, ccly1: screen.y + size.h - 2, cnl: 0 })(_:, _ok:);
         }
       };
     }

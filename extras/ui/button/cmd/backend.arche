@@ -20,7 +20,7 @@ render :: system eff {
             ach[off + i] = label[i];
           }
           boff = off + len;
-          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: lx, cry: ly, crw: 0, crh: 0, ccolor: BTN_LABEL, ctoff: off, ctlen: len, ctsz: BTN_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 0 })(_:, _ok:);
+          insert(Cmd { z: z + 3, ckind: CK_TEXTRUN, crx: lx, cry: ly, crw: 0, crh: 0, ccolor: BTN_LABEL, ctoff: off, ctlen: len, ctsz: BTN_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 0 })(_:, _ok:);
         }
       };
     }

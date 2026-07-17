@@ -15,7 +15,7 @@ render :: system eff {
             ach[off + i] = source[i];
           }
           boff = off + len;
-          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: screen.x + 8, cry: screen.y + 6, crw: 0, crh: 0, ccolor: EDIT_COL, ctoff: off, ctlen: len, ctsz: EDIT_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 1 })(_:, _ok:);
+          insert(Cmd { z: z + 3, ckind: CK_TEXTRUN, crx: screen.x + 8, cry: screen.y + 6, crw: 0, crh: 0, ccolor: EDIT_COL, ctoff: off, ctlen: len, ctsz: EDIT_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 1 })(_:, _ok:);
         }
       };
       s     := EDIT_TSZ / 8;
@@ -63,7 +63,7 @@ render :: system eff {
         cy1 = screen.y + size.h;
       }
       if (cx1 > cx0 && cy1 > cy0) {
-        insert(Cmd { z: z, ckind: CK_RECT, crx: cx0, cry: cy0, crw: cx1 - cx0, crh: cy1 - cy0, ccolor: EDIT_COL, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
+        insert(Cmd { z: z + 4, ckind: CK_RECT, crx: cx0, cry: cy0, crw: cx1 - cx0, crh: cy1 - cy0, ccolor: EDIT_COL, ctoff: 0, ctlen: 0, ctsz: 0, cclx0: 0, ccly0: 0, cclx1: 0, ccly1: 0, cnl: 0 })(_:, _ok:);
       }
     }
   };

@@ -15,7 +15,7 @@ render :: system eff {
             ach[off + i] = output[i];
           }
           boff = off + len;
-          insert(Cmd { z: z, ckind: CK_TEXTRUN, crx: screen.x + 6, cry: screen.y + 4, crw: 0, crh: 0, ccolor: OUT_COL, ctoff: off, ctlen: len, ctsz: OUT_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 1 })(_:, _ok:);
+          insert(Cmd { z: z + 3, ckind: CK_TEXTRUN, crx: screen.x + 6, cry: screen.y + 4, crw: 0, crh: 0, ccolor: OUT_COL, ctoff: off, ctlen: len, ctsz: OUT_TSZ, cclx0: screen.x, ccly0: screen.y, cclx1: screen.x + size.w, ccly1: screen.y + size.h, cnl: 1 })(_:, _ok:);
         }
       };
     }
