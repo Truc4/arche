@@ -5,42 +5,73 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT :: 0.025;
-c :: float;
+GDT   :: 0.025;
+c     :: float;
 Clock :: arche { c }
 
 [4]RBody(2);
 [1]Clock(1);
 seed :: system {
-  RBody.pos.x  = { 0.0,   0.0     };  RBody.pos.y  = { 160.0, -1000.0 };
-  RBody.lvel.x = { 0.0,   0.0     };  RBody.lvel.y = { 0.0,   0.0     };
-  RBody.spin.x = { 0.0,   0.0     };  RBody.spin.y = { 0.0,   0.0     };
-  RBody.rot.x  = { 0.866, 1.0     };  RBody.rot.y  = { 0.5,   0.0     };   // box tilted 30°
-  RBody.ext.x  = { 40.0,  4000.0  };  RBody.ext.y  = { 40.0,  1000.0  };
-  RBody.mi.x   = { 1.0,   0.0     };  RBody.mi.y   = { 0.0009375, 0.0 };
-  RBody.mat.x  = { 0.0,   0.0     };  RBody.mat.y  = { 0.5,   0.5     };
-  RBody.dimp.x = { 0.0,0.0 };  RBody.dimp.y = { 0.0,0.0 };
-  RBody.dang.x = { 0.0,0.0 };  RBody.dang.y = { 0.0,0.0 };
-  RBody.cor.x  = { 0.0,0.0 };  RBody.cor.y  = { 0.0,0.0 };
-  Clock.c = { 0.0 };
+  RBody.pos.x  = { 0.0, 0.0 };
+  RBody.pos.y  = { 160.0, -1000.0 };
+  RBody.lvel.x = { 0.0, 0.0 };
+  RBody.lvel.y = { 0.0, 0.0 };
+  RBody.spin.x = { 0.0, 0.0 };
+  RBody.spin.y = { 0.0, 0.0 };
+  RBody.rot.x  = { 0.866, 1.0 };
+  RBody.rot.y  = { 0.5, 0.0 }; // box tilted 30°
+  RBody.ext.x  = { 40.0, 4000.0 };
+  RBody.ext.y  = { 40.0, 1000.0 };
+  RBody.mi.x   = { 1.0, 0.0 };
+  RBody.mi.y   = { 0.0009375, 0.0 };
+  RBody.mat.x  = { 0.0, 0.0 };
+  RBody.mat.y  = { 0.5, 0.5 };
+  RBody.dimp.x = { 0.0, 0.0 };
+  RBody.dimp.y = { 0.0, 0.0 };
+  RBody.dang.x = { 0.0, 0.0 };
+  RBody.dang.y = { 0.0, 0.0 };
+  RBody.cor.x  = { 0.0, 0.0 };
+  RBody.cor.y  = { 0.0, 0.0 };
+  Clock.c      = { 0.0 };
 }
 
-grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
-tick :: map (query { c })(c) { c = c + 1.0; }
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
 
 sub :: func() -> Schedule {
-  return seq({ grav, rigid.contacts,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.integrate,
-               rigid.solve_lin_relax, rigid.solve_ang_relax, rigid.apply });
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
 }
 
 check :: system eff {
   map (query { c }) eff {
     if (c > 149.5) {
-      fmt.assert(RBody.rot.y[0] > -0.05 && RBody.rot.y[0] < 0.3, "off-centre contact should rotate the box toward flat (|rot.y| 0.5 → ~0.14)\n")();
-      fmt.assert(RBody.spin.x[0] > -0.05 && RBody.spin.x[0] < 0.05, "should settle at rest (no residual spin)\n")();
+      fmt.assert(
+        RBody.rot.y[0] > -0.05 && RBody.rot.y[0] < 0.3,
+        "off-centre contact should rotate the box toward flat (|rot.y| 0.5 → ~0.14)\n",
+      )();
+      fmt.assert(
+        RBody.spin.x[0] > -0.05 && RBody.spin.x[0] < 0.05,
+        "should settle at rest (no residual spin)\n",
+      )();
       fmt.assert(RBody.pos.y[0] > 39.0 && RBody.pos.y[0] < 48.0, "box rests on the floor\n")();
       fmt.printf("ok\n");
       fmt.fflush(0)(_:);
@@ -49,7 +80,32 @@ check :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  tick, check })) })
+#run seq(
+  {
+    seed,
+    forever(
+      seq(
+        {
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          tick,
+          check,
+        },
+      ),
+    ),
+  },
+)

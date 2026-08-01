@@ -8,12 +8,12 @@
  *
  * The child runs on its OWN Display connection so the gfx backend's poll loop (a different connection)
  * never steals the child's key events — each connection has its own event queue. */
+#include "../../../gfx/x11/gfx_x11.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <stdlib.h>
 #include <string.h>
-#include "../../../gfx/x11/gfx_x11.h"
 
 #define ED_CAP 4096
 
@@ -94,7 +94,7 @@ static void redraw(void) {
 	XSetForeground(E.dpy, E.gc, (unsigned long)(E.fg & 0xffffff));
 	const int x0 = 6;
 	int y = 6 + E.fasc;
-	int ls = 0; /* line start */
+	int ls = 0;                /* line start */
 	int cur_x = x0, cur_y = 6; /* cursor pixel pos */
 	for (int i = 0; i <= E.len; i++) {
 		if (i == E.len || E.buf[i] == '\n') {
@@ -128,8 +128,7 @@ void textedit_be_open(void *gfxhandle, char *seed, int n, int bg, int fg) {
 	if (!E.dpy)
 		return;
 	int scr = DefaultScreen(E.dpy);
-	E.win = XCreateSimpleWindow(E.dpy, parent, 0, 0, 1, 1, 0, BlackPixel(E.dpy, scr),
-	                            (unsigned long)(bg & 0xffffff));
+	E.win = XCreateSimpleWindow(E.dpy, parent, 0, 0, 1, 1, 0, BlackPixel(E.dpy, scr), (unsigned long)(bg & 0xffffff));
 	XSelectInput(E.dpy, E.win, KeyPressMask | ButtonPressMask | ExposureMask | FocusChangeMask);
 	E.gc = XCreateGC(E.dpy, E.win, 0, NULL);
 	E.font = XLoadQueryFont(E.dpy, "-*-*-medium-r-normal--14-*-*-*-*-*-*-*");

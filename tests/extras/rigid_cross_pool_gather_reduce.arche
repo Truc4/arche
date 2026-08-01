@@ -10,11 +10,11 @@
 #import { fmt }
 
 lv(x, y) :: float;
-ax :: float;
-pa :: int;
-pb :: int;
-Body :: arche { lv, ax }
-Pair :: arche { pa, pb }
+ax       :: float;
+pa       :: int;
+pb       :: int;
+Body     :: arche { lv, ax }
+Pair     :: arche { pa, pb }
 [4]Body(4);
 [4]Pair(3);
 
@@ -26,9 +26,11 @@ contribf :: func(meid: int, ea: int, eb: int, va: float, vb: float) -> float {
 }
 
 seed :: system {
-  Body.lv.x = { 10.0, 20.0, 30.0, 40.0 };  Body.lv.y = { 0.0, 0.0, 0.0, 0.0 };
-  Body.ax = { 0.0, 0.0, 0.0, 0.0 };
-  Pair.pa = { 0, 1, 2 };  Pair.pb = { 1, 2, 3 };
+  Body.lv.x = { 10.0, 20.0, 30.0, 40.0 };
+  Body.lv.y = { 0.0, 0.0, 0.0, 0.0 };
+  Body.ax   = { 0.0, 0.0, 0.0, 0.0 };
+  Pair.pa   = { 0, 1, 2 };
+  Pair.pb   = { 1, 2, 3 };
 }
 
 fold :: system (query { pa, pb } as P) {

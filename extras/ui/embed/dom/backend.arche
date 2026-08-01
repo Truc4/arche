@@ -9,11 +9,21 @@
 /// whose `screen`/`size` the driver reprojects per frame tracks the scrolling world.
 #module
 #foreign
-embed_be_render :: proc(bid: int, src: []char, n: int, kind: int, x: int, y: int, w: int, h: int, z: int)(src: []char);
+embed_be_render :: proc(
+  bid  : int,
+  src  : []char,
+  n    : int,
+  kind : int,
+  x    : int,
+  y    : int,
+  w    : int,
+  h    : int,
+  z    : int,
+)(src: []char);
 // OPENING the real site is not the card's job — a card is not a link. The driver owns a `button` row per card
 // (the same device the playground's RUN uses), reads its `clicked`, and raises `eopen` for one frame. This is
 // the only seam that knows what a URL is.
-embed_be_open   :: proc(link: []char, n: int)(link: []char);
+embed_be_open :: proc(link: []char, n: int)(link: []char);
 // A card is a real DOM element sitting ABOVE the gfx <canvas>, so a click on it never reaches gfx's canvas
 // mouse listeners — the driver's screen-rect hit test can never see it. The host knows, though: the browser
 // focuses the element that was clicked. So focus crosses back as a COLUMN the driver reads, exactly like

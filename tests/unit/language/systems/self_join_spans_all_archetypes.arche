@@ -13,17 +13,28 @@ v(x, y) :: float;
 o(x, y) :: float;
 mb      :: int;
 mc      :: int;
-A :: arche { v, o }
-B :: arche { v, o, mb }
-C :: arche { v, o, mc }
+A       :: arche { v, o }
+B       :: arche { v, o, mb }
+C       :: arche { v, o, mc }
 [4]A(2);
 [4]B(1);
 [4]C(1);
 
 seed :: system {
-  A.v.x = { 1.0, 2.0 };  A.v.y = { 0.0, 0.0 };  A.o.x = { 0.0, 0.0 };  A.o.y = { 0.0, 0.0 };
-  B.v.x = { 10.0 };      B.v.y = { 0.0 };       B.o.x = { 0.0 };       B.o.y = { 0.0 };  B.mb = { 0 };
-  C.v.x = { 100.0 };     C.v.y = { 0.0 };       C.o.x = { 0.0 };       C.o.y = { 0.0 };  C.mc = { 0 };
+  A.v.x = { 1.0, 2.0 };
+  A.v.y = { 0.0, 0.0 };
+  A.o.x = { 0.0, 0.0 };
+  A.o.y = { 0.0, 0.0 };
+  B.v.x = { 10.0 };
+  B.v.y = { 0.0 };
+  B.o.x = { 0.0 };
+  B.o.y = { 0.0 };
+  B.mb  = { 0 };
+  C.v.x = { 100.0 };
+  C.v.y = { 0.0 };
+  C.o.x = { 0.0 };
+  C.o.y = { 0.0 };
+  C.mc  = { 0 };
 }
 
 // The summand is an EXPRESSION (not a bare `All.v`) — the neighbour-reduction / self-join path, exactly
@@ -35,7 +46,10 @@ sumv :: system (query { v } as All) {
 }
 
 verify :: system eff {
-  fmt.assert(A.o.x[0] > 112.9 && A.o.x[0] < 113.1, "self-join reduce dropped archetypes (summed only the last)\n")();
+  fmt.assert(
+    A.o.x[0] > 112.9 && A.o.x[0] < 113.1,
+    "self-join reduce dropped archetypes (summed only the last)\n",
+  )();
   fmt.printf("ok\n");
 }
 

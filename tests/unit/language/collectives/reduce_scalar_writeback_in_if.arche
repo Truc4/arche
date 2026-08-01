@@ -6,7 +6,7 @@
 #import { fmt }
 val :: float;
 acc :: float;
-B :: arche { val, acc }
+B   :: arche { val, acc }
 [3]B(3);
 
 seed :: system {

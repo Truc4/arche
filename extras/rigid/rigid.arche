@@ -66,7 +66,17 @@ obb_radius :: func(ax: pos, ay: pos, ext: pos, n: pos) -> float {
 }
 
 /// Signed overlap of boxes A and B along unit axis `n`: `(radiusA + radiusB) − |(cB−cA)·n|`. >0 overlap.
-axis_overlap :: func(n: pos, pa: pos, axa: pos, aya: pos, ea: pos, pb: pos, axb: pos, ayb: pos, eb: pos) -> float {
+axis_overlap :: func(
+  n   : pos,
+  pa  : pos,
+  axa : pos,
+  aya : pos,
+  ea  : pos,
+  pb  : pos,
+  axb : pos,
+  ayb : pos,
+  eb  : pos,
+) -> float {
   ra := obb_radius(axa, aya, ea, n);
   rb := obb_radius(axb, ayb, eb, n);
   return ra + rb - vec.absf(vec.dot(pb - pa, n));
@@ -75,20 +85,33 @@ axis_overlap :: func(n: pos, pa: pos, axa: pos, aya: pos, ea: pos, pb: pos, axb:
 /// The 2D separating-axis test between two OBBs. Returns `(normal.x, normal.y, penetration)` as a `pos3`:
 /// the normal is the least-overlap axis (MTV direction), signed A→B; `penetration < 0` ⇒ disjoint.
 sat :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos) -> pos3 {
-  axa := ra;  aya := perp(ra);
-  axb := rb;  ayb := perp(rb);
-  o0 := axis_overlap(axa, pa, axa, aya, ea, pb, axb, ayb, eb);
-  o1 := axis_overlap(aya, pa, axa, aya, ea, pb, axb, ayb, eb);
-  o2 := axis_overlap(axb, pa, axa, aya, ea, pb, axb, ayb, eb);
-  o3 := axis_overlap(ayb, pa, axa, aya, ea, pb, axb, ayb, eb);
-  bx := axa.x;  by := axa.y;  bo := o0;
-  c1 := o1 < bo;  bx = select(c1, aya.x, bx);  by = select(c1, aya.y, by);  bo = select(c1, o1, bo);
-  c2 := o2 < bo;  bx = select(c2, axb.x, bx);  by = select(c2, axb.y, by);  bo = select(c2, o2, bo);
-  c3 := o3 < bo;  bx = select(c3, ayb.x, bx);  by = select(c3, ayb.y, by);  bo = select(c3, o3, bo);
+  axa := ra;
+  aya := perp(ra);
+  axb := rb;
+  ayb := perp(rb);
+  o0  := axis_overlap(axa, pa, axa, aya, ea, pb, axb, ayb, eb);
+  o1  := axis_overlap(aya, pa, axa, aya, ea, pb, axb, ayb, eb);
+  o2  := axis_overlap(axb, pa, axa, aya, ea, pb, axb, ayb, eb);
+  o3  := axis_overlap(ayb, pa, axa, aya, ea, pb, axb, ayb, eb);
+  bx  := axa.x;
+  by  := axa.y;
+  bo  := o0;
+  c1  := o1 < bo;
+  bx = select(c1, aya.x, bx);
+  by = select(c1, aya.y, by);
+  bo = select(c1, o1, bo);
+  c2 := o2 < bo;
+  bx = select(c2, axb.x, bx);
+  by = select(c2, axb.y, by);
+  bo = select(c2, o2, bo);
+  c3 := o3 < bo;
+  bx = select(c3, ayb.x, bx);
+  by = select(c3, ayb.y, by);
+  bo = select(c3, o3, bo);
   nrm  := vec.mk(bx, by);
   flip := vec.dot(pb - pa, nrm) < 0.0;
-  sx := select(flip, 0.0 - bx, bx);
-  sy := select(flip, 0.0 - by, by);
+  sx   := select(flip, 0.0 - bx, bx);
+  sy   := select(flip, 0.0 - by, by);
   return (sx, sy, bo);
 }
 
@@ -98,8 +121,8 @@ sat :: func(pa: pos, ra: pos, ea: pos, pb: pos, rb: pos, eb: pos) -> pos3 {
 /// small step + the soft-constraint velocity bias below (penetration is removed in velocity space, so there
 /// is NO separate positional / Baumgarte pass — that was the source of the old "sink then spring" squish).
 SUBSTEPS :: 8;
-DT       :: 0.125;    // 1 / SUBSTEPS — frame fraction advanced per substep
-INV_DT   :: 8.0;      // SUBSTEPS
+DT       :: 0.125; // 1 / SUBSTEPS — frame fraction advanced per substep
+INV_DT   :: 8.0; // SUBSTEPS
 
 /// Soft-constraint contact parameters (Box2D-v3 "TGS-Soft"), precomputed for a target stiffness of ≈3 contact
 /// cycles per frame at critical damping (ζ=1) and step dt = DT: with ω = 2π·3, c = DT·ω·(2ζ+DT·ω),
@@ -109,7 +132,7 @@ INV_DT   :: 8.0;      // SUBSTEPS
 /// λ, so it is 0.)
 BIAS_RATE  :: 4.327;
 MASS_SCALE :: 0.911;
-MAX_BIAS   :: 4.0;    // max de-penetration (bias) velocity px/frame — caps blow-up from deep overlap
+MAX_BIAS   :: 4.0; // max de-penetration (bias) velocity px/frame — caps blow-up from deep overlap
 
 /// SPECULATIVE CONTACT distance (px). A contact stays in the solver while the bodies are merely CLOSE — up to
 /// SPEC_DIST apart — not only while they actually overlap. Without this the contact set CHATTERS: the soft
@@ -120,7 +143,7 @@ MAX_BIAS   :: 4.0;    // max de-penetration (bias) velocity px/frame — caps bl
 /// limit cycle, with a ball's contact count dropping to 0 one frame in five). Keeping the contact alive across
 /// the gap makes the active set — and hence the effective mass — CONSTANT at rest, which is what lets omega
 /// actually reach zero. (Box2D v3 `b2_speculativeDistance = 4 * b2_linearSlop`; also kills tunnelling.)
-SPEC_DIST  :: 1.5;
+SPEC_DIST :: 1.5;
 
 /// Minimum closing speed for restitution to apply (used by the Stage-2 restitution pass); also the
 /// resting-contact gate. Kept as a device constant.
@@ -153,20 +176,39 @@ REST_SLOP :: 1.0;
 /// dynamic-vs-dynamic contact and pumps momentum into the pair forever (a ball resting on a box buzzed
 /// permanently; a box on the STATIC floor was fine only because a static body's `mb.x` is 0, which hides the
 /// asymmetry). Splitting both by their own counts makes `kn` identical from either side.
-contact_impulse :: func(c: pos, n: pos, pen: float, mu: float, hit: float, ms: float, msb: float, bias: float,
-                        pa: pos, lva: pos, wa: float, ma: mi,
-                        pb: pos, lvb: pos, wb: float, mb: mi) -> pos3 {
-  rA := c - pa;  rB := c - pb;
-  vA := lva + crossw(wa, rA);
-  vB := lvb + crossw(wb, rB);
+contact_impulse :: func(
+  c    : pos,
+  n    : pos,
+  pen  : float,
+  mu   : float,
+  hit  : float,
+  ms   : float,
+  msb  : float,
+  bias : float,
+  pa   : pos,
+  lva  : pos,
+  wa   : float,
+  ma   : mi,
+  pb   : pos,
+  lvb  : pos,
+  wb   : float,
+  mb   : mi,
+) -> pos3 {
+  rA   := c - pa;
+  rB   := c - pb;
+  vA   := lva + crossw(wa, rA);
+  vB   := lvb + crossw(wb, rB);
   vrel := vB - vA;
-  vn  := vec.dot(vrel, n);
+  vn   := vec.dot(vrel, n);
   // EFFECTIVE-MASS terms only: the split body is LIGHTER, so invMass/invI are MULTIPLIED by the contact count.
-  mxa := ma.x * ms;   mya := ma.y * ms;          // A's split inverse mass / inertia (ms = A's contact count)
-  mxb := mb.x * msb;  myb := mb.y * msb;         // B's split inverse mass / inertia (msb = B's contact count)
-  rnA := cross(rA, n);  rnB := cross(rB, n);
+  mxa := ma.x * ms;
+  mya := ma.y * ms; // A's split inverse mass / inertia (ms = A's contact count)
+  mxb := mb.x * msb;
+  myb := mb.y * msb; // B's split inverse mass / inertia (msb = B's contact count)
+  rnA := cross(rA, n);
+  rnB := cross(rB, n);
   kn0 := mxa + mxb + mya * rnA * rnA + myb * rnB * rnB;
-  kn  := select(kn0 > 0.0, kn0, 1.0);            // guard the divide (static–static / self pair)
+  kn  := select(kn0 > 0.0, kn0, 1.0); // guard the divide (static–static / self pair)
   // TARGET normal velocity. Two regimes (Box2D v3 `contact_solver.c`, branching on separation s = -pen):
   //
   //   OVERLAPPING (pen > 0): the soft bias — drive the contact toward a small SEPARATING velocity
@@ -180,26 +222,27 @@ contact_impulse :: func(c: pos, n: pos, pen: float, mu: float, hit: float, ms: f
   //     surface, and does nothing otherwise. massScale is 1 here (no softness on a non-penetration bound).
   //     This branch is NOT gated by `bias` — it is a hard non-penetration bound, not a bias, so the relax pass
   //     keeps it (Box2D does the same: the speculative branch sits outside `if (useBias)`).
-  spec := select(pen > 0.0, 0.0, 1.0);
+  spec   := select(pen > 0.0, 0.0, 1.0);
   vtarB0 := BIAS_RATE * pen * bias;
-  vtarB := select(vtarB0 > MAX_BIAS, MAX_BIAS, vtarB0);
-  vtar := select(spec > 0.5, pen * INV_DT, vtarB);
-  msc  := select(spec > 0.5, 1.0, MASS_SCALE);
-  jn0 := msc * (vtar - vn) / kn * hit;
-  jn  := select(jn0 > 0.0, jn0, 0.0);            // non-attractive normal impulse
-  t   := perp(n);
-  vt  := vec.dot(vrel, t);
-  rtA := cross(rA, t);  rtB := cross(rB, t);
-  kt0 := mxa + mxb + mya * rtA * rtA + myb * rtB * rtB;
-  kt  := select(kt0 > 0.0, kt0, 1.0);
-  jt0 := (0.0 - vt) / kt * hit;
-  lim := mu * jn;                                 // Coulomb cone bounded by the (pure) normal impulse
-  jt  := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
+  vtarB  := select(vtarB0 > MAX_BIAS, MAX_BIAS, vtarB0);
+  vtar   := select(spec > 0.5, pen * INV_DT, vtarB);
+  msc    := select(spec > 0.5, 1.0, MASS_SCALE);
+  jn0    := msc * (vtar - vn) / kn * hit;
+  jn     := select(jn0 > 0.0, jn0, 0.0); // non-attractive normal impulse
+  t      := perp(n);
+  vt     := vec.dot(vrel, t);
+  rtA    := cross(rA, t);
+  rtB    := cross(rB, t);
+  kt0    := mxa + mxb + mya * rtA * rtA + myb * rtB * rtB;
+  kt     := select(kt0 > 0.0, kt0, 1.0);
+  jt0    := (0.0 - vt) / kt * hit;
+  lim    := mu * jn; // Coulomb cone bounded by the (pure) normal impulse
+  jt     := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
   // APPLY with the FULL inverse mass / inertia — NOT the split ones (Tonge: "use the full mass to apply the
   // impulses"). Using the split terms here would cancel the split out entirely (see the note above).
-  p   := n * jn + t * jt;
-  dl  := p * (0.0 - ma.x);
-  dw  := (0.0 - ma.y) * cross(rA, p);
+  p  := n * jn + t * jt;
+  dl := p * (0.0 - ma.x);
+  dw := (0.0 - ma.y) * cross(rA, p);
   return (dl.x, dl.y, dw);
 }
 
@@ -208,43 +251,70 @@ contact_impulse :: func(c: pos, n: pos, pen: float, mu: float, hit: float, ms: f
 /// box to the circle centre (clamp the centre into box-local extents). This is what makes balls collide ROUND
 /// instead of as their bounding square. Written with SCALAR intermediates only — a bare vec `:=` local
 /// (`d := pb - pa`) mis-allocates as i32 in the wasm backend here; plain floats type correctly.
-circ_contact :: func(pa: pos, ra: pos, ea: pos, aCirc: float, pb: pos, rb: pos, eb: pos, bCirc: float) -> pos3 {
+circ_contact :: func(
+  pa    : pos,
+  ra    : pos,
+  ea    : pos,
+  aCirc : float,
+  pb    : pos,
+  rb    : pos,
+  eb    : pos,
+  bCirc : float,
+) -> pos3 {
   aIsC  := select(aCirc > 0.5, 1, 0);
   bIsC  := select(bCirc > 0.5, 1, 0);
   bothC := select(aIsC == 1, bIsC, 0);
   // circle-circle: centre to centre
-  ccx := pb.x - pa.x;  ccy := pb.y - pa.y;
+  ccx    := pb.x - pa.x;
+  ccy    := pb.y - pa.y;
   distcc := sqrt(ccx * ccx + ccy * ccy);
-  invcc := 1.0 / select(distcc > 0.0001, distcc, 1.0);
-  nccx := ccx * invcc;  nccy := ccy * invcc;
-  pencc := ea.x + eb.x - distcc;
+  invcc  := 1.0 / select(distcc > 0.0001, distcc, 1.0);
+  nccx   := ccx * invcc;
+  nccy   := ccy * invcc;
+  pencc  := ea.x + eb.x - distcc;
   // circle A vs box B: closest point on box B (centre pb, x-axis rb, y-axis perp(rb)) to circle-centre pa
-  bax := rb.x;         bay := rb.y;
-  bpx := 0.0 - rb.y;   bpy := rb.x;
-  dbx := pa.x - pb.x;  dby := pa.y - pb.y;
-  qxb := dbx * bax + dby * bay;  qxb = select(qxb > eb.x, eb.x, select(qxb < 0.0 - eb.x, 0.0 - eb.x, qxb));
-  qyb := dbx * bpx + dby * bpy;  qyb = select(qyb > eb.y, eb.y, select(qyb < 0.0 - eb.y, 0.0 - eb.y, qyb));
-  qBx := pb.x + bax * qxb + bpx * qyb;  qBy := pb.y + bay * qxb + bpy * qyb;
-  abx := qBx - pa.x;  aby := qBy - pa.y;
+  bax := rb.x;
+  bay := rb.y;
+  bpx := 0.0 - rb.y;
+  bpy := rb.x;
+  dbx := pa.x - pb.x;
+  dby := pa.y - pb.y;
+  qxb := dbx * bax + dby * bay;
+  qxb = select(qxb > eb.x, eb.x, select(qxb < 0.0 - eb.x, 0.0 - eb.x, qxb));
+  qyb := dbx * bpx + dby * bpy;
+  qyb = select(qyb > eb.y, eb.y, select(qyb < 0.0 - eb.y, 0.0 - eb.y, qyb));
+  qBx    := pb.x + bax * qxb + bpx * qyb;
+  qBy    := pb.y + bay * qxb + bpy * qyb;
+  abx    := qBx - pa.x;
+  aby    := qBy - pa.y;
   distAB := sqrt(abx * abx + aby * aby);
-  invAB := 1.0 / select(distAB > 0.0001, distAB, 1.0);
-  nABx := abx * invAB;  nABy := aby * invAB;
-  penAB := ea.x - distAB;
+  invAB  := 1.0 / select(distAB > 0.0001, distAB, 1.0);
+  nABx   := abx * invAB;
+  nABy   := aby * invAB;
+  penAB  := ea.x - distAB;
   // box A vs circle B: closest point on box A to circle-centre pb
-  aax := ra.x;         aay := ra.y;
-  apx := 0.0 - ra.y;   apy := ra.x;
-  dax := pb.x - pa.x;  day := pb.y - pa.y;
-  qxa := dax * aax + day * aay;  qxa = select(qxa > ea.x, ea.x, select(qxa < 0.0 - ea.x, 0.0 - ea.x, qxa));
-  qya := dax * apx + day * apy;  qya = select(qya > ea.y, ea.y, select(qya < 0.0 - ea.y, 0.0 - ea.y, qya));
-  qAx := pa.x + aax * qxa + apx * qya;  qAy := pa.y + aay * qxa + apy * qya;
-  bxx := pb.x - qAx;  byy := pb.y - qAy;
+  aax := ra.x;
+  aay := ra.y;
+  apx := 0.0 - ra.y;
+  apy := ra.x;
+  dax := pb.x - pa.x;
+  day := pb.y - pa.y;
+  qxa := dax * aax + day * aay;
+  qxa = select(qxa > ea.x, ea.x, select(qxa < 0.0 - ea.x, 0.0 - ea.x, qxa));
+  qya := dax * apx + day * apy;
+  qya = select(qya > ea.y, ea.y, select(qya < 0.0 - ea.y, 0.0 - ea.y, qya));
+  qAx    := pa.x + aax * qxa + apx * qya;
+  qAy    := pa.y + aay * qxa + apy * qya;
+  bxx    := pb.x - qAx;
+  byy    := pb.y - qAy;
   distBA := sqrt(bxx * bxx + byy * byy);
-  invBA := 1.0 / select(distBA > 0.0001, distBA, 1.0);
-  nBAx := bxx * invBA;  nBAy := byy * invBA;
-  penBA := eb.x - distBA;
-  nx  := select(bothC == 1, nccx, select(aIsC == 1, nABx, nBAx));
-  ny  := select(bothC == 1, nccy, select(aIsC == 1, nABy, nBAy));
-  pen := select(bothC == 1, pencc, select(aIsC == 1, penAB, penBA));
+  invBA  := 1.0 / select(distBA > 0.0001, distBA, 1.0);
+  nBAx   := bxx * invBA;
+  nBAy   := byy * invBA;
+  penBA  := eb.x - distBA;
+  nx     := select(bothC == 1, nccx, select(aIsC == 1, nABx, nBAx));
+  ny     := select(bothC == 1, nccy, select(aIsC == 1, nABy, nBAy));
+  pen    := select(bothC == 1, pencc, select(aIsC == 1, penAB, penBA));
   return (nx, ny, pen);
 }
 
@@ -255,101 +325,195 @@ circ_contact :: func(pa: pos, ra: pos, ea: pos, aCirc: float, pb: pos, rb: pos, 
 /// contact only if it actually penetrates the reference face (below it, within its tangential span). So a
 /// box flat on the floor has BOTH corners in contact (rests flat), while a box tipped on one corner has
 /// only that corner (it topples). Returns A's (Δlvel.x, Δlvel.y, Δω); the load is split 1/activeContacts.
-pair_response :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat, ms: float, bias: float,
-                      pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat, cb: cor) -> pos3 {
-  mu := select(ta.y < tb.y, ta.y, tb.y);   // friction = min of the pair (restitution → Stage-2 pass)
-  msb := select(cb.x > 1.0, cb.x, 1.0);        // B's own contact COUNT — see contact_impulse
+pair_response :: func(
+  pa   : pos,
+  ra   : pos,
+  ea   : pos,
+  lva  : pos,
+  sa   : spin,
+  ma   : mi,
+  ta   : mat,
+  ms   : float,
+  bias : float,
+  pb   : pos,
+  rb   : pos,
+  eb   : pos,
+  lvb  : pos,
+  sb   : spin,
+  mb   : mi,
+  tb   : mat,
+  cb   : cor,
+) -> pos3 {
+  mu  := select(ta.y < tb.y, ta.y, tb.y); // friction = min of the pair (restitution → Stage-2 pass)
+  msb := select(cb.x > 1.0, cb.x, 1.0); // B's own contact COUNT — see contact_impulse
   st  := sat(pa, ra, ea, pb, rb, eb);
   n   := vec.mk(st.x, st.y);
   sep := pb - pa;
-  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);   // 0 for a self/coincident pair
-  hit := select(st.z > 0.0 - SPEC_DIST, far, 0.0);   // SPECULATIVE: admit while merely CLOSE, not only overlapping
-  axa := ra;  aya := perp(ra);
-  axb := rb;  ayb := perp(rb);
+  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0); // 0 for a self/coincident pair
+  hit := select(st.z > 0.0 - SPEC_DIST, far, 0.0); // SPECULATIVE: admit while merely CLOSE, not only overlapping
+  axa := ra;
+  aya := perp(ra);
+  axb := rb;
+  ayb := perp(rb);
   // REFERENCE = the box whose face the SAT normal belongs to (n is one box's axis); INCIDENT = the other.
   // Pick the box whose best-aligned face axis is MOST parallel to the normal. Comparing BOTH boxes (not just
   // "box A if |dot|>0.99") is critical: when a box tilts to within ~8° of flat, its face also aligns >0.99,
   // and the old test flipped the reference to the box → a spurious 2-point manifold that LOCKED it on a
   // corner at that tilt instead of letting the single corner-contact topple it flat.
-  aaX := vec.absf(vec.dot(n, axa));  aaY := vec.absf(vec.dot(n, aya));
-  abX := vec.absf(vec.dot(n, axb));  abY := vec.absf(vec.dot(n, ayb));
-  aa := select(aaX > aaY, aaX, aaY);
-  ab := select(abX > abY, abX, abY);
+  aaX := vec.absf(vec.dot(n, axa));
+  aaY := vec.absf(vec.dot(n, aya));
+  abX := vec.absf(vec.dot(n, axb));
+  abY := vec.absf(vec.dot(n, ayb));
+  aa  := select(aaX > aaY, aaX, aaY);
+  ab  := select(abX > abY, abX, abY);
   // Pick the clearly-more-aligned body's face as reference; but when the two are within a small margin (a
   // near-flat box on the floor makes aa≈ab≈1), that comparison FLIP-FLOPS on numerical noise frame-to-frame,
   // swapping the 2-point manifold and rocking the box. Break the tie STABLY by the LARGER body (the floor/wall
   // dominates a box; equal boxes deterministically pick A) so the reference — and the contact — stays put.
-  big := select(ea.x + ea.y >= eb.x + eb.y, 1, 0);
+  big  := select(ea.x + ea.y >= eb.x + eb.y, 1, 0);
   aref := select(aa > ab + 0.02, 1, select(ab > aa + 0.02, 0, big));
-  rn  := vsel(aref, n, vec.mk(0.0 - n.x, 0.0 - n.y));   // reference → incident direction
-  ip  := vsel(aref, pb, pa);                             // incident box
-  iax := vsel(aref, axb, axa);
-  iay := vsel(aref, ayb, aya);
-  iex := select(aref == 1, eb.x, ea.x);
-  iey := select(aref == 1, eb.y, ea.y);
-  rp  := vsel(aref, pa, pb);                             // reference box
-  rax := vsel(aref, axa, axb);
-  ray := vsel(aref, aya, ayb);
-  rex := select(aref == 1, ea.x, eb.x);
-  rey := select(aref == 1, ea.y, eb.y);
+  rn   := vsel(aref, n, vec.mk(0.0 - n.x, 0.0 - n.y)); // reference → incident direction
+  ip   := vsel(aref, pb, pa); // incident box
+  iax  := vsel(aref, axb, axa);
+  iay  := vsel(aref, ayb, aya);
+  iex  := select(aref == 1, eb.x, ea.x);
+  iey  := select(aref == 1, eb.y, ea.y);
+  rp   := vsel(aref, pa, pb); // reference box
+  rax  := vsel(aref, axa, axb);
+  ray  := vsel(aref, aya, ayb);
+  rex  := select(aref == 1, ea.x, eb.x);
+  rey  := select(aref == 1, ea.y, eb.y);
   rext := vec.mk(rex, rey);
   // incident FACE = perpendicular to whichever incident axis lies most along rn; its two vertices:
-  dax := vec.dot(iax, rn);  day := vec.dot(iay, rn);
-  useX := select(vec.absf(dax) >= vec.absf(day), 1, 0);
+  dax      := vec.dot(iax, rn);
+  day      := vec.dot(iay, rn);
+  useX     := select(vec.absf(dax) >= vec.absf(day), 1, 0);
   faceAxis := vsel(useX, iax, iay);
   faceExt  := select(useX == 1, iex, iey);
   perpAxis := vsel(useX, iay, iax);
   perpExt  := select(useX == 1, iey, iex);
-  dsel := select(useX == 1, dax, day);
-  sn := select(dsel > 0.0, 0.0 - 1.0, 1.0);              // face on the side opposing rn
-  fc := ip + faceAxis * (sn * faceExt);
-  v1 := fc + perpAxis * perpExt;
-  v2 := fc - perpAxis * perpExt;
+  dsel     := select(useX == 1, dax, day);
+  sn       := select(dsel > 0.0, 0.0 - 1.0, 1.0); // face on the side opposing rn
+  fc       := ip + faceAxis * (sn * faceExt);
+  v1       := fc + perpAxis * perpExt;
+  v2       := fc - perpAxis * perpExt;
   // reference surface + tangential span (a vertex is a contact only if past the surface AND over the face)
   sref := vec.dot(rp, rn) + obb_radius(rax, ray, rext, rn);
-  tr := perp(rn);
-  rc := vec.dot(rp, tr);  rr := obb_radius(rax, ray, rext, tr);
-  lo := rc - rr;  hi := rc + rr;
-  pen1 := sref - vec.dot(v1, rn);   t1 := vec.dot(v1, tr);
-  pen2 := sref - vec.dot(v2, rn);   t2 := vec.dot(v2, tr);
+  tr   := perp(rn);
+  rc   := vec.dot(rp, tr);
+  rr   := obb_radius(rax, ray, rext, tr);
+  lo   := rc - rr;
+  hi   := rc + rr;
+  pen1 := sref - vec.dot(v1, rn);
+  t1   := vec.dot(v1, tr);
+  pen2 := sref - vec.dot(v2, rn);
+  t2   := vec.dot(v2, tr);
   // CLIP each incident vertex into the reference face's tangential span [lo,hi] (Sutherland-Hodgman): slide
   // it along the face tangent to the span edge. Rejecting out-of-span vertices instead (the old test) loses
   // BOTH contacts whenever the incident box is larger than the reference — e.g. any box on a wide floor, its
   // corners sit far past the box, so nothing registers and the contact resolves by position only (velocity
   // jitter). Clamping turns the floor's far corners into the two points directly under the box's edges.
-  t1c := select(t1 < lo, lo, select(t1 > hi, hi, t1));
-  t2c := select(t2 < lo, lo, select(t2 > hi, hi, t2));
-  c1 := v1 + tr * (t1c - t1);
-  c2 := v2 + tr * (t2c - t2);
-  hit1 := hit * select(pen1 > 0.0 - SPEC_DIST, 1.0, 0.0);   // speculative gate (see SPEC_DIST)
+  t1c  := select(t1 < lo, lo, select(t1 > hi, hi, t1));
+  t2c  := select(t2 < lo, lo, select(t2 > hi, hi, t2));
+  c1   := v1 + tr * (t1c - t1);
+  c2   := v2 + tr * (t2c - t2);
+  hit1 := hit * select(pen1 > 0.0 - SPEC_DIST, 1.0, 0.0); // speculative gate (see SPEC_DIST)
   hit2 := hit * select(pen2 > 0.0 - SPEC_DIST, 1.0, 0.0);
   // If EITHER body is a circle (spin.y>0.5), replace the box manifold with the single round contact from
   // `circ_contact` (point 2 disabled) — this is what makes balls collide as circles, not as their square hull.
-  anyC := select(sa.y > 0.5, 1, select(sb.y > 0.5, 1, 0));
-  cc3  := circ_contact(pa, ra, ea, sa.y, pb, rb, eb, sb.y);
-  ncirc := vec.mk(cc3.x, cc3.y);
-  ccp  := vsel(select(sa.y > 0.5, 1, 0), pa + ncirc * ea.x, pb - ncirc * eb.x);   // point on the circle surface
+  anyC    := select(sa.y > 0.5, 1, select(sb.y > 0.5, 1, 0));
+  cc3     := circ_contact(pa, ra, ea, sa.y, pb, rb, eb, sb.y);
+  ncirc   := vec.mk(cc3.x, cc3.y);
+  ccp     := vsel(select(sa.y > 0.5, 1, 0), pa + ncirc * ea.x, pb - ncirc * eb.x); // point on the circle surface
   circHit := far * select(cc3.z > 0.0 - SPEC_DIST, 1.0, 0.0);
-  c1f := vsel(anyC, ccp, c1);
-  n1f := vsel(anyC, ncirc, n);
-  pen1f := select(anyC == 1, cc3.z, pen1);
-  hit1f := select(anyC == 1, circHit, hit1);
-  hit2f := select(anyC == 1, 0.0, hit2);
-  r1  := contact_impulse(c1f, n1f, pen1f, mu, hit1f, ms, msb, bias, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
-  r2  := contact_impulse(c2, n, pen2, mu, hit2f, ms, msb, bias, pa, lva, sa.x, ma, pb, lvb, sb.x, mb);
+  c1f     := vsel(anyC, ccp, c1);
+  n1f     := vsel(anyC, ncirc, n);
+  pen1f   := select(anyC == 1, cc3.z, pen1);
+  hit1f   := select(anyC == 1, circHit, hit1);
+  hit2f   := select(anyC == 1, 0.0, hit2);
+  r1      := contact_impulse(
+    c1f,
+    n1f,
+    pen1f,
+    mu,
+    hit1f,
+    ms,
+    msb,
+    bias,
+    pa,
+    lva,
+    sa.x,
+    ma,
+    pb,
+    lvb,
+    sb.x,
+    mb,
+  );
+  r2 := contact_impulse(
+    c2,
+    n,
+    pen2,
+    mu,
+    hit2f,
+    ms,
+    msb,
+    bias,
+    pa,
+    lva,
+    sa.x,
+    ma,
+    pb,
+    lvb,
+    sb.x,
+    mb,
+  );
   return (r1.x + r2.x, r1.y + r2.y, r1.z + r2.z);
 }
 
 /// Linear velocity change body A receives from B — the (Δlvel) half of the 2-point response. Folded over B.
-imp_lin :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat, ms: float, bias: float,
-                pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat, cb: cor) -> pos {
+imp_lin :: func(
+  pa   : pos,
+  ra   : pos,
+  ea   : pos,
+  lva  : pos,
+  sa   : spin,
+  ma   : mi,
+  ta   : mat,
+  ms   : float,
+  bias : float,
+  pb   : pos,
+  rb   : pos,
+  eb   : pos,
+  lvb  : pos,
+  sb   : spin,
+  mb   : mi,
+  tb   : mat,
+  cb   : cor,
+) -> pos {
   r := pair_response(pa, ra, ea, lva, sa, ma, ta, ms, bias, pb, rb, eb, lvb, sb, mb, tb, cb);
   return vec.mk(r.x, r.y);
 }
 
 /// Angular velocity change body A receives from B — the (Δω) half, packed as a `spin` for the 2-vec reduce.
-imp_ang :: func(pa: pos, ra: pos, ea: pos, lva: pos, sa: spin, ma: mi, ta: mat, ms: float, bias: float,
-                pb: pos, rb: pos, eb: pos, lvb: pos, sb: spin, mb: mi, tb: mat, cb: cor) -> spin {
+imp_ang :: func(
+  pa   : pos,
+  ra   : pos,
+  ea   : pos,
+  lva  : pos,
+  sa   : spin,
+  ma   : mi,
+  ta   : mat,
+  ms   : float,
+  bias : float,
+  pb   : pos,
+  rb   : pos,
+  eb   : pos,
+  lvb  : pos,
+  sb   : spin,
+  mb   : mi,
+  tb   : mat,
+  cb   : cor,
+) -> spin {
   r := pair_response(pa, ra, ea, lva, sa, ma, ta, ms, bias, pb, rb, eb, lvb, sb, mb, tb, cb);
   return (r.z, 0.0);
 }
@@ -363,52 +527,58 @@ pair_count :: func(pa: pos, ra: pos, ea: pos, sa: spin, pb: pos, rb: pos, eb: po
   n   := vec.mk(st.x, st.y);
   sep := pb - pa;
   far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
-  hit := select(st.z > 0.0 - SPEC_DIST, far, 0.0);   // MUST use the same speculative gate as `pair_response`,
+  hit := select(st.z > 0.0 - SPEC_DIST, far, 0.0); // MUST use the same speculative gate as `pair_response`,
   // or the count and the solve disagree about which contacts exist and the mass-split divisor is wrong.
   // a circle-involved pair is a SINGLE contact point.
-  anyC := select(sa.y > 0.5, 1, select(sb.y > 0.5, 1, 0));
-  cc3  := circ_contact(pa, ra, ea, sa.y, pb, rb, eb, sb.y);
-  circHit := far * select(cc3.z > 0.0 - SPEC_DIST, 1.0, 0.0);
-  axa := ra;  aya := perp(ra);
-  axb := rb;  ayb := perp(rb);
-  aaX := vec.absf(vec.dot(n, axa));  aaY := vec.absf(vec.dot(n, aya));
-  abX := vec.absf(vec.dot(n, axb));  abY := vec.absf(vec.dot(n, ayb));
-  aaM := select(aaX > aaY, aaX, aaY);  abM := select(abX > abY, abX, abY);
-  big := select(ea.x + ea.y >= eb.x + eb.y, 1, 0);   // stable tie-break (see pair_response) so the count matches
-  aref := select(aaM > abM + 0.02, 1, select(abM > aaM + 0.02, 0, big));
-  rn  := vsel(aref, n, vec.mk(0.0 - n.x, 0.0 - n.y));
-  ip  := vsel(aref, pb, pa);
-  iax := vsel(aref, axb, axa);
-  iay := vsel(aref, ayb, aya);
-  iex := select(aref == 1, eb.x, ea.x);
-  iey := select(aref == 1, eb.y, ea.y);
-  rp  := vsel(aref, pa, pb);
-  rax := vsel(aref, axa, axb);
-  ray := vsel(aref, aya, ayb);
-  rex := select(aref == 1, ea.x, eb.x);
-  rey := select(aref == 1, ea.y, eb.y);
-  rext := vec.mk(rex, rey);
-  dax := vec.dot(iax, rn);  day := vec.dot(iay, rn);
-  useX := select(vec.absf(dax) >= vec.absf(day), 1, 0);
+  anyC     := select(sa.y > 0.5, 1, select(sb.y > 0.5, 1, 0));
+  cc3      := circ_contact(pa, ra, ea, sa.y, pb, rb, eb, sb.y);
+  circHit  := far * select(cc3.z > 0.0 - SPEC_DIST, 1.0, 0.0);
+  axa      := ra;
+  aya      := perp(ra);
+  axb      := rb;
+  ayb      := perp(rb);
+  aaX      := vec.absf(vec.dot(n, axa));
+  aaY      := vec.absf(vec.dot(n, aya));
+  abX      := vec.absf(vec.dot(n, axb));
+  abY      := vec.absf(vec.dot(n, ayb));
+  aaM      := select(aaX > aaY, aaX, aaY);
+  abM      := select(abX > abY, abX, abY);
+  big      := select(ea.x + ea.y >= eb.x + eb.y, 1, 0); // stable tie-break (see pair_response) so the count matches
+  aref     := select(aaM > abM + 0.02, 1, select(abM > aaM + 0.02, 0, big));
+  rn       := vsel(aref, n, vec.mk(0.0 - n.x, 0.0 - n.y));
+  ip       := vsel(aref, pb, pa);
+  iax      := vsel(aref, axb, axa);
+  iay      := vsel(aref, ayb, aya);
+  iex      := select(aref == 1, eb.x, ea.x);
+  iey      := select(aref == 1, eb.y, ea.y);
+  rp       := vsel(aref, pa, pb);
+  rax      := vsel(aref, axa, axb);
+  ray      := vsel(aref, aya, ayb);
+  rex      := select(aref == 1, ea.x, eb.x);
+  rey      := select(aref == 1, ea.y, eb.y);
+  rext     := vec.mk(rex, rey);
+  dax      := vec.dot(iax, rn);
+  day      := vec.dot(iay, rn);
+  useX     := select(vec.absf(dax) >= vec.absf(day), 1, 0);
   faceAxis := vsel(useX, iax, iay);
   faceExt  := select(useX == 1, iex, iey);
   perpAxis := vsel(useX, iay, iax);
   perpExt  := select(useX == 1, iey, iex);
-  dsel := select(useX == 1, dax, day);
-  sn := select(dsel > 0.0, 0.0 - 1.0, 1.0);
-  fc := ip + faceAxis * (sn * faceExt);
-  v1 := fc + perpAxis * perpExt;
-  v2 := fc - perpAxis * perpExt;
-  sref := vec.dot(rp, rn) + obb_radius(rax, ray, rext, rn);
-  pen1 := sref - vec.dot(v1, rn);
-  pen2 := sref - vec.dot(v2, rn);
-  h1 := select(pen1 > 0.0 - SPEC_DIST, 1.0, 0.0);
-  h2 := select(pen2 > 0.0 - SPEC_DIST, 1.0, 0.0);
+  dsel     := select(useX == 1, dax, day);
+  sn       := select(dsel > 0.0, 0.0 - 1.0, 1.0);
+  fc       := ip + faceAxis * (sn * faceExt);
+  v1       := fc + perpAxis * perpExt;
+  v2       := fc - perpAxis * perpExt;
+  sref     := vec.dot(rp, rn) + obb_radius(rax, ray, rext, rn);
+  pen1     := sref - vec.dot(v1, rn);
+  pen2     := sref - vec.dot(v2, rn);
+  h1       := select(pen1 > 0.0 - SPEC_DIST, 1.0, 0.0);
+  h2       := select(pen2 > 0.0 - SPEC_DIST, 1.0, 0.0);
   // count 0/1/2 via nested select (a bare float `hit1 + hit2` of two arithmetic locals here mis-compiles to
   // an integer add — a `+` type-inference bug; nested select sidesteps it and stays branch-free).
-  both := select(h1 > 0.5, select(h2 > 0.5, 2.0, 1.0), select(h2 > 0.5, 1.0, 0.0));
+  both   := select(h1 > 0.5, select(h2 > 0.5, 2.0, 1.0), select(h2 > 0.5, 1.0, 0.0));
   boxcnt := both * hit;
-  cnt := select(anyC == 1, circHit, boxcnt);   // circle pair = 1 point; box pair = 0/1/2
+  cnt    := select(anyC == 1, circHit, boxcnt); // circle pair = 1 point; box pair = 0/1/2
   return (cnt, 0.0);
 }
 
@@ -434,8 +604,12 @@ integrate :: map (query { pos, lvel, spin, rot })(pos, rot) {
 contacts :: system (query { pos, rot, ext, spin } as All) {
   map (query { pos, rot, ext, spin, cor, awake } as me)(cor) {
     if (me.awake == 1) {
-      cor = reduce(+, pair_count(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin));
-    } else {
+      cor = reduce(
+        +,
+        pair_count(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin),
+      );
+    }
+    else {
       cor.x = 0.0;
       cor.y = 0.0;
     }
@@ -469,19 +643,19 @@ SUP_WALL   :: 0.5;
 ///   `.y` sums n.y over the STANDABLE contacts only (n.y > SUP_GROUND) — "is there ground beneath me". A wall
 ///        contributes nothing, so it cannot be jumped from; a ramp does, so it can.
 pair_normal :: func(pa: pos, ra: pos, ea: pos, sa: spin, pb: pos, rb: pos, eb: pos, sb: spin) -> sup {
-  st  := sat(pa, ra, ea, pb, rb, eb);
-  n   := vec.mk(st.x, st.y);
-  sep := pb - pa;
-  far := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
-  hit := select(st.z > 0.0 - SPEC_DIST, far, 0.0);
-  anyC := select(sa.y > 0.5, 1, select(sb.y > 0.5, 1, 0));
-  cc3  := circ_contact(pa, ra, ea, sa.y, pb, rb, eb, sb.y);
+  st      := sat(pa, ra, ea, pb, rb, eb);
+  n       := vec.mk(st.x, st.y);
+  sep     := pb - pa;
+  far     := select(sep.x * sep.x + sep.y * sep.y > 0.0001, 1.0, 0.0);
+  hit     := select(st.z > 0.0 - SPEC_DIST, far, 0.0);
+  anyC    := select(sa.y > 0.5, 1, select(sb.y > 0.5, 1, 0));
+  cc3     := circ_contact(pa, ra, ea, sa.y, pb, rb, eb, sb.y);
   circHit := far * select(cc3.z > 0.0 - SPEC_DIST, 1.0, 0.0);
-  nx := select(anyC == 1, cc3.x, n.x);
-  ny := select(anyC == 1, cc3.y, n.y);
-  h  := select(anyC == 1, circHit, hit);
-  ground := select(ny > SUP_GROUND, 1.0, 0.0);            // a surface I can stand on (floor, stair, ramp)
-  wall := select(vec.absf(ny) < SUP_WALL, 1.0, 0.0);       // a near-vertical face that blocks me
+  nx      := select(anyC == 1, cc3.x, n.x);
+  ny      := select(anyC == 1, cc3.y, n.y);
+  h       := select(anyC == 1, circHit, hit);
+  ground  := select(ny > SUP_GROUND, 1.0, 0.0); // a surface I can stand on (floor, stair, ramp)
+  wall    := select(vec.absf(ny) < SUP_WALL, 1.0, 0.0); // a near-vertical face that blocks me
   // bind before the return tuple: a bare binary op in a return slot mis-types as int (compiler bug)
   ox := nx * h * wall;
   oy := ny * h * ground;
@@ -494,8 +668,12 @@ pair_normal :: func(pa: pos, ra: pos, ea: pos, sa: spin, pb: pos, rb: pos, eb: p
 supports :: system (query { pos, rot, ext, spin } as All) {
   map (query { pos, rot, ext, spin, sup, awake } as me)(sup) {
     if (me.awake == 1) {
-      sup = reduce(+, pair_normal(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin));
-    } else {
+      sup = reduce(
+        +,
+        pair_normal(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin),
+      );
+    }
+    else {
       sup.x = 0.0;
       sup.y = 0.0;
     }
@@ -512,10 +690,31 @@ solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.
       msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms := 1.0 / msi;
-      dimp = reduce(+, imp_lin(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat, ms, 1.0,
-                               All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat, All.cor));
-    } else {
+      ms  := 1.0 / msi;
+      dimp = reduce(
+        +,
+        imp_lin(
+          me.pos,
+          me.rot,
+          me.ext,
+          me.lvel,
+          me.spin,
+          me.mi,
+          me.mat,
+          ms,
+          1.0,
+          All.pos,
+          All.rot,
+          All.ext,
+          All.lvel,
+          All.spin,
+          All.mi,
+          All.mat,
+          All.cor,
+        ),
+      );
+    }
+    else {
       dimp.x = 0.0;
       dimp.y = 0.0;
     }
@@ -536,10 +735,31 @@ solve_lin_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as 
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.
       msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms := 1.0 / msi;
-      dimp = reduce(+, imp_lin(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat, ms, 0.0,
-                               All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat, All.cor));
-    } else {
+      ms  := 1.0 / msi;
+      dimp = reduce(
+        +,
+        imp_lin(
+          me.pos,
+          me.rot,
+          me.ext,
+          me.lvel,
+          me.spin,
+          me.mi,
+          me.mat,
+          ms,
+          0.0,
+          All.pos,
+          All.rot,
+          All.ext,
+          All.lvel,
+          All.spin,
+          All.mi,
+          All.mat,
+          All.cor,
+        ),
+      );
+    }
+    else {
       dimp.x = 0.0;
       dimp.y = 0.0;
     }
@@ -554,10 +774,31 @@ solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.
       msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms := 1.0 / msi;
-      dang = reduce(+, imp_ang(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat, ms, 1.0,
-                               All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat, All.cor));
-    } else {
+      ms  := 1.0 / msi;
+      dang = reduce(
+        +,
+        imp_ang(
+          me.pos,
+          me.rot,
+          me.ext,
+          me.lvel,
+          me.spin,
+          me.mi,
+          me.mat,
+          ms,
+          1.0,
+          All.pos,
+          All.rot,
+          All.ext,
+          All.lvel,
+          All.spin,
+          All.mi,
+          All.mat,
+          All.cor,
+        ),
+      );
+    }
+    else {
       dang.x = 0.0;
       dang.y = 0.0;
     }
@@ -572,10 +813,31 @@ solve_ang_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as 
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.
       msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms := 1.0 / msi;
-      dang = reduce(+, imp_ang(me.pos, me.rot, me.ext, me.lvel, me.spin, me.mi, me.mat, ms, 0.0,
-                               All.pos, All.rot, All.ext, All.lvel, All.spin, All.mi, All.mat, All.cor));
-    } else {
+      ms  := 1.0 / msi;
+      dang = reduce(
+        +,
+        imp_ang(
+          me.pos,
+          me.rot,
+          me.ext,
+          me.lvel,
+          me.spin,
+          me.mi,
+          me.mat,
+          ms,
+          0.0,
+          All.pos,
+          All.rot,
+          All.ext,
+          All.lvel,
+          All.spin,
+          All.mi,
+          All.mat,
+          All.cor,
+        ),
+      );
+    }
+    else {
       dang.x = 0.0;
       dang.y = 0.0;
     }

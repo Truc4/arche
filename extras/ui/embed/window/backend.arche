@@ -9,10 +9,10 @@
 /// A zero-size rect (the driver's "not now") collapses the scan loops to nothing, so a shut card costs nothing
 /// and needs no branch — the same trick panel/window uses.
 
-CARD_BG    :: 0x11151f;
-CARD_EDGE  :: 0x232838;
-CARD_TXT   :: 0x9298cc;
-CARD_TSZ   :: 18;
+CARD_BG   :: 0x11151f;
+CARD_EDGE :: 0x232838;
+CARD_TXT  :: 0x9298cc;
+CARD_TSZ  :: 18;
 
 /// Nothing here can be clicked into — a placeholder rect holds no focus — so `efocus` is always 0. The system
 /// exists so a driver can schedule the same systems against either backend.

@@ -10,7 +10,14 @@
 // schedules both (for the framebuffer backend, which DOES need two passes) still binds.
 #foreign
 panel_be_render :: proc(
-  bid: int, z: int, x: int, y: int, width: int, height: int, title: []char, n: int,
+  bid    : int,
+  z      : int,
+  x      : int,
+  y      : int,
+  width  : int,
+  height : int,
+  title  : []char,
+  n      : int,
 )(
   title: []char,
 );

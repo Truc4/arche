@@ -13,6 +13,8 @@ emit :: system eff {
   insert(Dst { val: constmod.SCALAR })(_:, _ok:);
 }
 show :: system eff {
-  map (query { val }) eff { fmt.printf("v=%d\n", val); };
+  map (query { val }) eff {
+    fmt.printf("v=%d\n", val);
+  };
 }
 #run seq({ emit, show })

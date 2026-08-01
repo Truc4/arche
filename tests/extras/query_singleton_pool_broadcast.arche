@@ -18,19 +18,21 @@
 mrk   :: float;
 total :: float;
 
-One :: arche { mrk, pos }   // the sole `mrk` holder — extent [1] is the trigger
-Two :: arche { pos }        // shares only `pos`; must NOT match `query { mrk, pos }`
+One :: arche { mrk, pos } // the sole `mrk` holder — extent [1] is the trigger
+Two :: arche { pos } // shares only `pos`; must NOT match `query { mrk, pos }`
 Sum :: arche { total }
 
 [1]One(1);
 [4]Two(2);
-[4]Body;                    // physics datasheet storage floor; its presence is part of the trigger
+[4]Body; // physics datasheet storage floor; its presence is part of the trigger
 [4]Sum(1);
 
 seed :: system {
   One.mrk   = { 7.0 };
-  One.pos.x = { 100.0 };  One.pos.y = { 0.0 };
-  Two.pos.x = { 1000.0, 2000.0 };  Two.pos.y = { 0.0, 0.0 };
+  One.pos.x = { 100.0 };
+  One.pos.y = { 0.0 };
+  Two.pos.x = { 1000.0, 2000.0 };
+  Two.pos.y = { 0.0, 0.0 };
   Sum.total = { 0.0 };
 }
 
@@ -43,7 +45,10 @@ accumulate :: system (query { mrk, pos } as Q) {
 
 verify :: system eff {
   map (query { total }) eff {
-    fmt.assert(total == 100.0, "query {mrk,pos} over-matched via broadcast — sum should be 100, got 3100\n")();
+    fmt.assert(
+      total == 100.0,
+      "query {mrk,pos} over-matched via broadcast — sum should be 100, got 3100\n",
+    )();
     fmt.printf("ok\n");
   };
 }

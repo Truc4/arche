@@ -9,44 +9,78 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT :: 0.025;   // GRAV(0.4) * DT(1/16) per substep
-c :: float;
+GDT   :: 0.025; // GRAV(0.4) * DT(1/16) per substep
+c     :: float;
 Clock :: arche { c }
 
 [4]RBody(2);
 [1]Clock(1);
 seed :: system {
-  RBody.pos.x  = { 0.0,   0.0     };  RBody.pos.y  = { 200.0, -1000.0 };
-  RBody.lvel.x = { 0.0,   0.0     };  RBody.lvel.y = { 0.0,   0.0     };
-  RBody.spin.x = { 0.0,   0.0     };  RBody.spin.y = { 0.0,   0.0     };
-  RBody.rot.x  = { 1.0,   1.0     };  RBody.rot.y  = { 0.0,   0.0     };
-  RBody.ext.x  = { 40.0,  4000.0  };  RBody.ext.y  = { 40.0,  1000.0  };
-  RBody.mi.x   = { 1.0,   0.0     };  RBody.mi.y   = { 0.0009375, 0.0 };
-  RBody.mat.x  = { 0.0,   0.0     };  RBody.mat.y  = { 0.3,   0.3     };
-  RBody.dimp.x = { 0.0,0.0 };  RBody.dimp.y = { 0.0,0.0 };
-  RBody.dang.x = { 0.0,0.0 };  RBody.dang.y = { 0.0,0.0 };
-  RBody.cor.x  = { 0.0,0.0 };  RBody.cor.y  = { 0.0,0.0 };
-  Clock.c = { 0.0 };
+  RBody.pos.x  = { 0.0, 0.0 };
+  RBody.pos.y  = { 200.0, -1000.0 };
+  RBody.lvel.x = { 0.0, 0.0 };
+  RBody.lvel.y = { 0.0, 0.0 };
+  RBody.spin.x = { 0.0, 0.0 };
+  RBody.spin.y = { 0.0, 0.0 };
+  RBody.rot.x  = { 1.0, 1.0 };
+  RBody.rot.y  = { 0.0, 0.0 };
+  RBody.ext.x  = { 40.0, 4000.0 };
+  RBody.ext.y  = { 40.0, 1000.0 };
+  RBody.mi.x   = { 1.0, 0.0 };
+  RBody.mi.y   = { 0.0009375, 0.0 };
+  RBody.mat.x  = { 0.0, 0.0 };
+  RBody.mat.y  = { 0.3, 0.3 };
+  RBody.dimp.x = { 0.0, 0.0 };
+  RBody.dimp.y = { 0.0, 0.0 };
+  RBody.dang.x = { 0.0, 0.0 };
+  RBody.dang.y = { 0.0, 0.0 };
+  RBody.cor.x  = { 0.0, 0.0 };
+  RBody.cor.y  = { 0.0, 0.0 };
+  Clock.c      = { 0.0 };
 }
 
-grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
-tick :: map (query { c })(c) { c = c + 1.0; }
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
 
 sub :: func() -> Schedule {
-  return seq({ grav, rigid.contacts,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.integrate,
-               rigid.solve_lin_relax, rigid.solve_ang_relax, rigid.apply });
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
 }
 
 check :: system eff {
   map (query { c }) eff {
     if (c > 119.5) {
-      fmt.assert(RBody.pos.y[0] > 39.5 && RBody.pos.y[0] < 40.2, "box should rest ON the floor (pos.y~40, near-zero penetration)\n")();
+      fmt.assert(
+        RBody.pos.y[0] > 39.5 && RBody.pos.y[0] < 40.2,
+        "box should rest ON the floor (pos.y~40, near-zero penetration)\n",
+      )();
       fmt.assert(RBody.lvel.y[0] > -0.05 && RBody.lvel.y[0] < 0.05, "vy should settle to ~0\n")();
-      fmt.assert(RBody.spin.x[0] > -0.02 && RBody.spin.x[0] < 0.02, "no spin from a centred drop\n")();
-      fmt.assert(RBody.pos.y[1] > -1000.01 && RBody.pos.y[1] < -999.99, "static floor must not move\n")();
+      fmt.assert(
+        RBody.spin.x[0] > -0.02 && RBody.spin.x[0] < 0.02,
+        "no spin from a centred drop\n",
+      )();
+      fmt.assert(
+        RBody.pos.y[1] > -1000.01 && RBody.pos.y[1] < -999.99,
+        "static floor must not move\n",
+      )();
       fmt.printf("ok\n");
       fmt.fflush(0)(_:);
       os.exit(0)(_:);
@@ -54,7 +88,32 @@ check :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  tick, check })) })
+#run seq(
+  {
+    seed,
+    forever(
+      seq(
+        {
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          tick,
+          check,
+        },
+      ),
+    ),
+  },
+)

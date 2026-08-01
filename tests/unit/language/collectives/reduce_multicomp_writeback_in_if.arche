@@ -12,7 +12,7 @@
 #import { fmt }
 val(x, y) :: float;
 acc(x, y) :: float;
-B :: arche { val, acc }
+B         :: arche { val, acc }
 [3]B(3);
 
 seed :: system {
@@ -29,8 +29,15 @@ foldit :: map (query { val, acc })(acc) {
 }
 
 show :: system eff {
-  fmt.printf("ax=%.0f %.0f %.0f  ay=%.0f %.0f %.0f\n",
-    B.acc.x[0], B.acc.x[1], B.acc.x[2], B.acc.y[0], B.acc.y[1], B.acc.y[2]);
+  fmt.printf(
+    "ax=%.0f %.0f %.0f  ay=%.0f %.0f %.0f\n",
+    B.acc.x[0],
+    B.acc.x[1],
+    B.acc.x[2],
+    B.acc.y[0],
+    B.acc.y[1],
+    B.acc.y[2],
+  );
 }
 
 #run seq({ seed, foldit, show })

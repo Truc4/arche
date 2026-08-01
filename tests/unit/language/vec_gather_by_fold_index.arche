@@ -10,21 +10,25 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { fmt }
 
-lv(x, y) :: float;
+lv(x, y)   :: float;
 sink(x, y) :: float;
-i :: int;
-Body :: arche { lv, sink }
-Ref  :: arche { i }
+i          :: int;
+Body       :: arche { lv, sink }
+Ref        :: arche { i }
 [4]Body(2);
 [4]Ref(2);
 
 // gather the WHOLE 2-vec of the body indexed by a folded Ref row.
-grab :: func(v: lv) -> sink { return v; }
+grab :: func(v: lv) -> sink {
+  return v;
+}
 
 seed :: system {
-  Body.lv.x = { 3.0, 5.0 };  Body.lv.y = { 4.0, 12.0 };
-  Body.sink.x = { 0.0, 0.0 };  Body.sink.y = { 0.0, 0.0 };
-  Ref.i = { 1, 0 };
+  Body.lv.x   = { 3.0, 5.0 };
+  Body.lv.y   = { 4.0, 12.0 };
+  Body.sink.x = { 0.0, 0.0 };
+  Body.sink.y = { 0.0, 0.0 };
+  Ref.i       = { 1, 0 };
 }
 
 // map Body, fold Ref, gather the WHOLE 2-vec Body.lv[Ref.i] (the mis-compiling form).
@@ -36,7 +40,10 @@ pull :: system (query { i } as R) {
 
 verify :: system eff {
   // body0 should pull row1's lv=(5,12); body1 should pull row0's lv=(3,4).
-  fmt.assert(Body.sink.x[0] > 4.9 && Body.sink.x[0] < 5.1, "whole-2-vec fold-index gather broken\n")();
+  fmt.assert(
+    Body.sink.x[0] > 4.9 && Body.sink.x[0] < 5.1,
+    "whole-2-vec fold-index gather broken\n",
+  )();
   fmt.printf("ok\n");
 }
 

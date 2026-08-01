@@ -4160,8 +4160,7 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", g, gep);
 		buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", dead, g);
 		char *take = gen_value_name(ctx), *nx = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", dead, pass == 0 ? nx : take,
-		                  pass == 0 ? take : nx);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", dead, pass == 0 ? nx : take, pass == 0 ? take : nx);
 		buffer_append_fmt(ctx, "%s:\n", take + 1);
 		char *l = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", l, livec);

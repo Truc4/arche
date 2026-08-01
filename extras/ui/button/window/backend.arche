@@ -11,10 +11,10 @@ BTN_TSZ   :: 16;
 render :: system (query { framebuffer })(framebuffer) eff {
   map (query { screen, size, label, len, view, z }) eff {
     live := select(z >= ui.SPLIT_Z, 1, 0);
-    fx0 := screen.x;
-    fy0 := screen.y;
-    fx1 := screen.x + size.w * live;
-    fy1 := screen.y + size.h * live;
+    fx0  := screen.x;
+    fy0  := screen.y;
+    fx1  := screen.x + size.w * live;
+    fy1  := screen.y + size.h * live;
     if (fx0 < 0) {
       fx0 = 0;
     }
@@ -37,7 +37,7 @@ render :: system (query { framebuffer })(framebuffer) eff {
     lw  := len * adv;
     lx  := screen.x + (size.w - lw) / 2;
     ly  := screen.y + (size.h - BTN_TSZ) / 2;
-    nl := len * live;
+    nl  := len * live;
     for (i := 0; i < nl; i += 1) {
       c := label[i];
       if (c >= 32 && c <= 126) {
@@ -70,10 +70,10 @@ render :: system (query { framebuffer })(framebuffer) eff {
 render_bg :: system (query { framebuffer })(framebuffer) eff {
   map (query { screen, size, label, len, view, z }) eff {
     live := select(z < ui.SPLIT_Z, 1, 0);
-    fx0 := screen.x;
-    fy0 := screen.y;
-    fx1 := screen.x + size.w * live;
-    fy1 := screen.y + size.h * live;
+    fx0  := screen.x;
+    fy0  := screen.y;
+    fx1  := screen.x + size.w * live;
+    fy1  := screen.y + size.h * live;
     if (fx0 < 0) {
       fx0 = 0;
     }
@@ -96,7 +96,7 @@ render_bg :: system (query { framebuffer })(framebuffer) eff {
     lw  := len * adv;
     lx  := screen.x + (size.w - lw) / 2;
     ly  := screen.y + (size.h - BTN_TSZ) / 2;
-    nl := len * live;
+    nl  := len * live;
     for (i := 0; i < nl; i += 1) {
       c := label[i];
       if (c >= 32 && c <= 126) {
@@ -132,7 +132,7 @@ poll :: system eff {
   map (query { screen, size, clicked, held, wasdown, mouse, mouse_down })(clicked, held, wasdown) eff {
     inside := mouse.x >= screen.x && mouse.x < screen.x + size.w && mouse.y >= screen.y && mouse.y < screen.y + size.h;
     clicked = 0;
-    held = 0;
+    held    = 0;
     if (mouse_down == 1 && inside) {
       held = 1;
       if (wasdown == 0) {

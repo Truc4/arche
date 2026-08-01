@@ -9,7 +9,9 @@
 w :: float;
 T :: arche { w }
 [4]T(1);
-seed :: system { T.w = { 0.2 }; }
+seed :: system {
+  T.w = { 0.2 };
+}
 verify :: system eff {
   fmt.assert(T.w[0] > 0.199 && T.w[0] < 0.201, "non-representable float seed corrupted\n")();
   fmt.printf("ok\n");

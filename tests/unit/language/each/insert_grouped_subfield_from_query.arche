@@ -7,10 +7,10 @@
 // RUN: %arche build -o %t %s && %t | grep -qF "gx=10 gy=20"
 #import { fmt }
 pt(x, y) :: int;
-val :: int;
-gx :: int;
-gy :: int;
-Src :: arche { val, pt }
+val      :: int;
+gx       :: int;
+gy       :: int;
+Src      :: arche { val, pt }
 [4]Src ?abort;
 Dst :: arche { val, gx, gy }
 [4]Dst ?abort;

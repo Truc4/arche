@@ -13,75 +13,117 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT   :: 0.025;  // GRAV(0.4) / SUBSTEPS(16)
+GDT   :: 0.025; // GRAV(0.4) / SUBSTEPS(16)
 BINVI :: 0.0016; // demo's inverse inertia for every box
-BREST :: 0.12;   // demo restitution
-BFRIC :: 0.45;   // demo friction
+BREST :: 0.12; // demo restitution
+BFRIC :: 0.45; // demo friction
 
-c    :: float;
-ylo  :: float; yhi :: float;   // pos.y   peak-to-peak window, box A
-xlo  :: float; xhi :: float;   // pos.x   peak-to-peak window, box A
-rlo  :: float; rhi :: float;   // rot.y   peak-to-peak window, box A
-tylo :: float; tyhi :: float;  // pos.y   peak-to-peak window, box B (the toppled one)
-trlo :: float; trhi :: float;  // rot.y   peak-to-peak window, box B
+c     :: float;
+ylo   :: float;
+yhi   :: float; // pos.y   peak-to-peak window, box A
+xlo   :: float;
+xhi   :: float; // pos.x   peak-to-peak window, box A
+rlo   :: float;
+rhi   :: float; // rot.y   peak-to-peak window, box A
+tylo  :: float;
+tyhi  :: float; // pos.y   peak-to-peak window, box B (the toppled one)
+trlo  :: float;
+trhi  :: float; // rot.y   peak-to-peak window, box B
 Clock :: arche { c, ylo, yhi, xlo, xhi, rlo, rhi, tylo, tyhi, trlo, trhi }
 
 [4]RBody(3);
 [1]Clock(1);
 seed :: system {
   //                flat box   tilted box   floor
-  RBody.pos.x  = { -150.0,     150.0,       0.0     };
-  RBody.pos.y  = {  120.0,     120.0,      -1000.0  };
-  RBody.lvel.x = {  0.0,  0.0,  0.0 };  RBody.lvel.y = { 0.0, 0.0, 0.0 };
-  RBody.spin.x = {  0.0,  0.0,  0.0 };  RBody.spin.y = { 0.0, 0.0, 0.0 };
-  RBody.rot.x  = {  1.0,  0.866, 1.0 };  RBody.rot.y = { 0.0, 0.5, 0.0 };  // box B starts at 30 deg
-  RBody.ext.x  = {  52.0, 44.0,  4000.0 };  RBody.ext.y = { 40.0, 44.0, 1000.0 };
-  RBody.mi.x   = {  1.0,  1.0,   0.0 };
-  RBody.mi.y   = {  BINVI, BINVI, 0.0 };
-  RBody.mat.x  = {  BREST, BREST, BREST };
-  RBody.mat.y  = {  BFRIC, BFRIC, BFRIC };
-  RBody.dimp.x = { 0.0,0.0,0.0 };  RBody.dimp.y = { 0.0,0.0,0.0 };
-  RBody.dang.x = { 0.0,0.0,0.0 };  RBody.dang.y = { 0.0,0.0,0.0 };
-  RBody.cor.x  = { 0.0,0.0,0.0 };  RBody.cor.y  = { 0.0,0.0,0.0 };
-  Clock.c    = { 0.0 };
+  RBody.pos.x  = { -150.0, 150.0, 0.0 };
+  RBody.pos.y  = { 120.0, 120.0, -1000.0 };
+  RBody.lvel.x = { 0.0, 0.0, 0.0 };
+  RBody.lvel.y = { 0.0, 0.0, 0.0 };
+  RBody.spin.x = { 0.0, 0.0, 0.0 };
+  RBody.spin.y = { 0.0, 0.0, 0.0 };
+  RBody.rot.x  = { 1.0, 0.866, 1.0 };
+  RBody.rot.y  = { 0.0, 0.5, 0.0 }; // box B starts at 30 deg
+  RBody.ext.x  = { 52.0, 44.0, 4000.0 };
+  RBody.ext.y  = { 40.0, 44.0, 1000.0 };
+  RBody.mi.x   = { 1.0, 1.0, 0.0 };
+  RBody.mi.y   = { BINVI, BINVI, 0.0 };
+  RBody.mat.x  = { BREST, BREST, BREST };
+  RBody.mat.y  = { BFRIC, BFRIC, BFRIC };
+  RBody.dimp.x = { 0.0, 0.0, 0.0 };
+  RBody.dimp.y = { 0.0, 0.0, 0.0 };
+  RBody.dang.x = { 0.0, 0.0, 0.0 };
+  RBody.dang.y = { 0.0, 0.0, 0.0 };
+  RBody.cor.x  = { 0.0, 0.0, 0.0 };
+  RBody.cor.y  = { 0.0, 0.0, 0.0 };
+  Clock.c      = { 0.0 };
   // seed the min/max windows wide open; the sampler collapses them onto the real range
-  Clock.ylo  = {  1000000.0 };  Clock.yhi  = { -1000000.0 };
-  Clock.xlo  = {  1000000.0 };  Clock.xhi  = { -1000000.0 };
-  Clock.rlo  = {  1000000.0 };  Clock.rhi  = { -1000000.0 };
-  Clock.tylo = {  1000000.0 };  Clock.tyhi = { -1000000.0 };
-  Clock.trlo = {  1000000.0 };  Clock.trhi = { -1000000.0 };
+  Clock.ylo  = { 1000000.0 };
+  Clock.yhi  = { -1000000.0 };
+  Clock.xlo  = { 1000000.0 };
+  Clock.xhi  = { -1000000.0 };
+  Clock.rlo  = { 1000000.0 };
+  Clock.rhi  = { -1000000.0 };
+  Clock.tylo = { 1000000.0 };
+  Clock.tyhi = { -1000000.0 };
+  Clock.trlo = { 1000000.0 };
+  Clock.trhi = { -1000000.0 };
 }
 
-grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
-tick :: map (query { c })(c) { c = c + 1.0; }
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
 
 sub :: func() -> Schedule {
-  return seq({ grav, rigid.contacts,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.integrate,
-               rigid.solve_lin_relax, rigid.solve_ang_relax, rigid.apply });
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
 }
 
 // Sample the settled window. Boxes land and stop moving well before frame 200; anything we record from here
 // on is pure residual limit-cycle buzz.
-sample :: map (query { c, ylo, yhi, xlo, xhi, rlo, rhi, tylo, tyhi, trlo, trhi })
-              (ylo, yhi, xlo, xhi, rlo, rhi, tylo, tyhi, trlo, trhi) {
+sample :: map (query { c, ylo, yhi, xlo, xhi, rlo, rhi, tylo, tyhi, trlo, trhi })(
+  ylo,
+  yhi,
+  xlo,
+  xhi,
+  rlo,
+  rhi,
+  tylo,
+  tyhi,
+  trlo,
+  trhi
+) {
   // Gathered scalars are held as vec locals and used via `.x` INLINE: binding `q := vec.mk(..).x` (or any
   // `.x` component) to a scalar local mis-types that local as i32 (compiler bug — see
   // tests/unit/language/vec_component_local_type.arche).
-  a := vec.mk(RBody.pos.y[0], RBody.pos.x[0]);
+  a  := vec.mk(RBody.pos.y[0], RBody.pos.x[0]);
   ar := vec.mk(RBody.rot.y[0], 0.0);
-  b := vec.mk(RBody.pos.y[1], RBody.rot.y[1]);
+  b  := vec.mk(RBody.pos.y[1], RBody.rot.y[1]);
   // Before frame 200 each sample is folded to a no-op by feeding the window's own value back in, so the
   // recorded range covers ONLY the settled window.
   s := vec.mk(select(c > 199.5, 1.0, 0.0), 0.0);
-  ylo = select(s.x > 0.5 && a.x < ylo, a.x, ylo);
-  yhi = select(s.x > 0.5 && a.x > yhi, a.x, yhi);
-  xlo = select(s.x > 0.5 && a.y < xlo, a.y, xlo);
-  xhi = select(s.x > 0.5 && a.y > xhi, a.y, xhi);
-  rlo = select(s.x > 0.5 && ar.x < rlo, ar.x, rlo);
-  rhi = select(s.x > 0.5 && ar.x > rhi, ar.x, rhi);
+  ylo  = select(s.x > 0.5 && a.x < ylo, a.x, ylo);
+  yhi  = select(s.x > 0.5 && a.x > yhi, a.x, yhi);
+  xlo  = select(s.x > 0.5 && a.y < xlo, a.y, xlo);
+  xhi  = select(s.x > 0.5 && a.y > xhi, a.y, xhi);
+  rlo  = select(s.x > 0.5 && ar.x < rlo, ar.x, rlo);
+  rhi  = select(s.x > 0.5 && ar.x > rhi, ar.x, rhi);
   tylo = select(s.x > 0.5 && b.x < tylo, b.x, tylo);
   tyhi = select(s.x > 0.5 && b.x > tyhi, b.x, tyhi);
   trlo = select(s.x > 0.5 && b.y < trlo, b.y, trlo);
@@ -91,14 +133,23 @@ sample :: map (query { c, ylo, yhi, xlo, xhi, rlo, rhi, tylo, tyhi, trlo, trhi }
 check :: system eff {
   map (query { c, ylo, yhi, xlo, xhi, rlo, rhi, tylo, tyhi, trlo, trhi }) eff {
     if (c > 299.5) {
-      sw  := vec.mk(yhi - ylo, xhi - xlo);      // peak-to-peak, in pixels
-      rsw := vec.mk(rhi - rlo, trhi - trlo);    // peak-to-peak, in units of sin(theta)
+      sw  := vec.mk(yhi - ylo, xhi - xlo); // peak-to-peak, in pixels
+      rsw := vec.mk(rhi - rlo, trhi - trlo); // peak-to-peak, in units of sin(theta)
       tsw := vec.mk(tyhi - tylo, 0.0);
       fmt.printf("A: dy=%f dx=%f drot=%f   B: dy=%f drot=%f\n", sw.x, sw.y, rsw.x, tsw.x, rsw.y);
-      fmt.assert(sw.x  < 0.05,  "settled flat box VIBRATES vertically (pos.y peak-to-peak >= 0.05px)\n")();
-      fmt.assert(sw.y  < 0.05,  "settled flat box CREEPS/VIBRATES horizontally (pos.x peak-to-peak >= 0.05px)\n")();
+      fmt.assert(
+        sw.x < 0.05,
+        "settled flat box VIBRATES vertically (pos.y peak-to-peak >= 0.05px)\n",
+      )();
+      fmt.assert(
+        sw.y < 0.05,
+        "settled flat box CREEPS/VIBRATES horizontally (pos.x peak-to-peak >= 0.05px)\n",
+      )();
       fmt.assert(rsw.x < 0.001, "settled flat box ROCKS (rot.y peak-to-peak >= 0.001)\n")();
-      fmt.assert(tsw.x < 0.05,  "toppled box VIBRATES vertically (pos.y peak-to-peak >= 0.05px)\n")();
+      fmt.assert(
+        tsw.x < 0.05,
+        "toppled box VIBRATES vertically (pos.y peak-to-peak >= 0.05px)\n",
+      )();
       fmt.assert(rsw.y < 0.001, "toppled box ROCKS (rot.y peak-to-peak >= 0.001)\n")();
       fmt.printf("ok\n");
       fmt.fflush(0)(_:);
@@ -107,7 +158,33 @@ check :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  tick, sample, check })) })
+#run seq(
+  {
+    seed,
+    forever(
+      seq(
+        {
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          tick,
+          sample,
+          check,
+        },
+      ),
+    ),
+  },
+)

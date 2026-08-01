@@ -13,7 +13,9 @@
 // gfx uses for the framebuffer in `gfx_be_present`, so a queried `[N]char` column (`tstr`) can be passed
 // without moving/copying it. The host receives (x, y, sPtr, n, size, color, z); `n` is the live length and
 // `z` the span's CSS z-index — a straight echo of the driver's depth ordinal, no per-host constant.
-text_be_draw  :: proc(x: int, y: int, s: []char, n: int, size: int, color: int, z: int)(s: []char);
+text_be_draw :: proc(x: int, y: int, s: []char, n: int, size: int, color: int, z: int)(
+  s: []char,
+);
 text_be_clear :: proc();
 
 /// Clear last frame's spans, then emit one <span> per display run at its projected (tx,ty).

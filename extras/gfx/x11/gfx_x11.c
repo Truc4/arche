@@ -6,13 +6,13 @@
  * calls present(). This is the only way a tiling WM (which forces the window size) shows a full-window
  * image rather than a fixed-size patch in the corner. `window` (opaque on the arche side) is the
  * GfxX11* pointer; pixels are 0xRRGGBB ints, presented inline via XPutImage (no MIT-SHM). */
+#include "gfx_x11.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
-#include "gfx_x11.h"
 
 typedef struct {
 	Display *dpy;

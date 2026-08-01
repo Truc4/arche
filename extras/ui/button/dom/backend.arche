@@ -4,7 +4,9 @@
 // hardcoded getElementById("ui-button") plus a single shared `clicked` flag, so a second Button row silently
 // repositioned the same element and drained the same flag.
 #foreign
-button_be_label :: proc(bid: int, z: int, s: []char, n: int, x: int, y: int, w: int, h: int)(s: []char);
+button_be_label :: proc(bid: int, z: int, s: []char, n: int, x: int, y: int, w: int, h: int)(
+  s: []char,
+);
 // Two seams, not one returning a pair: a foreign proc crosses the wasm ABI with a SINGLE return value, and
 // nothing else in the device library returns a tuple from one.
 #foreign
@@ -34,6 +36,6 @@ poll :: system eff {
     button_be_clicked(bid)(c:);
     button_be_held(bid)(h:);
     clicked = c;
-    held = h;
+    held    = h;
   };
 }

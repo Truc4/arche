@@ -7,12 +7,12 @@
  *
  * GTK runs its own GDK display connection, so its event loop (pumped once per frame) never races the gfx
  * backend's own X connection. Requires gfx=x11. */
-#include <gtk/gtk.h>
-#include <gdk/gdkx.h>
-#include <X11/Xlib.h>
-#include <string.h>
-#include <stdio.h>
 #include "../../../gfx/x11/gfx_x11.h"
+#include <X11/Xlib.h>
+#include <gdk/gdkx.h>
+#include <gtk/gtk.h>
+#include <stdio.h>
+#include <string.h>
 
 #define ED_CAP 4096
 

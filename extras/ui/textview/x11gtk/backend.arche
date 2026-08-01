@@ -7,41 +7,25 @@
 // RUN: true
 #import { gfx }
 #cflags {
-  "-I/usr/include/gtk-3.0"
-  "-I/usr/include/at-spi2-atk/2.0"
-  "-I/usr/include/at-spi-2.0"
-  "-I/usr/include/atk-1.0"
-  "-I/usr/include/dbus-1.0"
-  "-I/usr/lib/dbus-1.0/include"
-  "-I/usr/include/pango-1.0"
-  "-I/usr/include/harfbuzz"
-  "-I/usr/include/gdk-pixbuf-2.0"
-  "-I/usr/include/cairo"
-  "-I/usr/include/freetype2"
-  "-I/usr/include/libpng16"
-  "-I/usr/include/pixman-1"
-  "-I/usr/include/gio-unix-2.0"
-  "-I/usr/include/glib-2.0"
-  "-I/usr/lib/glib-2.0/include"
-  "-I/usr/include/fribidi"
+  "-I/usr/include/gtk-3.0" "-I/usr/include/at-spi2-atk/2.0" "-I/usr/include/at-spi-2.0" "-I/usr/include/atk-1.0" "-I/usr/include/dbus-1.0" "-I/usr/lib/dbus-1.0/include" "-I/usr/include/pango-1.0" "-I/usr/include/harfbuzz" "-I/usr/include/gdk-pixbuf-2.0" "-I/usr/include/cairo" "-I/usr/include/freetype2" "-I/usr/include/libpng16" "-I/usr/include/pixman-1" "-I/usr/include/gio-unix-2.0" "-I/usr/include/glib-2.0" "-I/usr/lib/glib-2.0/include" "-I/usr/include/fribidi"
 }
 #link {
-  "gtk-3"
-  "gdk-3"
-  "pangocairo-1.0"
-  "pango-1.0"
-  "gdk_pixbuf-2.0"
-  "cairo-gobject"
-  "cairo"
-  "gio-2.0"
-  "gobject-2.0"
-  "glib-2.0"
-  "X11"
+  "gtk-3" "gdk-3" "pangocairo-1.0" "pango-1.0" "gdk_pixbuf-2.0" "cairo-gobject" "cairo" "gio-2.0" "gobject-2.0" "glib-2.0" "X11"
 }
 
 #module
 #foreign
-textview_be_render :: proc(win: window, buf: []char, n: int, x: int, y: int, w: int, h: int, bg: int, fg: int)(buf: []char);
+textview_be_render :: proc(
+  win : window,
+  buf : []char,
+  n   : int,
+  x   : int,
+  y   : int,
+  w   : int,
+  h   : int,
+  bg  : int,
+  fg  : int,
+)(buf: []char);
 
 // Each frame: lazy-create + embed the widget (first call, themed from the driver's bg/fg), push the output
 // text, and position it.

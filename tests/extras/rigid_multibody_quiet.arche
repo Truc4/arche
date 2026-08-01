@@ -32,21 +32,24 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GRAV  :: 0.4;
-GDT   :: 0.025;
-BINVI :: 0.0016;
-BREST :: 0.12;
-BFRIC :: 0.45;
-PHALF :: 51.0;
+GRAV     :: 0.4;
+GDT      :: 0.025;
+BINVI    :: 0.0016;
+BREST    :: 0.12;
+BFRIC    :: 0.45;
+PHALF    :: 51.0;
 PLAYER_Y :: 1089.0;
 
-c :: float;
-Clock :: arche { c }
-tlo(x, y) :: float;  thi(x, y) :: float;   // per-box (pos.y, rot.y) min/max over the settled window
-bc  :: float;                  // per-box frame counter (a nested pure map is not a column transform)
+c         :: float;
+Clock     :: arche { c }
+tlo(x, y) :: float;
+thi(x, y) :: float; // per-box (pos.y, rot.y) min/max over the settled window
+bc        :: float; // per-box frame counter (a nested pure map is not a column transform)
 // Distinct trailing columns per archetype: identical component sets collide as the same SHAPE. The demo has
 // the same split (bsx../qsx../sflag/ppx), so this stays faithful.
-qtag :: float; stag :: float; ptag :: float;
+qtag :: float;
+stag :: float;
+ptag :: float;
 
 Box    :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, tlo, thi, bc }
 Ball   :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, qtag, tlo, thi, bc }
@@ -56,8 +59,8 @@ Player :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, ptag }
 [8]Box(6);
 [6]Ball(4);
 [4]Solid(4);
-[4]RBody;          // storage floor, exactly as the demo declares it
-[2]Player(1);      // 1 live row + 1 DEAD row, exactly as the demo declares it
+[4]RBody; // storage floor, exactly as the demo declares it
+[2]Player(1); // 1 live row + 1 DEAD row, exactly as the demo declares it
 [1]Clock(1);
 
 seed :: system {
@@ -75,51 +78,82 @@ seed :: system {
   Box.mi.y   = { BINVI, BINVI, BINVI, BINVI, BINVI, BINVI };
   Box.mat.x  = { BREST, BREST, BREST, BREST, BREST, BREST };
   Box.mat.y  = { BFRIC, BFRIC, BFRIC, BFRIC, BFRIC, BFRIC };
-  Box.dimp.x = { 0.0,0.0,0.0,0.0,0.0,0.0 };  Box.dimp.y = { 0.0,0.0,0.0,0.0,0.0,0.0 };
-  Box.dang.x = { 0.0,0.0,0.0,0.0,0.0,0.0 };  Box.dang.y = { 0.0,0.0,0.0,0.0,0.0,0.0 };
-  Box.cor.x  = { 0.0,0.0,0.0,0.0,0.0,0.0 };  Box.cor.y  = { 0.0,0.0,0.0,0.0,0.0,0.0 };
+  Box.dimp.x = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.dimp.y = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.dang.x = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.dang.y = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.cor.x  = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.cor.y  = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
 
   Ball.pos.x  = { 160.0, 340.0, 480.0, 560.0 };
   Ball.pos.y  = { 240.0, 300.0, 220.0, 340.0 };
-  Ball.lvel.x = { 0.0,0.0,0.0,0.0 };  Ball.lvel.y = { 0.0,0.0,0.0,0.0 };
-  Ball.spin.x = { 0.0,0.0,0.0,0.0 };  Ball.spin.y = { 1.0, 1.0, 1.0, 1.0 };
-  Ball.rot.x  = { 1.0,1.0,1.0,1.0 };  Ball.rot.y  = { 0.0,0.0,0.0,0.0 };
-  Ball.ext.x  = { 38.0, 30.0, 44.0, 26.0 };  Ball.ext.y  = { 38.0, 30.0, 44.0, 26.0 };
-  Ball.mi.x   = { 1.0,1.0,1.0,1.0 };  Ball.mi.y = { BINVI, BINVI, BINVI, BINVI };
-  Ball.mat.x  = { BREST, BREST, BREST, BREST };  Ball.mat.y = { BFRIC, BFRIC, BFRIC, BFRIC };
-  Ball.dimp.x = { 0.0,0.0,0.0,0.0 };  Ball.dimp.y = { 0.0,0.0,0.0,0.0 };
-  Ball.dang.x = { 0.0,0.0,0.0,0.0 };  Ball.dang.y = { 0.0,0.0,0.0,0.0 };
-  Ball.cor.x  = { 0.0,0.0,0.0,0.0 };  Ball.cor.y  = { 0.0,0.0,0.0,0.0 };
-  Ball.qtag   = { 0.0,0.0,0.0,0.0 };
-  Ball.tlo.x = { 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
-  Ball.tlo.y = { 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
-  Ball.thi.x = { -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
-  Ball.thi.y = { -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
-  Ball.bc    = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.lvel.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.lvel.y = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.spin.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.spin.y = { 1.0, 1.0, 1.0, 1.0 };
+  Ball.rot.x  = { 1.0, 1.0, 1.0, 1.0 };
+  Ball.rot.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.ext.x  = { 38.0, 30.0, 44.0, 26.0 };
+  Ball.ext.y  = { 38.0, 30.0, 44.0, 26.0 };
+  Ball.mi.x   = { 1.0, 1.0, 1.0, 1.0 };
+  Ball.mi.y   = { BINVI, BINVI, BINVI, BINVI };
+  Ball.mat.x  = { BREST, BREST, BREST, BREST };
+  Ball.mat.y  = { BFRIC, BFRIC, BFRIC, BFRIC };
+  Ball.dimp.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.dimp.y = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.dang.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.dang.y = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.cor.x  = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.cor.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.qtag   = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.tlo.x  = { 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
+  Ball.tlo.y  = { 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
+  Ball.thi.x  = { -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
+  Ball.thi.y  = { -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
+  Ball.bc     = { 0.0, 0.0, 0.0, 0.0 };
 
   Solid.pos.x  = { 340.0, 30.0, 650.0, 340.0 };
   Solid.pos.y  = { 1190.0, 670.0, 670.0, 190.0 };
-  Solid.lvel.x = { 0.0,0.0,0.0,0.0 };  Solid.lvel.y = { 0.0,0.0,0.0,0.0 };
-  Solid.spin.x = { 0.0,0.0,0.0,0.0 };  Solid.spin.y = { 0.0,0.0,0.0,0.0 };
-  Solid.rot.x  = { 1.0,1.0,1.0,1.0 };  Solid.rot.y  = { 0.0,0.0,0.0,0.0 };
-  Solid.ext.x  = { 320.0, 10.0, 10.0, 320.0 };  Solid.ext.y = { 50.0, 480.0, 480.0, 10.0 };
-  Solid.mi.x   = { 0.0,0.0,0.0,0.0 };  Solid.mi.y = { 0.0,0.0,0.0,0.0 };
-  Solid.mat.x  = { 0.1,0.1,0.1,0.1 };  Solid.mat.y = { 0.5,0.5,0.5,0.5 };
-  Solid.dimp.x = { 0.0,0.0,0.0,0.0 };  Solid.dimp.y = { 0.0,0.0,0.0,0.0 };
-  Solid.dang.x = { 0.0,0.0,0.0,0.0 };  Solid.dang.y = { 0.0,0.0,0.0,0.0 };
-  Solid.cor.x  = { 0.0,0.0,0.0,0.0 };  Solid.cor.y  = { 0.0,0.0,0.0,0.0 };
-  Solid.stag   = { 0.0,0.0,0.0,0.0 };
+  Solid.lvel.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.lvel.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.spin.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.spin.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.rot.x  = { 1.0, 1.0, 1.0, 1.0 };
+  Solid.rot.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.ext.x  = { 320.0, 10.0, 10.0, 320.0 };
+  Solid.ext.y  = { 50.0, 480.0, 480.0, 10.0 };
+  Solid.mi.x   = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.mi.y   = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.mat.x  = { 0.1, 0.1, 0.1, 0.1 };
+  Solid.mat.y  = { 0.5, 0.5, 0.5, 0.5 };
+  Solid.dimp.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.dimp.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.dang.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.dang.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.cor.x  = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.cor.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.stag   = { 0.0, 0.0, 0.0, 0.0 };
 
-  Player.pos.x  = { 2100.0 };  Player.pos.y  = { PLAYER_Y };
-  Player.lvel.x = { 0.0 };  Player.lvel.y = { 0.0 };
-  Player.spin.x = { 0.0 };  Player.spin.y = { 0.0 };
-  Player.rot.x  = { 1.0 };  Player.rot.y  = { 0.0 };
-  Player.ext.x  = { PHALF };  Player.ext.y = { PHALF };
-  Player.mi.x   = { 0.0 };  Player.mi.y = { 0.0 };
-  Player.mat.x  = { 0.1 };  Player.mat.y = { 0.5 };
-  Player.dimp.x = { 0.0 };  Player.dimp.y = { 0.0 };
-  Player.dang.x = { 0.0 };  Player.dang.y = { 0.0 };
-  Player.cor.x  = { 0.0 };  Player.cor.y  = { 0.0 };
+  Player.pos.x  = { 2100.0 };
+  Player.pos.y  = { PLAYER_Y };
+  Player.lvel.x = { 0.0 };
+  Player.lvel.y = { 0.0 };
+  Player.spin.x = { 0.0 };
+  Player.spin.y = { 0.0 };
+  Player.rot.x  = { 1.0 };
+  Player.rot.y  = { 0.0 };
+  Player.ext.x  = { PHALF };
+  Player.ext.y  = { PHALF };
+  Player.mi.x   = { 0.0 };
+  Player.mi.y   = { 0.0 };
+  Player.mat.x  = { 0.1 };
+  Player.mat.y  = { 0.5 };
+  Player.dimp.x = { 0.0 };
+  Player.dimp.y = { 0.0 };
+  Player.dang.x = { 0.0 };
+  Player.dang.y = { 0.0 };
+  Player.cor.x  = { 0.0 };
+  Player.cor.y  = { 0.0 };
   Player.ptag   = { 0.0 };
 
   Box.tlo.x = { 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
@@ -127,18 +161,33 @@ seed :: system {
   Box.thi.x = { -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
   Box.thi.y = { -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
   Box.bc    = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
-  Clock.c = { 0.0 };
+  Clock.c   = { 0.0 };
 }
 
-grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y + GDT * select(mi.x > 0.0, 1.0, 0.0); }
-tick :: map (query { c })(c) { c = c + 1.0; }
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y + GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
 
 sub :: func() -> Schedule {
-  return seq({ grav, rigid.contacts,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.integrate,
-               rigid.solve_lin_relax, rigid.solve_ang_relax, rigid.apply });
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
 }
 
 // Track the (pos.y, rot.y) min/max of each Box across the settled window (its own counter: a nested pure map
@@ -148,7 +197,7 @@ sample :: map (query { pos, rot, cor, tlo, thi, bc })(tlo, thi, bc) {
   live := select(bc > 5899.5, 1.0, 0.0);
   tlo.x = select(live > 0.5 && pos.y < tlo.x, pos.y, tlo.x);
   thi.x = select(live > 0.5 && pos.y > thi.x, pos.y, thi.x);
-  tlo.y = select(live > 0.5 && pos.x < tlo.y, pos.x, tlo.y);   // .y slot tracks the pos.x range
+  tlo.y = select(live > 0.5 && pos.x < tlo.y, pos.x, tlo.y); // .y slot tracks the pos.x range
   thi.y = select(live > 0.5 && pos.x > thi.y, pos.x, thi.y);
 }
 
@@ -169,27 +218,87 @@ report :: system eff {
       q2 := vec.mk(Ball.thi.x[2] - Ball.tlo.x[2], Ball.thi.y[2] - Ball.tlo.y[2]);
       q3 := vec.mk(Ball.thi.x[3] - Ball.tlo.x[3], Ball.thi.y[3] - Ball.tlo.y[3]);
       // .x = vertical (pos.y) swing — the BUZZ. This is the bug: it must be deeply sub-pixel.
-      fmt.assert(b0.x < 0.01, "box0 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(b1.x < 0.01, "box1 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(b2.x < 0.01, "box2 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(b3.x < 0.01, "box3 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(b4.x < 0.01, "box4 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(b5.x < 0.01, "box5 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(q0.x < 0.01, "ball0 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(q1.x < 0.01, "ball1 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(q2.x < 0.01, "ball2 never comes to REST (still moving vertically at frame 5900)\n")();
-      fmt.assert(q3.x < 0.01, "ball3 never comes to REST (still moving vertically at frame 5900)\n")();
+      fmt.assert(
+        b0.x < 0.01,
+        "box0 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b1.x < 0.01,
+        "box1 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b2.x < 0.01,
+        "box2 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b3.x < 0.01,
+        "box3 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b4.x < 0.01,
+        "box4 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b5.x < 0.01,
+        "box5 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q0.x < 0.01,
+        "ball0 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q1.x < 0.01,
+        "ball1 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q2.x < 0.01,
+        "ball2 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q3.x < 0.01,
+        "ball3 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
       // .y = horizontal (pos.x) swing — residual creep/roll. Bounded, not zero (see HONEST BOUNDS above).
-      fmt.assert(b0.y < 0.01, "box0 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(b1.y < 0.01, "box1 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(b2.y < 0.01, "box2 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(b3.y < 0.01, "box3 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(b4.y < 0.01, "box4 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(b5.y < 0.01, "box5 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(q0.y < 0.01, "ball0 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(q1.y < 0.01, "ball1 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(q2.y < 0.01, "ball2 never comes to REST (still creeping horizontally at frame 5900)\n")();
-      fmt.assert(q3.y < 0.01, "ball3 never comes to REST (still creeping horizontally at frame 5900)\n")();
+      fmt.assert(
+        b0.y < 0.01,
+        "box0 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b1.y < 0.01,
+        "box1 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b2.y < 0.01,
+        "box2 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b3.y < 0.01,
+        "box3 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b4.y < 0.01,
+        "box4 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b5.y < 0.01,
+        "box5 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q0.y < 0.01,
+        "ball0 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q1.y < 0.01,
+        "ball1 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q2.y < 0.01,
+        "ball2 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q3.y < 0.01,
+        "ball3 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
       fmt.printf("ok\n");
       fmt.fflush(0)(_:);
       os.exit(0)(_:);
@@ -197,7 +306,33 @@ report :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  tick, sample, report })) })
+#run seq(
+  {
+    seed,
+    forever(
+      seq(
+        {
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          tick,
+          sample,
+          report,
+        },
+      ),
+    ),
+  },
+)

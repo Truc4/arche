@@ -11,16 +11,21 @@
 #import { fmt }
 v(x, y) :: float;
 mk      :: int;
-A :: arche { v }
-B :: arche { v, mk }
+A       :: arche { v }
+B       :: arche { v, mk }
 [4]A(1);
 [4]B(1);
 
-mag :: func(a: v) -> float { return sqrt(a.x * a.x + a.y * a.y); }
+mag :: func(a: v) -> float {
+  return sqrt(a.x * a.x + a.y * a.y);
+}
 
 seed :: system {
-  A.v.x = { 3.0 };  A.v.y = { 4.0 };
-  B.v.x = { 6.0 };  B.v.y = { 8.0 };  B.mk = { 0 };
+  A.v.x = { 3.0 };
+  A.v.y = { 4.0 };
+  B.v.x = { 6.0 };
+  B.v.y = { 8.0 };
+  B.mk  = { 0 };
 }
 
 norm :: map (query { v })(v) {

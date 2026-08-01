@@ -40,6 +40,6 @@ cor(x, y)  :: float;
 /// driving into it (driving into a wall generates a large normal impulse, and friction against that impulse
 /// dwarfs gravity — that is what makes a character STICK to walls). `supports` is optional and cheap enough
 /// to run once per FRAME rather than per substep.
-sup(x, y)  :: float;
+sup(x, y) :: float;
 
 [4]RBody;

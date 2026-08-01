@@ -9,22 +9,22 @@
 
 #module
 #foreign
-gfx_be_open       :: proc(w: int, h: int, own title: []char)(win: window);
-gfx_be_w          :: proc(win: window)(w: int);
-gfx_be_h          :: proc(win: window)(h: int);
-gfx_be_present    :: proc(win: window, px: []int, w: int, h: int)(px: []int);
-gfx_be_split      :: proc(win: window, px: []int, w: int, h: int)(px: []int);
-gfx_be_layers     :: proc(win: window, bgz: int, fgz: int)(r: int);
-gfx_be_poll       :: proc(win: window)(is_open: int);
-gfx_be_axis_x     :: proc(win: window)(dx: int);
-gfx_be_axis_y     :: proc(win: window)(dy: int);
-gfx_be_key        :: proc(win: window)(k: int);
-gfx_be_mouse_x    :: proc(win: window)(x: int);
-gfx_be_mouse_y    :: proc(win: window)(y: int);
-gfx_be_mouse_down :: proc(win: window)(down: int);
-gfx_be_scroll     :: proc(win: window)(d: int);
-gfx_be_text_focus :: proc(win: window)(f: int);
-gfx_be_release_text :: proc(win: window)(r: int);
+gfx_be_open           :: proc(w: int, h: int, own title: []char)(win: window);
+gfx_be_w              :: proc(win: window)(w: int);
+gfx_be_h              :: proc(win: window)(h: int);
+gfx_be_present        :: proc(win: window, px: []int, w: int, h: int)(px: []int);
+gfx_be_split          :: proc(win: window, px: []int, w: int, h: int)(px: []int);
+gfx_be_layers         :: proc(win: window, bgz: int, fgz: int)(r: int);
+gfx_be_poll           :: proc(win: window)(is_open: int);
+gfx_be_axis_x         :: proc(win: window)(dx: int);
+gfx_be_axis_y         :: proc(win: window)(dy: int);
+gfx_be_key            :: proc(win: window)(k: int);
+gfx_be_mouse_x        :: proc(win: window)(x: int);
+gfx_be_mouse_y        :: proc(win: window)(y: int);
+gfx_be_mouse_down     :: proc(win: window)(down: int);
+gfx_be_scroll         :: proc(win: window)(d: int);
+gfx_be_text_focus     :: proc(win: window)(f: int);
+gfx_be_release_text   :: proc(win: window)(r: int);
 gfx_be_coarse_pointer :: proc(win: window)(c: int);
 @drop(window)
 gfx_be_close :: proc(own win: window);

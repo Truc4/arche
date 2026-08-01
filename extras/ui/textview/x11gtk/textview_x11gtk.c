@@ -4,12 +4,12 @@
  * reparented into the gfx scene window via gfx_x11_window() — so long compiler output WRAPS and SCROLLS
  * natively instead of clipping like the framebuffer backend. arche pushes the text + rect each frame. GTK
  * runs its own GDK/X connection, pumped once per frame. Requires gfx=x11. Mirrors textedit/x11gtk. */
-#include <gtk/gtk.h>
-#include <gdk/gdkx.h>
-#include <X11/Xlib.h>
-#include <string.h>
-#include <stdio.h>
 #include "../../../gfx/x11/gfx_x11.h"
+#include <X11/Xlib.h>
+#include <gdk/gdkx.h>
+#include <gtk/gtk.h>
+#include <stdio.h>
+#include <string.h>
 
 static struct {
 	GtkWidget *win;  /* the reparented GtkWindow */

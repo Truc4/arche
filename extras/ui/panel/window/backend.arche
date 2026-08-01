@@ -13,10 +13,10 @@ SUB_TSZ      :: 16;
 render :: system (query { framebuffer })(framebuffer) eff {
   map (query { screen, size, title, len, sub, sublen, view, z }) eff {
     live := select(z >= ui.SPLIT_Z, 1, 0);
-    bx0 := screen.x;
-    by0 := screen.y;
-    bx1 := screen.x + size.w * live;
-    by1 := screen.y + size.h * live;
+    bx0  := screen.x;
+    by0  := screen.y;
+    bx1  := screen.x + size.w * live;
+    by1  := screen.y + size.h * live;
     if (bx0 < 0) {
       bx0 = 0;
     }
@@ -129,10 +129,10 @@ render :: system (query { framebuffer })(framebuffer) eff {
 render_bg :: system (query { framebuffer })(framebuffer) eff {
   map (query { screen, size, title, len, sub, sublen, view, z }) eff {
     live := select(z < ui.SPLIT_Z, 1, 0);
-    bx0 := screen.x;
-    by0 := screen.y;
-    bx1 := screen.x + size.w * live;
-    by1 := screen.y + size.h * live;
+    bx0  := screen.x;
+    by0  := screen.y;
+    bx1  := screen.x + size.w * live;
+    by1  := screen.y + size.h * live;
     if (bx0 < 0) {
       bx0 = 0;
     }

@@ -7,7 +7,25 @@ dispatch :: system (query { framebuffer })(framebuffer) eff {
     gfx.dims(handle)(vw:, vh:);
     map (query { zlo, zhi }) eff {
       map (query { ach }) eff {
-        map (query { z, ckind, crx, cry, crw, crh, ccolor, ctoff, ctlen, ctsz, cclx0, ccly0, cclx1, ccly1, cnl }) eff {
+        map (
+          query {
+            z,
+            ckind,
+            crx,
+            cry,
+            crw,
+            crh,
+            ccolor,
+            ctoff,
+            ctlen,
+            ctsz,
+            cclx0,
+            ccly0,
+            cclx1,
+            ccly1,
+            cnl
+          }
+        ) eff {
           if (z >= zlo && z < zhi) {
             if (ckind == CK_RECT) {
               x0 := crx;
@@ -31,18 +49,20 @@ dispatch :: system (query { framebuffer })(framebuffer) eff {
                   framebuffer[yy * vw + xx] = ccolor;
                 }
               }
-            } else {
-              s := ctsz / 8;
-              adv := 8 * s;
+            }
+            else {
+              s     := ctsz / 8;
+              adv   := 8 * s;
               pitch := ctsz + 4;
-              penx := crx;
-              peny := cry;
+              penx  := crx;
+              peny  := cry;
               for (i := 0; i < ctlen; i += 1) {
                 c := ach[ctoff + i];
                 if (cnl == 1 && c == 10) {
                   penx = crx;
                   peny = peny + pitch;
-                } else {
+                }
+                else {
                   if (c >= 32 && c <= 126) {
                     gi := c - 32;
                     for (row := 0; row < 8; row += 1) {

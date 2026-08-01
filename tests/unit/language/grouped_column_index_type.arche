@@ -9,9 +9,12 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { fmt }
 p(x, y) :: float;
-T :: arche { p }
+T       :: arche { p }
 [4]T(1);
-seed :: system { T.p.x = { 3.0 }; T.p.y = { 4.0 }; }
+seed :: system {
+  T.p.x = { 3.0 };
+  T.p.y = { 4.0 };
+}
 verify :: system eff {
   a := T.p.x[0];
   fmt.assert(a * a == 9.0, "grouped subfield index mis-typed as int\n")();
