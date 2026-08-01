@@ -1934,15 +1934,6 @@ static const SyntaxNode *arch_expr_child(const SyntaxNode *d) {
 	return NULL;
 }
 
-/* True if the decl is decorated (its first token is `@`). A decorator with args — `@allow(x)`,
- * `@implements(dev.foo)` — has a `(` that must NOT be mistaken for a tuple-group paren. */
-static int decl_is_decorated(const SyntaxNode *d) {
-	for (int i = 0; i < d->child_count; i++)
-		if (d->children[i].tag == SE_TOKEN)
-			return d->children[i].as.token.kind == TOK_AT;
-	return 0;
-}
-
 /* Register every tuple group declared directly under `root` into the lookup table (does NOT reset the
  * table — call build_tgroups first, then scan_tgroups per imported module). */
 static void scan_tgroups(const SyntaxNode *root, const char *src) {
@@ -1955,8 +1946,10 @@ static void scan_tgroups(const SyntaxNode *root, const char *src) {
 		if (d->kind == SN_CONST_DECL && (ae = arch_expr_child(d)) != NULL)
 			register_arch_tgroups(ae, src);
 		/* top-level tuple group: `pos (x, y) :: T` (a const-decl with a direct `(`, not decorated). */
-		else if (d->kind == SN_CONST_DECL && !decl_is_decorated(d) && sv_has_token((SyntaxView){d, src}, TOK_LPAREN))
-			register_tgroup(d, src, 0, d->child_count, NULL);
+		else if (d->kind == SN_CONST_DECL && sv_has_group_paren((SyntaxView){d, src}))
+			/* start at the decl's NAME, not child 0: a decorator's own `( … )` sits before it and its
+			 * idents would otherwise be read as the group's name and members. */
+			register_tgroup(d, src, sv_decl_name_index((SyntaxView){d, src}), d->child_count, NULL);
 		/* legacy inline archetype tuple field: `pos (x, y) :: T` inside `arche { … }` */
 		else if (d->kind == SN_ARCHETYPE_DECL)
 			register_arch_tgroups(d, src);
@@ -3421,7 +3414,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		}
 		/* Tuple-group type definition `pos (x, y) :: T` mints nominal component types
 		 * (pos_x, pos_y); it's compile-time only and erased before codegen. */
-		if (sv_has_token(d, TOK_LPAREN))
+		if (sv_has_group_paren(d))
 			return NULL;
 		/* Array value const → a static global, the same shape as the mutable `XS : [N]T = {…}` form.
 		 * Three forms, all flattened to a `[total]elem` global (arche's flat row-stride model):

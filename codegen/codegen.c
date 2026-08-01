@@ -3123,6 +3123,11 @@ static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *c
  * empty pool yields the identity for reduce). `is_scan` selects write-back. Result SSA → result_buf. */
 /* The collective FOLD primitive (CPU scalar + 4-lane SIMD): folds `col` with monoid `op` to a scalar
  * (reduce) or prefix-folds it in place (scan). Backends call this; see the ParOp/Backend seam above. */
+static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_out);
+static int is_foldable_bare_col(CodegenContext *ctx, HirExpr *e, const char **arch_out);
+static void emit_pool_has_holes(CodegenContext *ctx, const char *arch_name, char *out, size_t cap);
+static void emit_row_is_dead(CodegenContext *ctx, const char *arch_name, const char *row, char *out, size_t cap);
+
 static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_scan, char *result_buf) {
 	char colptr[256], count[256];
 	const char *ty;
@@ -3131,6 +3136,18 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 		strcpy(result_buf, "0");
 		return;
 	}
+	/* Which pool is being folded? `delete` tombstones rows without shrinking `count`, so a pool with holes
+	 * must not take the vectorized prefix (a lane cannot check liveness) and its scalar loop must skip dead
+	 * rows. A fold over something that is not a pool column (a plain array) can never have holes. */
+	const char *fold_arch = NULL;
+	if (!is_pool_col_field(ctx, col, &fold_arch) && !is_foldable_bare_col(ctx, col, &fold_arch))
+		fold_arch = NULL;
+	char holes[64];
+	if (fold_arch)
+		emit_pool_has_holes(ctx, fold_arch, holes, sizeof(holes));
+	else
+		snprintf(holes, sizeof(holes), "false");
+
 	const char *id = monoid_identity(op, is_float);
 	char *acc = gen_value_name(ctx), *iv = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca %s\n", acc, ty); /* hoisted to entry: no stack growth if in a loop */
@@ -3158,7 +3175,9 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", vi);
 		char *q = gen_value_name(ctx), *nvec = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = sdiv i64 %s, %d\n", q, count, W);
-		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", nvec, q, W);
+		char *nvraw = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", nvraw, q, W);
+		buffer_append_fmt(ctx, "  %s = select i1 %s, i64 0, i64 %s\n", nvec, holes, nvraw);
 		char *vc = gen_value_name(ctx), *vb = gen_value_name(ctx), *vd = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  br label %s\n", vc);
 		buffer_append_fmt(ctx, "%s:\n", vc + 1);
@@ -3210,6 +3229,15 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
 	buffer_append_fmt(ctx, "%s:\n", body + 1);
+	char *flive = gen_value_name(ctx), *fcont = gen_value_name(ctx);
+	if (fold_arch) {
+		char fdead[64];
+		emit_row_is_dead(ctx, fold_arch, i, fdead, sizeof(fdead));
+		char *fskip = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", fskip, holes, fdead);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", fskip, fcont, flive);
+		buffer_append_fmt(ctx, "%s:\n", flive + 1);
+	}
 	char *ep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, ty, ty, colptr, i);
 	char *el = gen_value_name(ctx);
@@ -3220,6 +3248,10 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, acc);
 	if (is_scan) /* inclusive prefix: write the running fold back into the column */
 		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, ep);
+	if (fold_arch) {
+		buffer_append_fmt(ctx, "  br label %s\n", fcont);
+		buffer_append_fmt(ctx, "%s:\n", fcont + 1);
+	}
 	char *ni = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
@@ -3312,6 +3344,54 @@ static int is_foldable_bare_col(CodegenContext *ctx, HirExpr *e, const char **ar
 		}
 	}
 	return 0;
+}
+
+/* Emit `1` (as an i1) when pool `arch_name` currently has TOMBSTONED rows — i.e. its free_list is
+ * non-empty. `delete` frees a slot without shrinking `count`, so a fold over [0, count) would otherwise
+ * read freed rows. Hoisted OUT of a fold loop: when this is false the pool is hole-free and the fold takes
+ * its unguarded (vectorizable) path, so a pool that never deletes pays nothing. */
+static void emit_pool_has_holes(CodegenContext *ctx, const char *arch_name, char *out, size_t cap) {
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch_name);
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	int fc_idx = (ad ? ad->field_count : 0) + (is_static ? 2 : 3);
+	char base[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base, sizeof(base));
+	char *gep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep, arch_name,
+	                  arch_name, base, fc_idx);
+	char *fc = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", fc, gep);
+	char *nz = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", nz, fc);
+	snprintf(out, cap, "%s", nz);
+}
+
+/* Emit `1` (as an i1) when row `row` of pool `arch_name` is DEAD. A tombstoned slot carries the sign bit in
+ * its generation counter (`delete` sets it, `insert` clears it on revival); a live row's generation is
+ * non-negative. Same test the `each`/map fan uses. */
+static void emit_row_is_dead(CodegenContext *ctx, const char *arch_name, const char *row, char *out, size_t cap) {
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch_name);
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	int gc_idx = (ad ? ad->field_count : 0) + (is_static ? 3 : 4);
+	char base[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base, sizeof(base));
+	char *gcptr = gen_value_name(ctx);
+	if (is_static) {
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 %s\n", gcptr,
+		                  arch_name, arch_name, base, gc_idx, row);
+	} else {
+		char *gcbase = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gcbase, arch_name,
+		                  arch_name, base, gc_idx);
+		char *gcload = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32*, i32** %s\n", gcload, gcbase);
+		buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", gcptr, gcload, row);
+	}
+	char *genval = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", genval, gcptr);
+	char *dead = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", dead, genval);
+	snprintf(out, cap, "%s", dead);
 }
 
 /* Emit the live row count of pool `arch_name` into `out` (the struct field after all columns). */
@@ -3443,6 +3523,8 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 		emit_pool_live_count(ctx, archs[k], count, sizeof(count));
 		ctx->fold_pool = archs[k];
 		ctx->qbinder_arch = archs[k]; /* so the summand's `All.col` resolves + indexes THIS archetype */
+		char holes[64];
+		emit_pool_has_holes(ctx, archs[k], holes, sizeof(holes));
 		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv); /* reset the row counter for this archetype */
 
 		char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
@@ -3454,6 +3536,17 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
 		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
 		buffer_append_fmt(ctx, "%s:\n", body + 1);
+		/* Liveness skip: `count` is a high-water mark — `delete` tombstones a slot without shrinking it, so
+		 * a freed row would otherwise fold its stale column value into every neighbour's accumulator (in the
+		 * physics devices: a deleted body left behind as a phantom collider). The check is skipped whole
+		 * when the pool has no holes, so a pool that never deletes keeps the tight loop. */
+		char *live = gen_value_name(ctx), *cont = gen_value_name(ctx);
+		char dead[64];
+		emit_row_is_dead(ctx, archs[k], i, dead, sizeof(dead));
+		char *skiprow = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", skiprow, holes, dead);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", skiprow, cont, live);
+		buffer_append_fmt(ctx, "%s:\n", live + 1);
 		ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
 		char elem[256];
 		codegen_expression(ctx, sumexpr, elem);
@@ -3471,6 +3564,8 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 			char *r = emit_monoid_combine(ctx, op, lf[l], lty[l], a, ev);
 			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], r, lty[l], accs[l]);
 		}
+		buffer_append_fmt(ctx, "  br label %s\n", cont);
+		buffer_append_fmt(ctx, "%s:\n", cont + 1);
 		char *ni = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
 		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);

@@ -38,7 +38,7 @@ def _vecrow(vals):
     return "{ " + ", ".join("%r" % float(v) for v in vals) + " }"
 
 
-SUBSTEPS = 16  # MUST match rigid.arche SUBSTEPS/DT — the device integrates by a compile-constant DT=1/16.
+SUBSTEPS = 8  # MUST match rigid.arche SUBSTEPS/DT — the device integrates by a compile-constant DT=1/8.
 
 
 def build_driver(bodies, frames, vel_it=2, grav=0.4):

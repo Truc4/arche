@@ -1,11 +1,11 @@
 // Driver test for ANGULAR response: a box dropped TILTED (30°, rot=(cos30,sin30)=(0.866,0.5)) onto a wide
 // flat floor lands on a corner; the off-centre contact applies a torque that rotates it toward FLAT. It must
 // end markedly flatter than it started (|rot.y| drops from 0.5 toward ~0.14) and settle at rest (no residual
-// spin) — the rotational effective-mass + angular impulse in action. 16 TGS substeps/frame.
+// spin) — the rotational effective-mass + angular impulse in action. 8 TGS substeps/frame.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT   :: 0.025;
+GDT   :: 0.05;
 c     :: float;
 Clock :: arche { c }
 
@@ -86,14 +86,6 @@ check :: system eff {
     forever(
       seq(
         {
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
           sub(),
           sub(),
           sub(),

@@ -1,11 +1,11 @@
 // Driver test: a 3-box tower settles SOLID under the substepped TGS-Soft solve — the case the old Jacobi
 // solver could only leave compressed & jittering (documented limitation). Here the soft-constraint velocity
-// bias + per-body mass-splitting + 16 substeps settle it dead: boxes rest at ~40/120/200 (each 80 apart),
+// bias + per-body mass-splitting + 8 substeps settle it dead: boxes rest at ~40/120/200 (each 80 apart),
 // gaps within ~0.1px of 80 (<0.2% compression), top box at rest, all upright. No positional pass.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT :: 0.025;
+GDT :: 0.05;
 c :: float;
 Clock :: arche { c }
 
@@ -54,6 +54,5 @@ check :: system eff {
 }
 
 #run seq({ seed, forever(seq({
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
   sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
   tick, check })) })

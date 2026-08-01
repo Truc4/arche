@@ -1,7 +1,7 @@
-// Driver test for `rigid.integrate` (now a TGS SUBSTEP stepping by DT=1/16): a rigid body translates by
+// Driver test for `rigid.integrate` (now a TGS SUBSTEP stepping by DT=1/8): a rigid body translates by
 // `lvel·DT` and its orientation unit-vector `rot` spins by `avel·DT` while STAYING unit length (renormalised
 // small-angle step — no trig). Body starts pos=(10,20), lvel=(3,-1), avel=0.2, rot=(1,0). Calling integrate
-// 16× = ONE frame: pos advances by the full lvel to (13,19) exactly; rot turns ~0.2 rad CCW (rot.y≈0.199)
+// 8× = ONE frame: pos advances by the full lvel to (13,19) exactly; rot turns ~0.2 rad CCW (rot.y≈0.199)
 // and |rot| stays 1.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt }
@@ -35,7 +35,7 @@ verify :: system eff {
   len := vec.len(vec.mk(RBody.rot.x[0], RBody.rot.y[0]));
   fmt.assert(
     RBody.pos.x[0] == 13.0 && RBody.pos.y[0] == 19.0,
-    "linear integrate wrong (lvel·DT over 16 substeps)\n",
+    "linear integrate wrong (lvel·DT over 8 substeps)\n",
   )();
   fmt.assert(len > 0.999 && len < 1.001, "rot drifted off unit length\n")();
   fmt.assert(
@@ -48,14 +48,6 @@ verify :: system eff {
 #run seq(
   {
     seed,
-    integrate,
-    integrate,
-    integrate,
-    integrate,
-    integrate,
-    integrate,
-    integrate,
-    integrate,
     integrate,
     integrate,
     integrate,

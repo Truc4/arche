@@ -78,6 +78,17 @@ int sv_count(SyntaxView v, SyntaxNodeKind kind);                  /* count of ch
 SynText sv_token(SyntaxView v, TokenKind kind);
 int sv_has_token(SyntaxView v, TokenKind kind);
 
+/* True when the decl opens a TUPLE GROUP (`name(x, y) :: T`) — the paren that follows the decl NAME, not a
+ * decorator's argument paren. Use instead of `sv_has_token(v, TOK_LPAREN)` when classifying a decl. */
+int sv_has_group_paren(SyntaxView v);
+
+/* The decl's binding name token, with any leading decorators skipped. */
+SynText sv_decl_name(SyntaxView v);
+
+/* Child index of that name token (-1 when absent) — the point a decl's own tokens begin, past any
+ * decorators. Lowering scans a tuple group's members from here. */
+int sv_decl_name_index(SyntaxView v);
+
 /* Child navigation by syntactic role (expression vs type position), mirroring how
  * the AST reconstruction reads a node. "expr" = SN_LITERAL_EXPR..SN_PAREN_EXPR,
  * "type" = SN_TYPE_REF..SN_TYPE_HANDLE. Absent → NULL node. */

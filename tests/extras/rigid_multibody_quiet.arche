@@ -25,6 +25,17 @@
 //      corners' friction torques ADD (unlike the normal torques, which cancel), that undamped mode carries
 //      angular velocity. omega could never decay -- it was sitting on a marginally-stable eigenvalue.
 //
+// A FOURTH bug lived here, and only here — no single-body test and no synthetic corner reproduces it:
+//   4. THE COULOMB CONE COLLAPSED ON SETTLED CONTACTS. Friction was clamped to `mu * jn` where `jn` is the
+//      CURRENT pass's normal CORRECTION, not the normal impulse the contact is carrying. In the relax pass
+//      bias=0, so a settled contact's target normal velocity is 0, `jn0 <= 0`, and the non-attractive clamp
+//      drives jn to 0 — a zero-width cone, so friction could not act at all. Residual tangential velocity
+//      then survived every pass and bodies crept forever at constant velocity: box0, wedged in a 3-contact
+//      corner, drifted 2^-12 px/frame indefinitely (0.0244 px per 100 frames, 0.244 per 1000 — linear in
+//      the window, so drift, not a limit cycle). It is invisible to a settle test (the body rests at the
+//      right HEIGHT) and to any single-frame check. Adding relax passes only slowed it (0.0183 with three).
+//      Bounding the cone by the CARRIED impulse (contact_impulse's `jnl`) stops it dead.
+//
 // With the split applied correctly each contact asks for ~1/n of the impulse, the friction gain drops to 1,
 // the iteration factor becomes 0, and the scene reaches EXACT rest. Hence the thresholds below are ~zero:
 // every body must be motionless to within 0.01px. There is a long legitimate transient first (the balls roll
@@ -33,7 +44,7 @@
 #import { rigid vec fmt os }
 
 GRAV     :: 0.4;
-GDT      :: 0.025;
+GDT      :: 0.05;
 BINVI    :: 0.0016;
 BREST    :: 0.12;
 BFRIC    :: 0.45;
@@ -312,14 +323,6 @@ report :: system eff {
     forever(
       seq(
         {
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
           sub(),
           sub(),
           sub(),

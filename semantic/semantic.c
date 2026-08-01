@@ -8206,17 +8206,7 @@ static void sem_apply_impl_renames(SemanticContext *ctx) {
 /* The binding LHS name: the IDENT immediately before the first top-level `:` of the decl.
  * Skips any leading `@decorator` / `@allow(slug)` idents (which precede the name). */
 static SynText sem_binding_name(SyntaxView d) {
-	SynText last = {NULL, 0};
-	for (int i = 0; i < d.node->child_count; i++) {
-		SyntaxElem *e = &d.node->children[i];
-		if (e->tag != SE_TOKEN)
-			continue;
-		if (e->as.token.kind == TOK_COLON)
-			break;
-		if (e->as.token.kind == TOK_IDENT)
-			last = (SynText){d.src + e->as.token.offset, e->as.token.length};
-	}
-	return last;
+	return sv_decl_name(d);
 }
 
 /* True if the decl is decorated (its first token is `@`). A decorator with args — `@allow(x)`,
@@ -10438,7 +10428,7 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 		return ds;
 	}
 	SyntaxView rhs_type = sem_type_at(dv, 0);
-	if (sv_present(rhs_type) && !sv_has_token(dv, TOK_LPAREN) && !sv_present(sem_node_at_expr(dv, 0)) &&
+	if (sv_present(rhs_type) && !sv_has_group_paren(dv) && !sv_present(sem_node_at_expr(dv, 0)) &&
 	    (sv_kind(rhs_type) == SN_TYPE_ARRAY || sv_kind(rhs_type) == SN_TYPE_SHAPED_ARRAY)) {
 		/* A bare `::` array type in VALUE position (`buf :: [4]char`, no value expr) — a component whose column
 		 * carries the FULL array type. The scalar-name alias path would drop the `[N]`, so keep the interned
@@ -10447,7 +10437,7 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 		ds->const_value_loc = sem_node_loc(rhs_type.node);
 		return ds;
 	}
-	if (!decorated && sv_has_token(dv, TOK_LPAREN)) {
+	if (sv_has_group_paren(dv)) {
 		/* tuple group: type_value = a tuple of the parenthesized suffix names. EITHER a shape `pos(x,y) :: T`
 		 * (a shared type), OR a named-vector CONSTANT `CENTER(X, Y) :: (320.0, 240.0)` — a tuple VALUE. In the
 		 * value form the member type is inferred from the first element and the value is recorded so the const

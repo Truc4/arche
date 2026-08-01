@@ -8,12 +8,12 @@
 //
 // Bodies use the PORTFOLIO DEMO's exact parameters (the config that actually visibly vibrates): non-square
 // 52x40 / 44x44 extents, mi.y = 0.0016 (BINVI), restitution 0.12 (BREST), friction 0.45 (BFRIC), gravity
-// 0.4/frame over 16 substeps. Box 1 is dropped flat; box 2 is dropped TILTED so it must topple to a face and
+// 0.4/frame over 8 substeps. Box 1 is dropped flat; box 2 is dropped TILTED so it must topple to a face and
 // then go quiet (the topple is what leaves it rocking).
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT   :: 0.025; // GRAV(0.4) / SUBSTEPS(16)
+GDT   :: 0.05; // GRAV(0.4) / SUBSTEPS(8)
 BINVI :: 0.0016; // demo's inverse inertia for every box
 BREST :: 0.12; // demo restitution
 BFRIC :: 0.45; // demo friction
@@ -164,14 +164,6 @@ check :: system eff {
     forever(
       seq(
         {
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
           sub(),
           sub(),
           sub(),

@@ -2,7 +2,7 @@
 /// collision detection, a 2-point contact manifold, and a SUBSTEPPED soft-constraint velocity solver
 /// (Box2D-v3 "TGS-Soft" flavour). The full-fat companion to the AABB `physics` device.
 ///
-/// The frame is advanced in SUBSTEPS(16) small steps of DT=1/16. Each substep: (driver) gravity, then
+/// The frame is advanced in SUBSTEPS(8) small steps of DT=1/8. Each substep: (driver) gravity, then
 /// `contacts` (count each body's active contacts for mass-splitting), then a few soft-constraint velocity
 /// iterations, then `integrate` (position by lvel·DT). RIGIDITY comes from this small step + the soft
 /// velocity bias (the normal impulse drives contacts to a small SEPARATING target ∝ penetration, removing
@@ -236,8 +236,15 @@ contact_impulse :: func(
   kt0    := mxa + mxb + mya * rtA * rtA + myb * rtB * rtB;
   kt     := select(kt0 > 0.0, kt0, 1.0);
   jt0    := (0.0 - vt) / kt * hit;
-  lim    := mu * jn; // Coulomb cone bounded by the (pure) normal impulse
-  jt     := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
+  // Coulomb cone, bounded by the normal impulse the contact CARRIES — not by this pass's normal
+  // CORRECTION. `jn` is the correction, and in the relax pass (bias=0) a settled contact's target is
+  // vtar=0, so jn0 <= 0 and the non-attractive clamp drives jn to 0: the cone would collapse and
+  // friction could not act at all. `jnl` re-derives the carried impulse with the bias term live.
+  // A SPECULATIVE contact carries nothing (the bodies are apart), so there the cone stays `jn`.
+  jnl0 := MASS_SCALE * (select(BIAS_RATE * pen > MAX_BIAS, MAX_BIAS, BIAS_RATE * pen) - vn) / kn * hit;
+  jnl  := select(jnl0 > 0.0, jnl0, 0.0);
+  lim  := mu * select(spec > 0.5, jn, jnl);
+  jt   := select(jt0 > lim, lim, select(jt0 < 0.0 - lim, 0.0 - lim, jt0));
   // APPLY with the FULL inverse mass / inertia — NOT the split ones (Tonge: "use the full mass to apply the
   // impulses"). Using the split terms here would cancel the split out entirely (see the note above).
   p  := n * jn + t * jt;
@@ -602,17 +609,11 @@ integrate :: map (query { pos, lvel, spin, rot })(pos, rot) {
 /// contacts scales each contact's response by 1/N so their sum doesn't overshoot). `cor` (once the positional
 /// accumulator, now unused by the velocity-space solver) is repurposed as this count.
 contacts :: system (query { pos, rot, ext, spin } as All) {
-  map (query { pos, rot, ext, spin, cor, awake } as me)(cor) {
-    if (me.awake == 1) {
-      cor = reduce(
-        +,
-        pair_count(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin),
-      );
-    }
-    else {
-      cor.x = 0.0;
-      cor.y = 0.0;
-    }
+  map (query { pos, rot, ext, spin, cor } as me)(cor) {
+    cor = reduce(
+      +,
+      pair_count(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin),
+    );
   };
 }
 
@@ -666,26 +667,29 @@ pair_normal :: func(pa: pos, ra: pos, ea: pos, sa: spin, pb: pos, rb: pos, eb: p
 /// body it touches into `sup`. See the datasheet — this is what makes a real GROUNDED test possible (`sup.y > 0`
 /// = something is under me) and lets a character stop walking into a wall it is already flush against.
 supports :: system (query { pos, rot, ext, spin } as All) {
-  map (query { pos, rot, ext, spin, sup, awake } as me)(sup) {
-    if (me.awake == 1) {
-      sup = reduce(
-        +,
-        pair_normal(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin),
-      );
-    }
-    else {
-      sup.x = 0.0;
-      sup.y = 0.0;
-    }
+  map (query { pos, rot, ext, spin, sup } as me)(sup) {
+    sup = reduce(
+      +,
+      pair_normal(me.pos, me.rot, me.ext, me.spin, All.pos, All.rot, All.ext, All.spin),
+    );
   };
 }
 
+/// A body that cannot RECEIVE an impulse does not need the fold that computes it. `contact_impulse` applies
+/// with the FULL inverse mass: `dl = p*(-ma.x)` and `dw = (-ma.y)*cross(rA,p)`. So the LINEAR fold is
+/// exactly ±0 for every partner when `mi.x == 0`, and the ANGULAR fold is exactly ±0 when `mi.y == 0` —
+/// and the gates differ accordingly (`solve_lin*` on `mi.x`, `solve_ang*` on `mi.y`). Gating both on `mi.x`
+/// would be WRONG: a body with `mi = (0, k)` — immovable but free to spin — would silently lose its angular
+/// impulse. Skipping a provably-zero fold is bitwise-identical output and drops every static and kinematic
+/// row out of the O(bodies × bodies) outer loop. `mi` is ALREADY this device's liveness datum (datasheet:
+/// `mi = (0,0)` ⇒ an immovable static body), so this needs no flag column and no second pool.
+///
 /// Solve phase 1a (Jacobi, LINEAR): each body folds the soft-constraint linear impulse from every other body
 /// into `dimp`, reading a velocity snapshot, mass-split by `ms = 1/max(cor.x,1)`. Iterate the trio a few
 /// times per substep.
 solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
-  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dimp, awake } as me)(dimp) {
-    if (me.awake == 1) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dimp } as me)(dimp) {
+    if (me.mi.x > 0.0) {
       // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.
@@ -728,9 +732,16 @@ solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
 /// still sitting in `lvel`/`spin`. Left there it re-enters the next substep and the contact never reaches a
 /// fixed point — a resting body buzzes forever (Box2D-v3 calls this the relax pass; without it TGS-Soft is an
 /// energy source at rest). The relax solve does NOT integrate — it only takes the surplus back out.
+///
+/// ONE relax pass per substep is enough — but only because `contact_impulse` bounds friction by the
+/// CARRIED normal impulse. Bound it by this pass's normal correction instead and the cone collapses to
+/// zero here (bias=0 ⇒ vtar=0 ⇒ jn=0), friction stops acting on settled contacts, and residual tangential
+/// velocity survives every pass: bodies then creep forever and adding relax passes only slows the creep
+/// (measured 0.0244 → 0.0183 px per 100 frames for a second and third pass). Guarded by
+/// tests/extras/rigid_multibody_quiet.arche, which is the only scene here rich enough to expose it.
 solve_lin_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
-  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dimp, awake } as me)(dimp) {
-    if (me.awake == 1) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dimp } as me)(dimp) {
+    if (me.mi.x > 0.0) {
       // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.
@@ -768,8 +779,8 @@ solve_lin_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as 
 
 /// Solve phase 1b (Jacobi, ANGULAR): folds the angular impulse into `dang.x` from the SAME snapshot + `ms`.
 solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
-  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dang, awake } as me)(dang) {
-    if (me.awake == 1) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dang } as me)(dang) {
+    if (me.mi.y > 0.0) {
       // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.
@@ -807,8 +818,8 @@ solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
 
 /// RELAX (angular) — the `solve_ang` twin with the soft bias disabled. See `solve_lin_relax`.
 solve_ang_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
-  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dang, awake } as me)(dang) {
-    if (me.awake == 1) {
+  map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dang } as me)(dang) {
+    if (me.mi.y > 0.0) {
       // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
       // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
       // tests/unit/language/vec_component_local_type.arche); the divide forces float.

@@ -3,13 +3,13 @@
 // penetration, velocity → 0, no spin — the rigidity the soft-constraint velocity solver buys (the old
 // Baumgarte solver rested ~0.8px low with visible give; this rests within ~0.01px of 40).
 //
-// The schedule runs 16 TGS substeps/frame; each `sub()` = per-substep gravity + contact-count (for
+// The schedule runs 8 TGS substeps/frame; each `sub()` = per-substep gravity + contact-count (for
 // mass-splitting) + 2 soft-constraint velocity iterations + a DT position integrate. `forever` inlines the
 // schedule once (a per-frame unroll of the full substep list overflows llc); frame N advances one frame.
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT   :: 0.025; // GRAV(0.4) * DT(1/16) per substep
+GDT   :: 0.05; // GRAV(0.4) * DT(1/8) per substep
 c     :: float;
 Clock :: arche { c }
 
@@ -94,14 +94,6 @@ check :: system eff {
     forever(
       seq(
         {
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
           sub(),
           sub(),
           sub(),

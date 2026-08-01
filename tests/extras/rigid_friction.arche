@@ -5,7 +5,7 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT   :: 0.025;
+GDT   :: 0.05;
 c     :: float;
 Clock :: arche { c }
 
@@ -86,14 +86,6 @@ check :: system eff {
     forever(
       seq(
         {
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
           sub(),
           sub(),
           sub(),

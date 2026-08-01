@@ -100,6 +100,69 @@ int sv_has_token(SyntaxView v, TokenKind kind) {
 	return sv_token(v, kind).ptr != NULL;
 }
 
+/* Child index of the decl's NAME token, skipping any leading decorators. A decorator is `@ name` plus,
+ * when it takes arguments, a balanced `( … )` — and those parens and idents are flat token children of the
+ * decl, indistinguishable by kind from the decl's own name and tuple-group paren. Stacked decorators are
+ * skipped in turn. Returns -1 when there is no name token. */
+int sv_decl_name_index(SyntaxView v) {
+	if (!sv_present(v))
+		return -1;
+	int i = 0, n = v.node->child_count;
+	/* comments are ordinary token children and may sit anywhere between a decorator and the name */
+#define SV_SKIP_COMMENTS()                                                                                             \
+	while (i < n && v.node->children[i].tag == SE_TOKEN && v.node->children[i].as.token.kind == TOK_COMMENT)           \
+	i++
+	SV_SKIP_COMMENTS();
+	while (i < n && v.node->children[i].tag == SE_TOKEN && v.node->children[i].as.token.kind == TOK_AT) {
+		i++; /* '@' */
+		SV_SKIP_COMMENTS();
+		if (i < n && v.node->children[i].tag == SE_TOKEN)
+			i++; /* decorator name (IDENT, or a keyword such as `policy`) */
+		SV_SKIP_COMMENTS();
+		if (i < n && v.node->children[i].tag == SE_TOKEN && v.node->children[i].as.token.kind == TOK_LPAREN) {
+			int depth = 0;
+			for (; i < n && v.node->children[i].tag == SE_TOKEN; i++) {
+				TokenKind k = v.node->children[i].as.token.kind;
+				if (k == TOK_LPAREN)
+					depth++;
+				else if (k == TOK_RPAREN && --depth == 0) {
+					i++; /* consume the closing ')' */
+					break;
+				}
+			}
+		}
+		SV_SKIP_COMMENTS();
+	}
+	if (i < n && v.node->children[i].tag == SE_TOKEN && v.node->children[i].as.token.kind == TOK_IDENT)
+		return i;
+	return -1;
+#undef SV_SKIP_COMMENTS
+}
+
+/* The decl's binding name, decorators skipped. `.ptr` is NULL when absent. */
+SynText sv_decl_name(SyntaxView v) {
+	SynText t = {NULL, 0};
+	int i = sv_decl_name_index(v);
+	if (i >= 0) {
+		t.ptr = v.src + v.node->children[i].as.token.offset;
+		t.len = v.node->children[i].as.token.length;
+	}
+	return t;
+}
+
+/* Does decl `v` carry a TUPLE-GROUP paren — the `(` that opens `name(x, y) :: T` — as opposed to a
+ * decorator's own `(`? "Has a LPAREN anywhere" cannot tell them apart: `@allow(slug) p(x, y) :: float` has
+ * two. The group paren is the one immediately following the decl's NAME. Semantic classification and
+ * lowering both ask through here so they agree exactly. */
+int sv_has_group_paren(SyntaxView v) {
+	int i = sv_decl_name_index(v);
+	if (i < 0)
+		return 0;
+	i++;
+	return i < v.node->child_count && v.node->children[i].tag == SE_TOKEN &&
+	       v.node->children[i].as.token.kind == TOK_LPAREN;
+}
+
 static int is_expr_kind(SyntaxNodeKind k) {
 	return k >= SN_LITERAL_EXPR && k <= SN_PAREN_EXPR;
 }

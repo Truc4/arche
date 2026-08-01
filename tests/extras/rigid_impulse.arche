@@ -1,11 +1,11 @@
 // Driver test for the soft-constraint NORMAL impulse under a hard impact: a box free-falls from a height and
 // hits a wide static floor at high speed (~17 px/frame). The substepped solver must ARREST it at the surface
 // (pos.y ≈ 40, ext.y) with essentially zero penetration and WITHOUT tunnelling through the floor, no spurious
-// spin, then hold it at rest. 16 TGS substeps/frame (see rigid_settle for the schedule shape).
+// spin, then hold it at rest. 8 TGS substeps/frame (see rigid_settle for the schedule shape).
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT   :: 0.025; // GRAV(0.4) * DT(1/16)
+GDT   :: 0.05; // GRAV(0.4) * DT(1/8)
 c     :: float;
 Clock :: arche { c }
 
@@ -86,14 +86,6 @@ check :: system eff {
     forever(
       seq(
         {
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
-          sub(),
           sub(),
           sub(),
           sub(),
