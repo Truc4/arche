@@ -55,35 +55,36 @@ IR and asserts **zero** `arche_hot_resolve`.
 The reload integration tests are timing-sensitive (a live build + reload, possibly under heavy parallel CI
 load), so each retries once: a real regression fails every attempt, a scheduling blip does not.
 
-## Known bug: concurrent `arche run` of one project collides
+## Concurrent sessions: one owns the shared dir
 
-**Two `arche run` sessions of the same project crash each other.** The hot dir defaults to
-`<project>/build/.arche-hot` — per PROJECT, not per process — so every concurrent run publishes its
-device `.so` files over the same paths, and each host, which polls those paths and re-dlopens on change,
-loads artifacts belonging to the other. The host then SIGSEGVs mid-call.
+The hot dir holds each device's live `unit_N.so`, and the running host polls those paths and re-dlopens on
+change. Two sessions sharing it would therefore publish over each other, and a host would load a library
+built for a different program — unit indices map to different devices, so this segfaults rather than
+misbehaving quietly.
 
-Publishing is already atomic (pid-tagged temp + `rename`, `compile/compile.c`), so this is not a torn
-file: the `.so` that gets loaded is complete and correct — it just belongs to a different host. Atomicity
-cannot fix a shared destination.
+**One session owns `<project>/build/.arche-hot` at a time.** `arche run` takes an exclusive `flock` on
+`<hotdir>/.lock`; a session that cannot take it falls back to `<project>/build/.arche-hot-<pid>` and
+removes that tree on exit. So:
 
-Two things hide it:
+- the normal single-session workflow is unchanged and keeps reusing `unit_N.so` across runs — that reuse
+  is the point of a stable dir, since the `cc -shared` link dominates reload latency;
+- a second concurrent session (another developer, a second terminal, a parallel test runner) is isolated
+  automatically, with no environment set up by the caller;
+- `flock` is released by the kernel on process exit, so an interrupted or killed run leaves no stale lock.
 
-- the SIGSEGV handler (`runtime/stack_check.c`) prints `stack overflow` for **any** segfault and exits
-  **0** — a deliberate choice (see `tests/unit/language/errors/stack_overflow.arche`) — so a crashed run
-  reports success and the only symptom is missing stdout;
-- a fast machine usually wins the race. It first surfaced in CI on a 2-core runner, as
-  `extras/camera_smoke.arche` failing on a commit that passed locally 40/40.
+The inspect socket lives under the hot dir, so it follows the same rule: the owning session serves the
+project's socket, a concurrent one serves its own.
 
-Red capture: `tests/unit/runtime/hot_concurrent_run.py`. It sets no `ARCHE_HOT_DIR`/`ARCHE_CACHE_DIR` on
-purpose — the default is what users get — and currently fails a handful of runs out of 64.
+An explicit `ARCHE_HOT_DIR` still wins and is *not* locked — pointing two processes at one dir is
+supported (the integration tests and `tests/unit/compiler/per_unit/singleton_read.arche` do exactly that).
+For that case the runtime's reload copy is per-process: `ensure_loaded` copies to
+`<path>.hot.<pid>.<gen>` before `dlopen`, so two hosts at the same generation cannot truncate each other's
+image mid-load.
 
-`tests/unit/compiler/per_unit/singleton_read.arche` passes its own `ARCHE_HOT_DIR`/`ARCHE_CACHE_DIR`.
-That makes *that test* deterministic; it is not a fix, and the `%arche run` tests under `tests/extras/`
-are deliberately left un-isolated so the suite keeps exercising the real configuration.
-
-The fix is to stop two sessions sharing a live artifact directory — e.g. a per-process hot dir for a
-one-shot `run`, keeping a stable dir only where a watch session genuinely reuses build products across
-invocations.
+Guarded by `tests/unit/runtime/hot_concurrent_run.py` (64 concurrent runs of one project, default
+environment). Note that a crashed host is easy to miss: the SIGSEGV handler
+(`runtime/stack_check.c`) prints `stack overflow` for **any** segfault and exits **0** — a deliberate
+choice (see `tests/unit/language/errors/stack_overflow.arche`) — so the only symptom is missing stdout.
 
 ## Deferred rebuild work (why / why-not)
 

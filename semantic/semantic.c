@@ -1096,6 +1096,7 @@ static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid);
 static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name);
 static ParamSummary sem_param_summary_node(SyntaxView p);
 static int proc_param_is_inout(DeclSummary *proc, int param_idx);
+static int proc_out_param_is_inout(DeclSummary *proc, int out_idx);
 
 /* By-reference aggregate param types: arrays are passed by reference (borrowed read-only by
  * default), so mutating one through a non-`move` param is a purity violation. Scalars are by
@@ -3926,6 +3927,18 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				free(an);
 			}
 		}
+
+		/* W0032 inout_outarg_colon_bind: `(name:)` declares a NEW binding, but an IN-OUT out-param's value
+		 * IS the in-arg's place — there is nothing to declare, and the binding ends up naming nothing. */
+		if (mb_callee_proc)
+			for (int t = 0; t < mbt_count && t < mb_callee_proc->out_param_count; t++) {
+				if (!mbt[t].is_new || !mbt[t].name || strcmp(mbt[t].name, "_") == 0)
+					continue;
+				if (!proc_out_param_is_inout(mb_callee_proc, t))
+					continue;
+				const char *pn = mb_callee_proc->out_params[t].name;
+				sem_emit_lint_inout_outarg_colon_bind(ctx, loc, mbt[t].name, pn ? pn : mbt[t].name);
+			}
 
 		/* bind the targets (new shadows; existing must be live) */
 		for (int i = 0; i < mbt_count; i++) {
@@ -6820,6 +6833,20 @@ static void sem_check_policies(SemanticContext *ctx) {
 
 /* True if in-param `param_idx` is an in-out param: its name also appears in the out-list.
  * Mirrors codegen's proc_out_param_is_inout (codegen.c). An in-out's out-param shadows it. */
+/* True if OUT-param `out_idx` is the out half of an in-out pair: its name also appears in the IN-list.
+ * The out-index mirror of proc_param_is_inout (and of codegen's proc_out_param_is_inout). */
+static int proc_out_param_is_inout(DeclSummary *proc, int out_idx) {
+	if (!proc || out_idx < 0 || out_idx >= proc->out_param_count)
+		return 0;
+	const char *on = proc->out_params[out_idx].name;
+	if (!on)
+		return 0;
+	for (int i = 0; i < proc->param_count; i++)
+		if (proc->params[i].name && strcmp(proc->params[i].name, on) == 0)
+			return 1;
+	return 0;
+}
+
 static int proc_param_is_inout(DeclSummary *proc, int param_idx) {
 	if (!proc || param_idx < 0 || param_idx >= proc->param_count)
 		return 0;

@@ -905,17 +905,12 @@ sum_diff(10, 3)(s:, d:);   // s = 13, d = 7 - declared + scoped by the out-args
 fmt.assert(s == 13 && d == 7, "sum and diff\n")();
 ```
 
-> **Known bug — an in-out out-param cannot be colon-bound.** An out-param that shadows an in-param is
-> the *in-out* form (see the next section): the caller's place goes in and comes back, so the call
-> writes an existing place — `f(n, _)(b)`. Writing `f(n, b)(nb:)` instead asks to declare a *new* local
-> for a value that has no new place, and it silently produces nothing: `nb` has no value anywhere
-> afterwards, with no diagnostic. Before codegen's unresolved-name fallback became a hard error this was
-> fully silent — the reference lowered to the constant `0`. It does not require the two types to differ.
-> This is what broke the `window_open` example further down: `w` was the *width* in the in-list and the
-> *window* in the out-list, so the out became an in-out of an unrelated `int` and `(w:)` bound nothing —
-> the example passed `0` as the window handle. Red capture:
-> `tests/unit/language/errors/inout_outarg_colon_bind_rejected.arche`; the fix is a diagnostic at the
-> call site.
+> **An in-out out-param is written, not declared.** An out-param that shadows an in-param is the *in-out*
+> form (see the next section): the caller's place goes in and comes back, so the call names the **existing**
+> place with `_` marking the in-slot — `f(n, _)(b)`. `f(n, b)(nb:)` asks to declare a *new* local for a
+> value that has no new place, and is rejected as **W0032** (`inout_outarg_colon_bind`, an error by
+> default; `@allow(inout_outarg_colon_bind)` opts out). It does not depend on the two types differing.
+> If you meant a fresh output, the out-param should not share an in-param's name — rename the in-param.
 
 **Filling a caller buffer (zero-copy).** A buffer that a callee writes is exposed as a `func`
 returning an **`Eff`**: a `#foreign` extern declares the buffer as an in-out parameter (the C-ABI
