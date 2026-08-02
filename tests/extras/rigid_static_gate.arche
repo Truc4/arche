@@ -1,0 +1,128 @@
+// A body that is IMMOVABLE but FREE TO SPIN (`mi = (0, k)` — zero inverse mass, nonzero inverse inertia,
+// i.e. a pivot/turnstile) must still receive ANGULAR impulse from a contact.
+//
+// The solvers skip the fold for a body that cannot receive the impulse it computes: `contact_impulse`
+// applies with the FULL inverse mass, so the LINEAR fold is exactly ±0 when `mi.x == 0` and the ANGULAR
+// fold is exactly ±0 when `mi.y == 0`. Those are DIFFERENT conditions, so `solve_lin*` gates on `mi.x` and
+// `solve_ang*` on `mi.y`. Gating the angular pair on `mi.x` instead looks harmless — every body in every
+// other test has `mi.x` and `mi.y` both zero or both nonzero, so nothing else here can tell the two apart —
+// but it silently discards this body's angular impulse and the pivot never turns.
+//
+// A falling box strikes the pivot off-centre. The peak |rot.y| over the whole run is tracked rather than
+// sampled at one frame: the pivot is free, so it swings back once the box slides off, and any single-frame
+// check would read ~0 for the wrong reason. Both halves are asserted — a pivot that drifts means the linear
+// gate is wrong, a pivot that never turns means the angular gate is keyed on the wrong component.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt os }
+
+GDT      :: 0.05; // GRAV(0.4) * DT(1/8) per substep
+c        :: float;
+Clock    :: arche { c }
+pk(x, y) :: float; // .x = peak |rot.y| seen so far
+
+Piv :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, sup, pk }
+
+[4]Piv(3);
+[4]RBody; // datasheet storage floor
+[1]Clock(1);
+seed :: system {
+  // row 0: the pivot — immovable (mi.x = 0) but free to spin (mi.y > 0), resting on the floor.
+  // row 1: a dynamic box dropped so it lands OFF-CENTRE on the pivot, applying a torque.
+  // row 2: the immovable floor, top surface at y = 0.
+  Piv.pos.x  = { 0.0, 30.0, 0.0 };
+  Piv.pos.y  = { 20.0, 400.0, -1000.0 };
+  Piv.lvel.x = { 0.0, 0.0, 0.0 };
+  Piv.lvel.y = { 0.0, 0.0, 0.0 };
+  Piv.spin.x = { 0.0, 0.0, 0.0 };
+  Piv.spin.y = { 0.0, 0.0, 0.0 };
+  Piv.rot.x  = { 1.0, 1.0, 1.0 };
+  Piv.rot.y  = { 0.0, 0.0, 0.0 };
+  Piv.ext.x  = { 60.0, 20.0, 4000.0 };
+  Piv.ext.y  = { 20.0, 20.0, 1000.0 };
+  Piv.mi.x   = { 0.0, 1.0, 0.0 };
+  Piv.mi.y   = { 0.002, 0.00375, 0.0 };
+  Piv.mat.x  = { 0.0, 0.0, 0.0 };
+  Piv.mat.y  = { 0.3, 0.3, 0.3 };
+  Piv.dimp.x = { 0.0, 0.0, 0.0 };
+  Piv.dimp.y = { 0.0, 0.0, 0.0 };
+  Piv.dang.x = { 0.0, 0.0, 0.0 };
+  Piv.dang.y = { 0.0, 0.0, 0.0 };
+  Piv.cor.x  = { 0.0, 0.0, 0.0 };
+  Piv.cor.y  = { 0.0, 0.0, 0.0 };
+  Piv.pk.x   = { 0.0, 0.0, 0.0 };
+  Clock.c    = { 0.0 };
+}
+
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
+peak :: map (query { rot, pk })(pk) {
+  pk.x = select(vec.absf(rot.y) > pk.x, vec.absf(rot.y), pk.x);
+}
+
+sub :: func() -> Schedule {
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
+}
+
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 99.5) {
+      fmt.assert(
+        Piv.pk.x[0] > 0.002,
+        "immovable-but-spinnable body never turned — the angular solve is gated on mi.x, not mi.y\n",
+      )();
+      fmt.assert(
+        Piv.pos.x[0] > 0.0 - 0.0001 && Piv.pos.x[0] < 0.0001,
+        "pivot translated despite mi.x = 0\n",
+      )();
+      fmt.assert(
+        Piv.pos.y[0] > 19.9999 && Piv.pos.y[0] < 20.0001,
+        "pivot translated despite mi.x = 0\n",
+      )();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
+}
+
+#run seq(
+  {
+    seed,
+    forever(
+      seq(
+        {
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          tick,
+          peak,
+          check,
+        },
+      ),
+    ),
+  },
+)

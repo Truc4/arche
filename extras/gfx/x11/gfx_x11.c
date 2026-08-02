@@ -6,6 +6,7 @@
  * calls present(). This is the only way a tiling WM (which forces the window size) shows a full-window
  * image rather than a fixed-size patch in the corner. `window` (opaque on the arche side) is the
  * GfxX11* pointer; pixels are 0xRRGGBB ints, presented inline via XPutImage (no MIT-SHM). */
+#include "gfx_x11.h"
 #include <X11/Xlib.h>
 #include <X11/Xutil.h>
 #include <X11/keysym.h>
@@ -23,6 +24,7 @@ typedef struct {
 	Atom wm_delete;
 	int open;
 	int left, right; /* ←/→ arrow key held state, updated in poll, read by gfx_be_axis_x */
+	int up, down;    /* ↑/↓ (+ Space/W/S) held state, read by gfx_be_axis_y */
 	/* Discrete key FIFO for gfx_be_key (an editor needs each keypress, not held state). Printable keys are
 	 * their ASCII byte; special keys use the sentinels below. */
 	int keyq[64];
@@ -170,12 +172,22 @@ int gfx_be_poll(void *handle) {
 			char buf[16];
 			KeySym ks;
 			int n = XLookupString(&ev.xkey, buf, sizeof(buf), &ks, NULL);
-			if (ks == XK_Left) {
+			/* HELD movement state for gfx_be_axis_x / gfx_be_axis_y. Arrows + Space only: WASD are PRINTABLE
+			 * characters that an editor must still receive, so a movement binding for them has to be tracked
+			 * alongside the dispatch below rather than inside it — and the two backends drifted apart doing
+			 * exactly that. Space is the one exception, and it is tracked here for the same reason. */
+			if (ks == XK_Left)
 				g->left = down;
+			if (ks == XK_Right)
+				g->right = down;
+			if (ks == XK_Up || ks == XK_space)
+				g->up = down;
+			if (ks == XK_Down)
+				g->down = down;
+			if (ks == XK_Left) {
 				if (down)
 					keyq_push(g, GFX_KEY_LEFT);
 			} else if (ks == XK_Right) {
-				g->right = down;
 				if (down)
 					keyq_push(g, GFX_KEY_RIGHT);
 			} else if (ks == XK_Up) {
@@ -218,6 +230,15 @@ int gfx_be_axis_x(void *handle) {
 	return (g->right ? 1 : 0) - (g->left ? 1 : 0);
 }
 
+/* The vertical partner to gfx_be_axis_x: -1 while up is held, +1 while down is. HELD, not pressed — see
+ * gfx.arche's `axis_y` for why the drained key queue cannot answer this. */
+int gfx_be_axis_y(void *handle) {
+	GfxX11 *g = handle;
+	if (!g)
+		return 0;
+	return (g->down ? 1 : 0) - (g->up ? 1 : 0);
+}
+
 /* Next discrete key press (ASCII byte, or a GFX_KEY_* sentinel), or 0 if the queue is empty. Non-blocking:
  * call once per frame after gfx_be_poll to drain input for an editor/text field. */
 int gfx_be_key(void *handle) {
@@ -252,6 +273,52 @@ int gfx_be_scroll(void *handle) {
 	int s = g->scroll;
 	g->scroll = 0;
 	return s;
+}
+
+/* No foreign text widget on this backend: gfx always owns the keyboard, so focus is entirely the driver's
+ * business (it hit-tests its own editor rect). See gfx.arche's `text_focus` / `release_text`. */
+int gfx_be_text_focus(void *handle) {
+	(void)handle;
+	return 0;
+}
+
+int gfx_be_release_text(void *handle) {
+	(void)handle;
+	return 0;
+}
+
+/* No touch input on this backend — a real mouse is a FINE pointer, so on-screen touch controls are never
+ * wanted here. See gfx.arche's `coarse_pointer`. */
+int gfx_be_coarse_pointer(void *handle) {
+	(void)handle;
+	return 0;
+}
+
+/* No DOM to sandwich: a single framebuffer and plain draw order already give the right depth, so the layer
+ * break is a no-op. See gfx.arche's `split`. */
+void gfx_be_split(void *handle, int *px, int w, int h) {
+	(void)handle;
+	(void)px;
+	(void)w;
+	(void)h;
+}
+
+/* No stacked surfaces to order: stacking is a no-op here. See gfx.arche's `layers`. */
+int gfx_be_layers(void *handle, int bgz, int fgz) {
+	(void)handle;
+	(void)bgz;
+	(void)fgz;
+	return 0;
+}
+
+/* Expose the scene window's X11 identity to sibling native backends (see gfx_x11.h). */
+Display *gfx_x11_display(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->dpy : NULL;
+}
+Window gfx_x11_window(void *handle) {
+	GfxX11 *g = handle;
+	return g ? g->win : 0;
 }
 
 void gfx_be_close(void *handle) {

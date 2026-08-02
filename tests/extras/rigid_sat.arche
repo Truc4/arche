@@ -1,0 +1,69 @@
+// Driver test for `rigid.sat`: the separating-axis test over oriented boxes returns (normal.x, normal.y,
+// penetration). Three cases, all unit-half boxes (ext=(1,1)):
+//   A@(0,0) angle0  vs  B@(1.5,0) angle0  → overlap 0.5 on +x, normal ≈ (1,0), penetration ≈ 0.5.
+//   A@(0,0) angle0  vs  C@(3.0,0) angle0  → disjoint, penetration < 0.
+//   A@(0,0) angle0  vs  D@(2.2,0) angle45 → a corner of the rotated box pokes in (its half-diagonal is
+//                    √2≈1.414, so reach 1+1.414=2.414 > 2.2) → still overlapping, penetration > 0.
+// Confirms axis projection with rotation and the least-penetration normal. rot=(1,0) is angle 0; a 45°
+// box has rot=(0.7071,0.7071).
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt }
+
+[4]RBody(1);
+seed :: system {
+  RBody.pos.x  = { 0.0 };
+  RBody.pos.y  = { 0.0 };
+  RBody.lvel.x = { 0.0 };
+  RBody.lvel.y = { 0.0 };
+  RBody.spin.x = { 0.0 };
+  RBody.spin.y = { 0.0 };
+  RBody.rot.x  = { 1.0 };
+  RBody.rot.y  = { 0.0 };
+  RBody.ext.x  = { 1.0 };
+  RBody.ext.y  = { 1.0 };
+  RBody.mi.x   = { 1.0 };
+  RBody.mi.y   = { 1.0 };
+  RBody.mat.x  = { 0.0 };
+  RBody.mat.y  = { 0.0 };
+  RBody.dimp.x = { 0.0 };
+  RBody.dimp.y = { 0.0 };
+  RBody.dang.x = { 0.0 };
+  RBody.dang.y = { 0.0 };
+  RBody.cor.x  = { 0.0 };
+  RBody.cor.y  = { 0.0 };
+}
+
+verify :: system eff {
+  hit := rigid.sat(
+    vec.mk(0.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+    vec.mk(1.5, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+  );
+  gap := rigid.sat(
+    vec.mk(0.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+    vec.mk(3.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+  );
+  rothit := rigid.sat(
+    vec.mk(0.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+    vec.mk(2.2, 0.0),
+    vec.mk(0.70711, 0.70711),
+    vec.mk(1.0, 1.0),
+  );
+  fmt.assert(hit.z > 0.49 && hit.z < 0.51, "overlap penetration should be ~0.5\n")();
+  fmt.assert(hit.x > 0.99 && hit.y > -0.01 && hit.y < 0.01, "overlap normal should be ~(1,0)\n")(
+  );
+  fmt.assert(gap.z < 0.0, "disjoint boxes should report negative penetration\n")();
+  fmt.assert(rothit.z > 0.0, "rotated corner should still overlap\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, verify })

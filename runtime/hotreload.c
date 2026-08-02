@@ -17,6 +17,7 @@
 #include <string.h>
 #include <sys/stat.h>
 #include <time.h>
+#include <unistd.h>
 
 #ifndef HOT_MAX_UNITS
 #define HOT_MAX_UNITS 64
@@ -55,7 +56,12 @@ void arche_hot_register(int unit, const char *name) {
 
 /* (Re)load the unit's `.so` if it is unloaded or its mtime changed. Loads a fresh versioned COPY each
  * time: dlopen caches by realpath, so reopening the same path after dlclose can hand back the stale
- * image — copying to `<path>.hot.<gen>` forces a genuinely new load (the standard hot-reload trick). */
+ * image — copying to `<path>.hot.<pid>.<gen>` forces a genuinely new load (the standard hot-reload trick).
+ *
+ * The copy name carries the PID because the hot dir can legitimately be shared by two processes (the
+ * integration tests and per_unit/singleton_read.arche point an explicit ARCHE_HOT_DIR at one dir). Without
+ * it, two hosts at the same generation write the SAME `<path>.hot.<gen>`, so one truncates the image the
+ * other is mid-dlopen — a segfault in a host that never touched the other's code. */
 static void ensure_loaded(HotUnit *u) {
 	struct stat st;
 	if (stat(u->path, &st) != 0)
@@ -68,7 +74,7 @@ static void ensure_loaded(HotUnit *u) {
 		return; /* current */
 
 	char tmp[1100];
-	snprintf(tmp, sizeof(tmp), "%s.hot.%u", u->path, u->gen + 1);
+	snprintf(tmp, sizeof(tmp), "%s.hot.%ld.%u", u->path, (long)getpid(), u->gen + 1);
 	FILE *in = fopen(u->path, "rb");
 	if (!in)
 		return;

@@ -1,15 +1,38 @@
 #module
+// Keyed by `bid`, like the button device. A pool ROW has no identity a backend can key on, and this host owns
+// a real <div> per row — without the key it could only ever manage one (it used to: a hardcoded
+// getElementById("ui-panel"), so a second Panel silently repositioned the first).
+//
+// `z` picks the depth: the host echoes it straight into the <div>'s CSS z-index, relative to the two gfx
+// canvases (see gfx.arche's `split`). A panel below the foreground canvas's z sits BEHIND the world's bodies,
+// one above it in front. DOM stacking is a z-index, not a paint ORDER, so this device needs no two passes:
+// `render` places every panel regardless of side, and `render_bg` is an empty stub kept only so a driver that
+// schedules both (for the framebuffer backend, which DOES need two passes) still binds.
 #foreign
-panel_be_render :: proc(x: int, y: int, width: int, height: int, title: []char, n: int)(
+panel_be_render :: proc(
+  bid    : int,
+  z      : int,
+  x      : int,
+  y      : int,
+  width  : int,
+  height : int,
+  title  : []char,
+  n      : int,
+)(
   title: []char,
 );
+// The SUBTITLE is a second line under the title rule — a caption, a hint, a status. Its own seam rather than
+// more parameters on `render`: a foreign proc borrows each array it takes, and two `[]char` in one call is a
+// borrow pattern nothing else in the device library uses.
+#foreign
+panel_be_sub :: proc(bid: int, sub: []char, n: int)(sub: []char);
 
 render :: system eff {
-  map (query { screen, size, title, len }) eff {
-    x := screen.x;
-    y := screen.y;
-    w := size.w;
-    h := size.h;
-    panel_be_render(x, y, w, h, title, len)(_:);
+  map (query { bid, z, screen, size, title, len, sub, sublen }) eff {
+    panel_be_render(bid, z, screen.x, screen.y, size.w, size.h, title, len)(_:);
+    panel_be_sub(bid, sub, sublen)(_:);
   };
+}
+
+render_bg :: system eff {
 }

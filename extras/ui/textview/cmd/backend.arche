@@ -1,0 +1,62 @@
+#import { paint }
+
+OUT_BG  :: 0x11151f;
+OUT_COL :: 0xa6e3a1;
+OUT_TSZ :: 18;
+
+render :: system eff {
+  map (query { z, output, len, screen, size }) eff {
+    if (size.w > 0 && size.h > 0) {
+      insert(
+        Cmd {
+          z      : z,
+          ckind  : CK_RECT,
+          crx    : screen.x,
+          cry    : screen.y,
+          crw    : size.w,
+          crh    : size.h,
+          ccolor : OUT_BG,
+          ctoff  : 0,
+          ctlen  : 0,
+          ctsz   : 0,
+          cclx0  : 0,
+          ccly0  : 0,
+          cclx1  : 0,
+          ccly1  : 0,
+          cnl    : 0,
+        },
+      )(_:, _ok:);
+      map (query { ach, boff })(ach, boff) eff {
+        off := boff;
+        if (off + len <= ach.length) {
+          for (i := 0; i < len; i += 1) {
+            ach[off + i] = output[i];
+          }
+          boff = off + len;
+          insert(
+            Cmd {
+              z      : z + 3,
+              ckind  : CK_TEXTRUN,
+              crx    : screen.x + 6,
+              cry    : screen.y + 4,
+              crw    : 0,
+              crh    : 0,
+              ccolor : OUT_COL,
+              ctoff  : off,
+              ctlen  : len,
+              ctsz   : OUT_TSZ,
+              cclx0  : screen.x,
+              ccly0  : screen.y,
+              cclx1  : screen.x + size.w,
+              ccly1  : screen.y + size.h,
+              cnl    : 1,
+            },
+          )(_:, _ok:);
+        }
+      };
+    }
+  };
+}
+
+render_bg :: system eff {
+}

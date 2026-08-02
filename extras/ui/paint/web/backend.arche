@@ -1,0 +1,4 @@
+// Web has no framebuffer UI compositing: the `dom` widget backends render (browser z-index), the driver's
+// command buffer stays effectively unused, and `dispatch` is a no-op.
+dispatch :: system eff {
+}

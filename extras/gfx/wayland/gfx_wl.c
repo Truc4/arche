@@ -276,3 +276,44 @@ int gfx_be_scroll(void *handle) {
 	(void)handle;
 	return 0;
 }
+
+/* No foreign text widget on this backend: gfx always owns the keyboard, so focus is entirely the driver's
+ * business (it hit-tests its own editor rect). See gfx.arche's `text_focus` / `release_text`. */
+int gfx_be_text_focus(void *handle) {
+	(void)handle;
+	return 0;
+}
+
+int gfx_be_release_text(void *handle) {
+	(void)handle;
+	return 0;
+}
+
+/* No touch input on this backend — a real mouse is a FINE pointer, so on-screen touch controls are never
+ * wanted here. See gfx.arche's `coarse_pointer`. */
+int gfx_be_coarse_pointer(void *handle) {
+	(void)handle;
+	return 0;
+}
+
+/* No DOM to sandwich: a single framebuffer and plain draw order already give the right depth, so the layer
+ * break is a no-op. See gfx.arche's `split`. */
+void gfx_be_split(void *handle, int *px, int w, int h) {
+	(void)handle;
+	(void)px;
+	(void)w;
+	(void)h;
+}
+
+/* No stacked surfaces to order: stacking is a no-op here. See gfx.arche's `layers`. */
+int gfx_be_layers(void *handle, int bgz, int fgz) {
+	(void)handle;
+	(void)bgz;
+	(void)fgz;
+	return 0;
+}
+
+int gfx_be_axis_y(void *handle) {
+	(void)handle;
+	return 0;
+}

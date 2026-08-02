@@ -187,6 +187,12 @@ static int g_resolve_errors;
 static char *g_c_shims[MAX_LOADED_MODS];
 static int g_c_shim_count;
 
+/* `#cflags` — cc flags (e.g. -I dirs from a toolkit's pkg-config) needed to COMPILE the device C shims that
+ * ride the link command. Collected program-wide like the #link libs and applied on the same cc invocation
+ * (see append_link_extras). Reset in resolve_uses. */
+static char g_cflags[ARCHE_MAX_LINK_LIBS][64];
+static int g_cflag_count;
+
 static void compile_add_c_shim(void *ctx, const char *path) {
 	(void)ctx;
 	for (int i = 0; i < g_c_shim_count; i++)
@@ -235,6 +241,13 @@ static int copy_file(const char *src, const char *dst) {
  * shim's library references (left-to-right). Returns 0, or -1 if appending would overflow — the caller
  * fails the link rather than silently drop an input (mirrors the `--link` overflow policy). */
 static int append_link_extras(char *cmd, int *len, size_t cap, char libs[][64], int nlib) {
+	/* `#cflags` first — cc flags (e.g. -I dirs) that the shim .c sources compiled on this same command need. */
+	for (int i = 0; i < g_cflag_count; i++) {
+		int m = snprintf(cmd + *len, cap - (size_t)*len, " %s", g_cflags[i]);
+		if (m < 0 || m >= (int)cap - *len)
+			return -1;
+		*len += m;
+	}
 	for (int i = 0; i < g_c_shim_count; i++) {
 		int m = snprintf(cmd + *len, cap - (size_t)*len, " %s", g_c_shims[i]);
 		if (m < 0 || m >= (int)cap - *len)
@@ -564,6 +577,7 @@ static void resolve_uses(const SyntaxNode *syntax_root, const char *src, const c
 	for (int i = 0; i < g_c_shim_count; i++)
 		free(g_c_shims[i]);
 	g_c_shim_count = 0;
+	g_cflag_count = 0;
 	for (int i = 0; i < g_js_host_count; i++)
 		free(g_js_hosts[i]);
 	g_js_host_count = 0;
@@ -791,6 +805,15 @@ int compile_source(const char *user_source, const char *source_path, const char 
 	char link_libs[ARCHE_MAX_LINK_LIBS][64];
 	int link_lib_count = semantic_collect_link_libs(syntax_root, source, link_libs, ARCHE_MAX_LINK_LIBS);
 	if (link_lib_count < 0) {
+		semantic_context_free(sem_ctx);
+		free(source);
+		return 1;
+	}
+
+	/* Collect `#cflags` (cc flags to compile the shims, e.g. -I dirs) into the global used by
+	 * append_link_extras. Same validation policy as #link — a bad flag fails the build. */
+	g_cflag_count = semantic_collect_cflags(syntax_root, source, g_cflags, ARCHE_MAX_LINK_LIBS);
+	if (g_cflag_count < 0) {
 		semantic_context_free(sem_ctx);
 		free(source);
 		return 1;

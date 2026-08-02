@@ -865,7 +865,7 @@ window :: opaque;
 sound  :: opaque;
 
 #foreign {
-  window_open    :: proc(own title: []char, w: int, h: int)(w: window);   // out-only w = C return
+  window_open    :: proc(own title: []char, width: int, height: int)(w: window);  // out-only w = C return
   window_present :: proc(w: window, fb: []int, width: int, height: int)(fb: []int);  // fb in-out
   window_close   :: proc(own w: window)();
 }
@@ -904,6 +904,13 @@ sum_diff :: func(a: int, b: int)(s: int, d: int) {
 sum_diff(10, 3)(s:, d:);   // s = 13, d = 7 - declared + scoped by the out-args
 fmt.assert(s == 13 && d == 7, "sum and diff\n")();
 ```
+
+> **An in-out out-param is written, not declared.** An out-param that shadows an in-param is the *in-out*
+> form (see the next section): the caller's place goes in and comes back, so the call names the **existing**
+> place with `_` marking the in-slot — `f(n, _)(b)`. `f(n, b)(nb:)` asks to declare a *new* local for a
+> value that has no new place, and is rejected as **W0032** (`inout_outarg_colon_bind`, an error by
+> default; `@allow(inout_outarg_colon_bind)` opts out). It does not depend on the two types differing.
+> If you meant a fresh output, the out-param should not share an in-param's name — rename the in-param.
 
 **Filling a caller buffer (zero-copy).** A buffer that a callee writes is exposed as a `func`
 returning an **`Eff`**: a `#foreign` extern declares the buffer as an in-out parameter (the C-ABI

@@ -1,0 +1,40 @@
+// `sort(Pool.key)` must be correct on a pool that has had `delete`s. Deleting tombstones a slot (its
+// gen sign-bit is set and the slot goes on the free list) without shrinking `count`, so live rows sit
+// scattered among holes. sort orders ONLY the live rows and drops the tombstones — a live row must never
+// vanish and a deleted row must never resurface. (Regression: sort used to permute column data but not
+// the per-slot gen bits, so it moved live rows into dead-flagged slots and holes into live ones.)
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "k=5 15 20 30 tag=50 150 200 300"
+#import { fmt }
+k   :: int;
+tag :: int;
+N   :: arche { k, tag }
+[8]N ?abort;
+
+seed :: system eff {
+  insert(N { k: 30, tag: 300 })(_:, _ok:);
+  insert(N { k: 10, tag: 100 })(h1:, _ok:);
+  insert(N { k: 40, tag: 400 })(h2:, _ok:);
+  insert(N { k: 20, tag: 200 })(_:, _ok:);
+  delete(h1)(_:); // remove k=10
+  delete(h2)(_:); // remove k=40
+  insert(N { k: 15, tag: 150 })(_:, _ok:);
+  insert(N { k: 5, tag: 50 })(_:, _ok:);
+}
+
+report :: system eff {
+  sort(N.k);
+  // survivors {30,20,15,5} sorted asc: (5,50) (15,150) (20,200) (30,300)
+  fmt.printf(
+    "k=%d %d %d %d tag=%d %d %d %d\n",
+    N.k[0],
+    N.k[1],
+    N.k[2],
+    N.k[3],
+    N.tag[0],
+    N.tag[1],
+    N.tag[2],
+    N.tag[3],
+  );
+}
+
+#run seq({ seed, report })

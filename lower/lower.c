@@ -136,6 +136,17 @@ static void tuple_rewrite_expr(HirExpr *e, const char *base) {
 		for (int i = 0; i < e->data.call.arg_count; i++)
 			tuple_rewrite_expr(e->data.call.args[i], base);
 		break;
+	case HIR_EXPR_ENTITY_LIT:
+		/* `insert(Arch { col: pt.x, grp: (pt.x, pt.y) })` — the entity literal's field values are expressions
+		 * too; without this a grouped sub-field (`pt.x`) inside them never flattens to `pt_x` and codegen emits
+		 * the bare sub-field name. */
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			tuple_rewrite_expr(e->data.entity.field_values[i], base);
+		break;
+	case HIR_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			tuple_rewrite_expr(e->data.array_literal.elements[i], base);
+		break;
 	default:
 		break;
 	}
@@ -213,6 +224,15 @@ static void self_bind_rewrite_expr(HirExpr *e, const char *self, int to_self) {
 		self_bind_rewrite_expr(e->data.call.callee, self, to_self);
 		for (int i = 0; i < e->data.call.arg_count; i++)
 			self_bind_rewrite_expr(e->data.call.args[i], self, to_self);
+		break;
+	case HIR_EXPR_ENTITY_LIT:
+		/* self-binder sub-fields inside an `insert(Arch { ... })` value — mirror of the tuple-rewrite fix. */
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			self_bind_rewrite_expr(e->data.entity.field_values[i], self, to_self);
+		break;
+	case HIR_EXPR_ARRAY_LITERAL:
+		for (int i = 0; i < e->data.array_literal.element_count; i++)
+			self_bind_rewrite_expr(e->data.array_literal.elements[i], self, to_self);
 		break;
 	default:
 		break;
@@ -1914,15 +1934,6 @@ static const SyntaxNode *arch_expr_child(const SyntaxNode *d) {
 	return NULL;
 }
 
-/* True if the decl is decorated (its first token is `@`). A decorator with args — `@allow(x)`,
- * `@implements(dev.foo)` — has a `(` that must NOT be mistaken for a tuple-group paren. */
-static int decl_is_decorated(const SyntaxNode *d) {
-	for (int i = 0; i < d->child_count; i++)
-		if (d->children[i].tag == SE_TOKEN)
-			return d->children[i].as.token.kind == TOK_AT;
-	return 0;
-}
-
 /* Register every tuple group declared directly under `root` into the lookup table (does NOT reset the
  * table — call build_tgroups first, then scan_tgroups per imported module). */
 static void scan_tgroups(const SyntaxNode *root, const char *src) {
@@ -1935,8 +1946,10 @@ static void scan_tgroups(const SyntaxNode *root, const char *src) {
 		if (d->kind == SN_CONST_DECL && (ae = arch_expr_child(d)) != NULL)
 			register_arch_tgroups(ae, src);
 		/* top-level tuple group: `pos (x, y) :: T` (a const-decl with a direct `(`, not decorated). */
-		else if (d->kind == SN_CONST_DECL && !decl_is_decorated(d) && sv_has_token((SyntaxView){d, src}, TOK_LPAREN))
-			register_tgroup(d, src, 0, d->child_count, NULL);
+		else if (d->kind == SN_CONST_DECL && sv_has_group_paren((SyntaxView){d, src}))
+			/* start at the decl's NAME, not child 0: a decorator's own `( … )` sits before it and its
+			 * idents would otherwise be read as the group's name and members. */
+			register_tgroup(d, src, sv_decl_name_index((SyntaxView){d, src}), d->child_count, NULL);
 		/* legacy inline archetype tuple field: `pos (x, y) :: T` inside `arche { … }` */
 		else if (d->kind == SN_ARCHETYPE_DECL)
 			register_arch_tgroups(d, src);
@@ -2086,6 +2099,10 @@ static void tuple_collapse_expr(HirExpr *e) {
 		for (int i = 0; i < e->data.alloc.field_count; i++)
 			tuple_collapse_expr(e->data.alloc.field_values[i]);
 		tuple_collapse_expr(e->data.alloc.init_length);
+		break;
+	case HIR_EXPR_ENTITY_LIT:
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			tuple_collapse_expr(e->data.entity.field_values[i]);
 		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < e->data.array_literal.element_count; i++)
@@ -2546,6 +2563,24 @@ static void group_suffix_names(HirExpr *e, const char *suffix) {
  * the user writes the vector once instead of hand-expanding each axis. Each component clones the RHS and
  * suffixes its bare group references. Statements are replaced in place by a BLOCK (codegen + the later
  * tuple_rewrite pass both recurse into blocks). */
+/* True if `e` denotes a WHOLE tuple group as a value: a bare group column (`r`), a pool group column
+ * (`Body.lv`), or either of those gathered by an index (`Body.lv[R.i]`). Passing one to a call means the
+ * callee's parameter is the tuple, so the call cannot be split by name-suffixing. */
+static int expr_is_whole_group_ref(HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		return e->data.name.name && tgroup_lookup(e->data.name.name) != NULL;
+	case HIR_EXPR_FIELD:
+		return e->data.field.field_name && tgroup_lookup(e->data.field.field_name) != NULL;
+	case HIR_EXPR_INDEX:
+		return expr_is_whole_group_ref(e->data.index.base);
+	default:
+		return 0;
+	}
+}
+
 /* True if `e` produces its tuple from something other than bare group COLUMNS — a self-read marker (`me.vel`)
  * or a tuple LOCAL (`steer`). Such an RHS can't be split by suffixing names per component; codegen writes it
  * lane-wise instead (`nvel_x = value.x; nvel_y = value.y`). */
@@ -2568,21 +2603,64 @@ static int expr_needs_tuple_value_write(HirExpr *e) {
 		return expr_needs_tuple_value_write(e->data.binary.left) || expr_needs_tuple_value_write(e->data.binary.right);
 	case HIR_EXPR_UNARY:
 		return expr_needs_tuple_value_write(e->data.unary.operand);
-	case HIR_EXPR_CALL:
-		for (int i = 0; i < e->data.call.arg_count; i++)
-			if (expr_needs_tuple_value_write(e->data.call.args[i]))
+	case HIR_EXPR_CALL: {
+		/* A COLLECTIVE (`reduce`/`scan`/`sort`) takes its group argument as the fold DOMAIN, not as a value:
+		 * codegen folds it lane-wise into per-lane accumulators, so it stays suffixable and must not be
+		 * hoisted into a tuple temp. */
+		const char *cn = (e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME)
+		                     ? e->data.call.callee->data.name.name
+		                     : NULL;
+		int is_collective = cn && (strcmp(cn, "reduce") == 0 || strcmp(cn, "scan") == 0 || strcmp(cn, "sort") == 0);
+		for (int i = 0; i < e->data.call.arg_count; i++) {
+			HirExpr *a = e->data.call.args[i];
+			if (expr_needs_tuple_value_write(a))
 				return 1;
+			if (is_collective)
+				continue;
+			/* A bare GROUP column passed as a WHOLE vector (`perp(r)`, `mag(v)`): the callee takes the tuple,
+			 * so the call must be evaluated ONCE as a value and its lanes extracted. Suffixing it per
+			 * component would hand the callee a single lane (`perp(r_x)`) — the tuple argument then packs
+			 * from names that do not exist (`r_x_x`, `r_x_y`) and every lane reads column x. Passing a group
+			 * where a scalar is wanted is a type error, so a group argument always means whole-value. */
+			if (expr_is_whole_group_ref(a))
+				return 1;
+		}
 		return 0;
+	}
 	default:
 		return 0;
 	}
 }
 
-static void expand_group_assigns(HirKernelDecl *as) {
-	for (int sx = 0; sx < as->stmt_count; sx++) {
-		HirStmt *s = as->stmts[sx];
-		if (!s || s->kind != HIR_STMT_ASSIGN)
+/* Expand every whole-group assignment in a statement list — recursing into nested control-flow bodies
+ * (`if`/`for`/`{}`/nested `map`) so a group write-back inside a branch is fanned out too, not only the body's
+ * top-level statements. Codegen and the tuple_rewrite pass both already recurse into blocks; this pass was the
+ * outlier, so `pos = reduce(...)` under an `if` never fanned and codegen dropped it. Re-visiting an
+ * already-expanded block is a no-op: its targets are now scalar `x`/`y` names that `tgroup_lookup` rejects. */
+static void expand_group_assigns_list(HirStmt **stmts, int count) {
+	for (int sx = 0; sx < count; sx++) {
+		HirStmt *s = stmts[sx];
+		if (!s)
 			continue;
+		switch (s->kind) {
+		case HIR_STMT_IF:
+			expand_group_assigns_list(s->data.if_stmt.then_body, s->data.if_stmt.then_count);
+			expand_group_assigns_list(s->data.if_stmt.else_body, s->data.if_stmt.else_count);
+			continue;
+		case HIR_STMT_FOR:
+			expand_group_assigns_list(s->data.for_stmt.body, s->data.for_stmt.body_count);
+			continue;
+		case HIR_STMT_BLOCK:
+			expand_group_assigns_list(s->data.block.stmts, s->data.block.count);
+			continue;
+		case HIR_STMT_EACH:
+			expand_group_assigns_list(s->data.each_stmt->stmts, s->data.each_stmt->stmt_count);
+			continue;
+		case HIR_STMT_ASSIGN:
+			break;
+		default:
+			continue;
+		}
 		HirExpr *tgt = s->data.assign_stmt.target;
 		if (!tgt || tgt->kind != HIR_EXPR_NAME)
 			continue;
@@ -2594,8 +2672,23 @@ static void expand_group_assigns(HirKernelDecl *as) {
 		 * (`pos = pos + vel`) suffixes bare names per component as before (which vectorizes). */
 		int value_write = expr_needs_tuple_value_write(s->data.assign_stmt.value);
 		HirStmt *blk = hir_stmt_create(HIR_STMT_BLOCK);
-		blk->data.block.stmts = calloc(g->nsuf ? g->nsuf : 1, sizeof(HirStmt *));
+		blk->data.block.stmts = calloc((g->nsuf ? g->nsuf : 1) + 1, sizeof(HirStmt *));
 		blk->data.block.count = 0;
+		/* A value write binds the RHS to a TEMP first, so every lane reads ONE evaluation. Cloning the RHS
+		 * per lane instead lets a self-aliasing write read its own half-updated column: `r = norm(r + …)`
+		 * would store `r_x`, then re-evaluate the RHS for `r_y` against the NEW `r_x` — the y lane sees the
+		 * already-written x lane, and a pure rotation stops preserving length. */
+		char tmpname[64] = {0};
+		if (value_write) {
+			static int g_tuple_write_tmp = 0;
+			snprintf(tmpname, sizeof(tmpname), "__gw%d", g_tuple_write_tmp++);
+			HirStmt *bs = hir_stmt_create(HIR_STMT_BIND);
+			bs->data.bind_stmt.names = calloc(1, sizeof(char *));
+			bs->data.bind_stmt.names[0] = dupz(tmpname);
+			bs->data.bind_stmt.name_count = 1;
+			bs->data.bind_stmt.value = hir_expr_deep_clone(s->data.assign_stmt.value);
+			blk->data.block.stmts[blk->data.block.count++] = bs;
+		}
 		for (int j = 0; j < g->nsuf; j++) {
 			HirStmt *cs = hir_stmt_create(HIR_STMT_ASSIGN);
 			cs->data.assign_stmt.op = s->data.assign_stmt.op;
@@ -2605,8 +2698,10 @@ static void expand_group_assigns(HirKernelDecl *as) {
 			cs->data.assign_stmt.target = ct;
 			HirExpr *cv;
 			if (value_write) {
+				HirExpr *tv = hir_expr_create(HIR_EXPR_NAME);
+				tv->data.name.name = dupz(tmpname);
 				cv = hir_expr_create(HIR_EXPR_FIELD);
-				cv->data.field.base = hir_expr_deep_clone(s->data.assign_stmt.value);
+				cv->data.field.base = tv;
 				cv->data.field.field_name = dupz(g->suffix[j]);
 			} else {
 				cv = hir_expr_deep_clone(s->data.assign_stmt.value);
@@ -2615,8 +2710,12 @@ static void expand_group_assigns(HirKernelDecl *as) {
 			cs->data.assign_stmt.value = cv;
 			blk->data.block.stmts[blk->data.block.count++] = cs;
 		}
-		as->stmts[sx] = blk; /* old single-assign stmt intentionally leaked (arena-style lowering) */
+		stmts[sx] = blk; /* old single-assign stmt intentionally leaked (arena-style lowering) */
 	}
+}
+
+static void expand_group_assigns(HirKernelDecl *as) {
+	expand_group_assigns_list(as->stmts, as->stmt_count);
 }
 
 /* `Name :: query {cols}` → a HirQueryDecl carrying the tuple-flattened column names. Emits no code;
@@ -3369,7 +3468,7 @@ static HirDecl *lower_decl_cst(SyntaxView d) {
 		}
 		/* Tuple-group type definition `pos (x, y) :: T` mints nominal component types
 		 * (pos_x, pos_y); it's compile-time only and erased before codegen. */
-		if (sv_has_token(d, TOK_LPAREN))
+		if (sv_has_group_paren(d))
 			return NULL;
 		/* Array value const → a static global, the same shape as the mutable `XS : [N]T = {…}` form.
 		 * Three forms, all flattened to a `[total]elem` global (arche's flat row-stride model):
@@ -3782,6 +3881,11 @@ static void hir_rn_expr(HirExpr *e, const char *prefix, char **set, int count) {
 			hir_rn_expr(e->data.alloc.field_values[i], prefix, set, count);
 		hir_rn_expr(e->data.alloc.init_length, prefix, set, count);
 		break;
+	case HIR_EXPR_ENTITY_LIT:
+		rn_owned(&e->data.entity.type_name, prefix, set, count);
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			hir_rn_expr(e->data.entity.field_values[i], prefix, set, count);
+		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < e->data.array_literal.element_count; i++)
 			hir_rn_expr(e->data.array_literal.elements[i], prefix, set, count);
@@ -4055,6 +4159,10 @@ static void hir_q_expr(HirExpr *e, const QualCtx *q) {
 		for (int i = 0; i < e->data.alloc.field_count; i++)
 			hir_q_expr(e->data.alloc.field_values[i], q);
 		hir_q_expr(e->data.alloc.init_length, q);
+		break;
+	case HIR_EXPR_ENTITY_LIT:
+		for (int i = 0; i < e->data.entity.field_count; i++)
+			hir_q_expr(e->data.entity.field_values[i], q);
 		break;
 	case HIR_EXPR_ARRAY_LITERAL:
 		for (int i = 0; i < e->data.array_literal.element_count; i++)

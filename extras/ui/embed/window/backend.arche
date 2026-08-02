@@ -1,0 +1,106 @@
+#import { ui }
+
+/// Native backend for the `embed` device — merged under `[select] embed = "window"`. A framebuffer cannot host
+/// a browser engine, so this is a deliberate PLACEHOLDER: it blits the card's rect and writes the URL into it.
+/// The native build links, runs, and shows you which site lives at that spot in the world; it just doesn't
+/// render the site. Everything else about the card — where it is, when it opens — is the driver's, and is
+/// identical to the web. `ekind` is not read: a picture of a site and a site are equally un-drawable here.
+///
+/// A zero-size rect (the driver's "not now") collapses the scan loops to nothing, so a shut card costs nothing
+/// and needs no branch — the same trick panel/window uses.
+
+CARD_BG   :: 0x11151f;
+CARD_EDGE :: 0x232838;
+CARD_TXT  :: 0x9298cc;
+CARD_TSZ  :: 18;
+
+/// Nothing here can be clicked into — a placeholder rect holds no focus — so `efocus` is always 0. The system
+/// exists so a driver can schedule the same systems against either backend.
+poll :: system eff {
+  map (query { efocus })(efocus) eff {
+    efocus = 0;
+  };
+}
+
+/// No browser to open a URL in. The system exists so a driver can schedule the same systems against either
+/// backend; the driver's OPEN buttons still render, they just have nowhere to send you.
+open :: system eff {
+}
+
+render :: system (query { framebuffer })(framebuffer) eff {
+  map (query { esrc, elen, screen, size, view }) eff {
+    bx0 := screen.x;
+    by0 := screen.y;
+    bx1 := screen.x + size.w;
+    by1 := screen.y + size.h;
+    if (bx0 < 0) {
+      bx0 = 0;
+    }
+    if (by0 < 0) {
+      by0 = 0;
+    }
+    if (bx1 > view.w) {
+      bx1 = view.w;
+    }
+    if (by1 > view.h) {
+      by1 = view.h;
+    }
+    for (yy := by0; yy < by1; yy += 1) {
+      for (xx := bx0; xx < bx1; xx += 1) {
+        framebuffer[yy * view.w + xx] = CARD_EDGE;
+      }
+    }
+    ix0 := screen.x + 2;
+    iy0 := screen.y + 2;
+    ix1 := screen.x + size.w - 2;
+    iy1 := screen.y + size.h - 2;
+    if (ix0 < 0) {
+      ix0 = 0;
+    }
+    if (iy0 < 0) {
+      iy0 = 0;
+    }
+    if (ix1 > view.w) {
+      ix1 = view.w;
+    }
+    if (iy1 > view.h) {
+      iy1 = view.h;
+    }
+    for (yy := iy0; yy < iy1; yy += 1) {
+      for (xx := ix0; xx < ix1; xx += 1) {
+        framebuffer[yy * view.w + xx] = CARD_BG;
+      }
+    }
+    s    := CARD_TSZ / 8;
+    adv  := 8 * s;
+    penx := screen.x + ui.PAD;
+    peny := screen.y + ui.PAD;
+    for (i := 0; i < elen; i += 1) {
+      c := esrc[i];
+      if (c >= 32 && c <= 126) {
+        gi := c - 32;
+        for (row := 0; row < 8; row += 1) {
+          b := ui.GLYPHS[gi * 8 + row];
+          for (col := 0; col < 8; col += 1) {
+            if (b >= 128) {
+              gx0 := penx + col * s;
+              gy0 := peny + row * s;
+              for (py := gy0; py < gy0 + s; py += 1) {
+                if (py >= iy0 && py < iy1) {
+                  for (px := gx0; px < gx0 + s; px += 1) {
+                    if (px >= ix0 && px < ix1) {
+                      framebuffer[py * view.w + px] = CARD_TXT;
+                    }
+                  }
+                }
+              }
+              b = b - 128;
+            }
+            b = b * 2;
+          }
+        }
+      }
+      penx = penx + adv;
+    }
+  };
+}

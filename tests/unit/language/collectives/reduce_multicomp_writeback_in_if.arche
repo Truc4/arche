@@ -1,0 +1,43 @@
+// A `reduce` write-back to a MULTI-COMPONENT column is DROPPED when the assignment sits inside an `if`. The
+// column keeps its prior value (here the zero-seed), exactly as if the `reduce` never ran. A SCALAR target
+// survives the identical `if` (see the twin `reduce_scalar_writeback_in_if.arche`, and `reduce_in_map`); only
+// the 2-field write-back is lost. Hoist the same statement OUT of the `if` and it is correct — so it is the
+// conditional wrapping the multi-component write-back that mis-lowers, not the reduce.
+//
+// Found in the `rigid` device: gating a per-body `dimp = reduce(+, imp_lin(...))` (dimp is 2-comp) behind an
+// `if (me.awake == 1)` silently zeroed every gated body's impulse accumulator, so the body got no contact
+// response and fell through the floor. The condition being ALWAYS TRUE (`if (1 == 1)`) still triggers it — the
+// `if`-branch runs, yet its write-back does not land.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qF "ax=6 6 6  ay=60 60 60"
+#import { fmt }
+val(x, y) :: float;
+acc(x, y) :: float;
+B         :: arche { val, acc }
+[3]B(3);
+
+seed :: system {
+  B.val.x = { 1.0, 2.0, 3.0 };
+  B.val.y = { 10.0, 20.0, 30.0 };
+}
+
+// Each row folds the whole `val` column: acc = (Σ val.x, Σ val.y) = (6, 60). The always-true `if` is the only
+// thing standing between the correct result and all-zero output.
+foldit :: map (query { val, acc })(acc) {
+  if (1 == 1) {
+    acc = reduce(+, val);
+  }
+}
+
+show :: system eff {
+  fmt.printf(
+    "ax=%.0f %.0f %.0f  ay=%.0f %.0f %.0f\n",
+    B.acc.x[0],
+    B.acc.x[1],
+    B.acc.x[2],
+    B.acc.y[0],
+    B.acc.y[1],
+    B.acc.y[2],
+  );
+}
+
+#run seq({ seed, foldit, show })

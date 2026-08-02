@@ -256,6 +256,12 @@ struct CodegenContext {
 	 * nested `map (… as me)` — as a pool column, so `resolve_collective_query` treats the binder as a query. */
 	const char *qbinder_name;
 	const char *qbinder_arch;
+	/* The binder query's columns + whether it matches MULTIPLE archetypes. A self-join fold (`reduce(+,
+	 * All.col)`) must span EVERY matching archetype, not just `qbinder_arch` — these let the fold enumerate
+	 * them. `qbinder_multi` is set when the `as` query resolves to >1 allocated shape. */
+	const char *qbinder_cols[32];
+	int qbinder_ncol;
+	int qbinder_multi;
 
 	/* Compile-time callback monomorphization. A proc with a proc/func-typed
 	 * (HIR_TYPE_FUNC) param is callback-parametric: it is never emitted directly,
@@ -3117,14 +3123,36 @@ static int emit_collective_column(CodegenContext *ctx, HirExpr *colexpr, char *c
  * empty pool yields the identity for reduce). `is_scan` selects write-back. Result SSA → result_buf. */
 /* The collective FOLD primitive (CPU scalar + 4-lane SIMD): folds `col` with monoid `op` to a scalar
  * (reduce) or prefix-folds it in place (scan). Backends call this; see the ParOp/Backend seam above. */
+static int is_pool_col_field(CodegenContext *ctx, HirExpr *e, const char **arch_out);
+static int is_foldable_bare_col(CodegenContext *ctx, HirExpr *e, const char **arch_out);
+static void emit_pool_has_holes(CodegenContext *ctx, const char *arch_name, char *out, size_t cap);
+static void emit_row_is_dead(CodegenContext *ctx, const char *arch_name, const char *row, char *out, size_t cap);
+
 static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_scan, char *result_buf) {
 	char colptr[256], count[256];
 	const char *ty;
 	int is_float;
 	if (!emit_collective_column(ctx, col, colptr, count, &ty, &is_float)) {
+		/* No resolvable column to fold. Report it: silently yielding `0` here emits an INTEGER constant into
+		 * whatever slot the fold's result feeds, so a float/tuple context produced invalid IR that only the
+		 * LLVM verifier caught, far from the cause. */
+		fprintf(stderr, "Error: %s(…) has no foldable column — its argument does not resolve to a pool column\n", op);
+		ctx->had_error = 1;
 		strcpy(result_buf, "0");
 		return;
 	}
+	/* Which pool is being folded? `delete` tombstones rows without shrinking `count`, so a pool with holes
+	 * must not take the vectorized prefix (a lane cannot check liveness) and its scalar loop must skip dead
+	 * rows. A fold over something that is not a pool column (a plain array) can never have holes. */
+	const char *fold_arch = NULL;
+	if (!is_pool_col_field(ctx, col, &fold_arch) && !is_foldable_bare_col(ctx, col, &fold_arch))
+		fold_arch = NULL;
+	char holes[64];
+	if (fold_arch)
+		emit_pool_has_holes(ctx, fold_arch, holes, sizeof(holes));
+	else
+		snprintf(holes, sizeof(holes), "false");
+
 	const char *id = monoid_identity(op, is_float);
 	char *acc = gen_value_name(ctx), *iv = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca %s\n", acc, ty); /* hoisted to entry: no stack growth if in a loop */
@@ -3152,7 +3180,9 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", vi);
 		char *q = gen_value_name(ctx), *nvec = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = sdiv i64 %s, %d\n", q, count, W);
-		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", nvec, q, W);
+		char *nvraw = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = mul i64 %s, %d\n", nvraw, q, W);
+		buffer_append_fmt(ctx, "  %s = select i1 %s, i64 0, i64 %s\n", nvec, holes, nvraw);
 		char *vc = gen_value_name(ctx), *vb = gen_value_name(ctx), *vd = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  br label %s\n", vc);
 		buffer_append_fmt(ctx, "%s:\n", vc + 1);
@@ -3204,6 +3234,15 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
 	buffer_append_fmt(ctx, "%s:\n", body + 1);
+	char *flive = gen_value_name(ctx), *fcont = gen_value_name(ctx);
+	if (fold_arch) {
+		char fdead[64];
+		emit_row_is_dead(ctx, fold_arch, i, fdead, sizeof(fdead));
+		char *fskip = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", fskip, holes, fdead);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", fskip, fcont, flive);
+		buffer_append_fmt(ctx, "%s:\n", flive + 1);
+	}
 	char *ep = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", ep, ty, ty, colptr, i);
 	char *el = gen_value_name(ctx);
@@ -3214,6 +3253,10 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 	buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, acc);
 	if (is_scan) /* inclusive prefix: write the running fold back into the column */
 		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", ty, r, ty, ep);
+	if (fold_arch) {
+		buffer_append_fmt(ctx, "  br label %s\n", fcont);
+		buffer_append_fmt(ctx, "%s:\n", fcont + 1);
+	}
 	char *ni = gen_value_name(ctx);
 	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
@@ -3308,6 +3351,54 @@ static int is_foldable_bare_col(CodegenContext *ctx, HirExpr *e, const char **ar
 	return 0;
 }
 
+/* Emit `1` (as an i1) when pool `arch_name` currently has TOMBSTONED rows — i.e. its free_list is
+ * non-empty. `delete` frees a slot without shrinking `count`, so a fold over [0, count) would otherwise
+ * read freed rows. Hoisted OUT of a fold loop: when this is false the pool is hole-free and the fold takes
+ * its unguarded (vectorizable) path, so a pool that never deletes pays nothing. */
+static void emit_pool_has_holes(CodegenContext *ctx, const char *arch_name, char *out, size_t cap) {
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch_name);
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	int fc_idx = (ad ? ad->field_count : 0) + (is_static ? 2 : 3);
+	char base[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base, sizeof(base));
+	char *gep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gep, arch_name,
+	                  arch_name, base, fc_idx);
+	char *fc = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", fc, gep);
+	char *nz = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp ne i64 %s, 0\n", nz, fc);
+	snprintf(out, cap, "%s", nz);
+}
+
+/* Emit `1` (as an i1) when row `row` of pool `arch_name` is DEAD. A tombstoned slot carries the sign bit in
+ * its generation counter (`delete` sets it, `insert` clears it on revival); a live row's generation is
+ * non-negative. Same test the `each`/map fan uses. */
+static void emit_row_is_dead(CodegenContext *ctx, const char *arch_name, const char *row, char *out, size_t cap) {
+	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch_name);
+	int is_static = get_arch_static_capacity(ctx, arch_name) > 0;
+	int gc_idx = (ad ? ad->field_count : 0) + (is_static ? 3 : 4);
+	char base[256];
+	emit_query_pool_ptr(ctx, arch_name, is_static, base, sizeof(base));
+	char *gcptr = gen_value_name(ctx);
+	if (is_static) {
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 %s\n", gcptr,
+		                  arch_name, arch_name, base, gc_idx, row);
+	} else {
+		char *gcbase = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", gcbase, arch_name,
+		                  arch_name, base, gc_idx);
+		char *gcload = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i32*, i32** %s\n", gcload, gcbase);
+		buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", gcptr, gcload, row);
+	}
+	char *genval = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", genval, gcptr);
+	char *dead = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", dead, genval);
+	snprintf(out, cap, "%s", dead);
+}
+
 /* Emit the live row count of pool `arch_name` into `out` (the struct field after all columns). */
 static void emit_pool_live_count(CodegenContext *ctx, const char *arch_name, char *out, size_t cap) {
 	HirArchetypeDecl *ad = find_archetype_decl(ctx, arch_name);
@@ -3334,6 +3425,18 @@ static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
 	}
 	case HIR_EXPR_UNARY:
 		return find_fold_pool_field(ctx, e->data.unary.operand);
+	case HIR_EXPR_INDEX: {
+		/* A GATHER `Pool.col[Q.idx]`: the fold domain is the pool whose column supplies the INDEX (`Q.idx`),
+		 * not the pool being gathered from — so look in the index expression FIRST. `Body.lv.x[P.pa]` already
+		 * worked only because a sibling argument mentioned `P.pa` directly; when the gather is the sole
+		 * summand (`grab(Body.lv[R.i])`) the domain is reachable nowhere else. */
+		for (int i = 0; i < e->data.index.index_count; i++) {
+			HirExpr *ix = find_fold_pool_field(ctx, e->data.index.indices[i]);
+			if (ix)
+				return ix;
+		}
+		return find_fold_pool_field(ctx, e->data.index.base);
+	}
 	case HIR_EXPR_CALL: {
 		for (int i = 0; i < e->data.call.arg_count; i++) {
 			HirExpr *a = find_fold_pool_field(ctx, e->data.call.args[i]);
@@ -3355,27 +3458,61 @@ static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
 static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op, char *result_buf) {
 	HirExpr *poolfield = find_fold_pool_field(ctx, sumexpr);
 	const char *arch = NULL;
-	char count[256];
 	int is_float = (sumexpr->resolved.tag == HIR_TYPE_FLOAT);
+	/* The fold DOMAIN is one archetype normally, but a self-join whose `as` query matches several archetypes
+	 * (`reduce(+, All.col)` where `All` spans A, B, C) must fold over EVERY one of them. `archs`/`narch` hold
+	 * the domain; the per-archetype loop below runs the fold once per archetype into shared accumulators. */
+	const char *archs[16];
+	int narch = 0;
 	if (poolfield && is_pool_col_field(ctx, poolfield, &arch)) {
-		/* Explicit `Pool.col` fold domain — reuse the collective column resolver for its count + element type. A
-		 * tuple-GROUP column (`Flock.pos`) has no single field, so emit_collective_column declines: fall back to
-		 * the pool's live row count (the summand's per-lane float-ness comes from its tuple type below). */
-		char colptr[256];
+		/* Element float-ness for a scalar column (a tuple-GROUP column declines; its lanes come from `tt`). */
+		char colptr[256], count0[256];
 		const char *cty;
 		int cisf;
-		if (emit_collective_column(ctx, poolfield, colptr, count, &cty, &cisf))
+		if (emit_collective_column(ctx, poolfield, colptr, count0, &cty, &cisf))
 			is_float = is_float || cisf;
-		else
-			emit_pool_live_count(ctx, arch, count, sizeof(count));
+		/* If the fold is over the multi-archetype self-join binder, enumerate all matching allocated shapes. */
+		const char *base = (poolfield->kind == HIR_EXPR_FIELD && poolfield->data.field.base &&
+		                    poolfield->data.field.base->kind == HIR_EXPR_NAME)
+		                       ? poolfield->data.field.base->data.name.name
+		                       : NULL;
+		if (base && ctx->qbinder_name && strcmp(base, ctx->qbinder_name) == 0 && ctx->qbinder_multi) {
+			const char *raw[32];
+			int rc = query_match_archs(ctx, ctx->qbinder_cols, ctx->qbinder_ncol, raw, 32);
+			for (int r = 0; r < rc && narch < 16; r++) {
+				const char *cn = canonical_arch_name(ctx, raw[r]);
+				if (get_arch_static_capacity(ctx, cn) <= 0)
+					continue;
+				int seen = 0;
+				for (int s = 0; s < narch; s++)
+					if (strcmp(archs[s], cn) == 0) {
+						seen = 1;
+						break;
+					}
+				if (!seen)
+					archs[narch++] = cn;
+			}
+		}
+		if (narch == 0) {
+			archs[0] = arch;
+			narch = 1;
+		}
+
 	} else if (poolfield && is_foldable_bare_col(ctx, poolfield, &arch)) {
-		/* An enclosing system's BOUND column (`pos`) is the fold domain — derive count from its pool and the
-		 * float-ness from the column's element type (so the accumulator identity is `0.0`, not the i32 `0`). */
+		/* An enclosing system's BOUND column (`pos`) is the fold domain — float-ness from its element type. */
 		ValueInfo *v = find_value(ctx, poolfield->data.name.name);
 		if (v && v->field_type && (strcmp(v->field_type, "float") == 0 || strcmp(v->field_type, "double") == 0))
 			is_float = 1;
-		emit_pool_live_count(ctx, arch, count, sizeof(count));
+		archs[0] = arch;
+		narch = 1;
 	} else {
+		/* The summand names no pool column, so there is no fold DOMAIN. Report it rather than yielding `0`:
+		 * an integer constant in a float/tuple slot is invalid IR diagnosed far from here. */
+		fprintf(stderr,
+		        "Error: %s(…) has no fold domain — its summand reads no pool column (a whole-vector gather "
+		        "`Pool.vec[i]` is not yet a recognised domain)\n",
+		        op);
+		ctx->had_error = 1;
 		strcpy(result_buf, "0");
 		return;
 	}
@@ -3403,42 +3540,65 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 	emit_alloca(ctx, "  %s = alloca i64\n", iv);
 	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv);
 
-	const char *saved_pool = ctx->fold_pool, *saved_idx = ctx->fold_index;
-	ctx->fold_pool = arch;
+	const char *saved_pool = ctx->fold_pool, *saved_idx = ctx->fold_index, *saved_qba = ctx->qbinder_arch;
+	/* Fold each domain archetype in turn into the SAME accumulators (a self-join spans them all). */
+	for (int k = 0; k < narch; k++) {
+		char count[256];
+		emit_pool_live_count(ctx, archs[k], count, sizeof(count));
+		ctx->fold_pool = archs[k];
+		ctx->qbinder_arch = archs[k]; /* so the summand's `All.col` resolves + indexes THIS archetype */
+		char holes[64];
+		emit_pool_has_holes(ctx, archs[k], holes, sizeof(holes));
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", iv); /* reset the row counter for this archetype */
 
-	char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  br label %s\n", cond);
-	buffer_append_fmt(ctx, "%s:\n", cond + 1);
-	char *i = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
-	char *lt = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
-	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
-	buffer_append_fmt(ctx, "%s:\n", body + 1);
-	ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
-	char elem[256];
-	codegen_expression(ctx, sumexpr, elem);
-	for (int l = 0; l < nlane; l++) {
-		const char *ev = elem;
-		char evb[64];
-		if (tt) { /* extract this lane from the summand's aggregate value */
-			char *e = gen_value_name(ctx);
-			buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, elem, l);
-			snprintf(evb, sizeof(evb), "%s", e);
-			ev = evb;
+		char *cond = gen_value_name(ctx), *body = gen_value_name(ctx), *end = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", cond);
+		buffer_append_fmt(ctx, "%s:\n", cond + 1);
+		char *i = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", i, iv);
+		char *lt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, i, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, body, end);
+		buffer_append_fmt(ctx, "%s:\n", body + 1);
+		/* Liveness skip: `count` is a high-water mark — `delete` tombstones a slot without shrinking it, so
+		 * a freed row would otherwise fold its stale column value into every neighbour's accumulator (in the
+		 * physics devices: a deleted body left behind as a phantom collider). The check is skipped whole
+		 * when the pool has no holes, so a pool that never deletes keeps the tight loop. */
+		char *live = gen_value_name(ctx), *cont = gen_value_name(ctx);
+		char dead[64];
+		emit_row_is_dead(ctx, archs[k], i, dead, sizeof(dead));
+		char *skiprow = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = and i1 %s, %s\n", skiprow, holes, dead);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", skiprow, cont, live);
+		buffer_append_fmt(ctx, "%s:\n", live + 1);
+		ctx->fold_index = i; /* Pool.col refs in the summand now load at this inner counter */
+		char elem[256];
+		codegen_expression(ctx, sumexpr, elem);
+		for (int l = 0; l < nlane; l++) {
+			const char *ev = elem;
+			char evb[64];
+			if (tt) { /* extract this lane from the summand's aggregate value */
+				char *e = gen_value_name(ctx);
+				buffer_append_fmt(ctx, "  %s = extractvalue %s %s, %d\n", e, aggty, elem, l);
+				snprintf(evb, sizeof(evb), "%s", e);
+				ev = evb;
+			}
+			char *a = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, lty[l], lty[l], accs[l]);
+			char *r = emit_monoid_combine(ctx, op, lf[l], lty[l], a, ev);
+			buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], r, lty[l], accs[l]);
 		}
-		char *a = gen_value_name(ctx);
-		buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", a, lty[l], lty[l], accs[l]);
-		char *r = emit_monoid_combine(ctx, op, lf[l], lty[l], a, ev);
-		buffer_append_fmt(ctx, "  store %s %s, %s* %s\n", lty[l], r, lty[l], accs[l]);
+		buffer_append_fmt(ctx, "  br label %s\n", cont);
+		buffer_append_fmt(ctx, "%s:\n", cont + 1);
+		char *ni = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
+		buffer_append_fmt(ctx, "  br label %s\n", cond);
+		buffer_append_fmt(ctx, "%s:\n", end + 1);
 	}
-	char *ni = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, i);
-	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, iv);
-	buffer_append_fmt(ctx, "  br label %s\n", cond);
-	buffer_append_fmt(ctx, "%s:\n", end + 1);
 	ctx->fold_pool = saved_pool;
 	ctx->fold_index = saved_idx;
+	ctx->qbinder_arch = saved_qba;
 	if (tt) { /* pack the per-lane accumulators back into a `{T,…}` aggregate */
 		char cur[256];
 		strcpy(cur, "undef");
@@ -4080,12 +4240,29 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 		return;
 	}
 
-	/* index buffer idx[0,count) = identity, then sorted by key. Compile-time-sized (pool is static). */
+	/* gen_counters[] base — per-slot liveness/generation, sign bit = dead (static pool: struct index
+	 * field_count+3, an inline [cap x i32]). Sorting must read this so it orders only LIVE rows. */
+	char *genbase = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, i64 0\n", genbase,
+	                  arch_name, arch_name, base_buf, arch->field_count + 3);
+
+	/* Live-first permutation of [0,count): live slots (gen>=0) fill [0,live) and are the only rows sorted;
+	 * dead/tombstoned slots (gen<0) are parked in [live,count). The permutation still spans all of [0,count)
+	 * so the cycle-apply below is unchanged; afterwards count is trimmed to `live` and gen_counters reset.
+	 * This makes `sort` correct on a pool that has had `delete`s. (The old code built the index over every
+	 * slot and permuted column DATA only — never the per-slot gen bits — so it moved live rows into
+	 * dead-flagged slots, dropping them, and holes into live-flagged slots, resurrecting stale rows.) */
 	char *idxarr = gen_value_name(ctx), *idxbase = gen_value_name(ctx);
 	emit_alloca(ctx, "  %s = alloca [%d x i64]\n", idxarr, cap);
 	buffer_append_fmt(ctx, "  %s = getelementptr [%d x i64], [%d x i64]* %s, i64 0, i64 0\n", idxbase, cap, cap,
 	                  idxarr);
-	{
+	char *livec = gen_value_name(ctx);
+	emit_alloca(ctx, "  %s = alloca i64\n", livec);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", livec);
+	char *live = NULL;
+	/* pass 0 appends live slots, pass 1 appends dead slots; one shared write cursor `livec` walks the whole
+	 * index and `live` (its value after pass 0) is the sorted-prefix length. */
+	for (int pass = 0; pass < 2; pass++) {
 		char *ii = gen_value_name(ctx);
 		emit_alloca(ctx, "  %s = alloca i64\n", ii);
 		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", ii);
@@ -4097,22 +4274,40 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", lt, cii, count);
 		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", lt, b, e);
 		buffer_append_fmt(ctx, "%s:\n", b + 1);
-		emit_store_idx(ctx, idxbase, cii, cii);
+		char *gep = gen_value_name(ctx), *g = gen_value_name(ctx), *dead = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", gep, genbase, cii);
+		buffer_append_fmt(ctx, "  %s = load i32, i32* %s\n", g, gep);
+		buffer_append_fmt(ctx, "  %s = icmp slt i32 %s, 0\n", dead, g);
+		char *take = gen_value_name(ctx), *nx = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", dead, pass == 0 ? nx : take, pass == 0 ? take : nx);
+		buffer_append_fmt(ctx, "%s:\n", take + 1);
+		char *l = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", l, livec);
+		emit_store_idx(ctx, idxbase, l, cii);
+		char *l1 = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", l1, l);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", l1, livec);
+		buffer_append_fmt(ctx, "  br label %s\n", nx);
+		buffer_append_fmt(ctx, "%s:\n", nx + 1);
 		char *ni = gen_value_name(ctx);
 		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ni, cii);
 		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ni, ii);
 		buffer_append_fmt(ctx, "  br label %s\n", c);
 		buffer_append_fmt(ctx, "%s:\n", e + 1);
+		if (pass == 0) {
+			live = gen_value_name(ctx);
+			buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", live, livec);
+		}
 	}
 
 	/* sort the index array: insertion (small n) vs the type-chosen large-n algorithm. */
 	int passes = sort_radix_passes(key_kind, key_width);
 	char *small = gen_value_name(ctx), *sins = gen_value_name(ctx), *sbig = gen_value_name(ctx),
 	     *sapply = gen_value_name(ctx);
-	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 32\n", small, count);
+	buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, 32\n", small, live);
 	buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", small, sins, sbig);
 	buffer_append_fmt(ctx, "%s:\n", sins + 1);
-	emit_index_insertion(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, count);
+	emit_index_insertion(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, live);
 	buffer_append_fmt(ctx, "  br label %s\n", sapply);
 	buffer_append_fmt(ctx, "%s:\n", sbig + 1);
 	if (passes > 0) {
@@ -4121,9 +4316,9 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 		buffer_append_fmt(ctx, "  %s = getelementptr [%d x i64], [%d x i64]* %s, i64 0, i64 0\n", idx2, cap, cap,
 		                  idx2arr);
 		emit_alloca(ctx, "  %s = alloca [256 x i32]\n", hist);
-		emit_index_radix(ctx, idxbase, idx2, hist, cptr[key_col], key_ty, key_kind, key_width, descending, count);
+		emit_index_radix(ctx, idxbase, idx2, hist, cptr[key_col], key_ty, key_kind, key_width, descending, live);
 	} else {
-		emit_index_heapsort(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, count);
+		emit_index_heapsort(ctx, idxbase, cptr[key_col], key_ty, key_kind, descending, live);
 	}
 	buffer_append_fmt(ctx, "  br label %s\n", sapply);
 	buffer_append_fmt(ctx, "%s:\n", sapply + 1);
@@ -4199,6 +4394,37 @@ static void emit_sort(CodegenContext *ctx, HirExpr *expr, char *result_buf) {
 	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", sni, si);
 	buffer_append_fmt(ctx, "  br label %s\n", ac);
 	buffer_append_fmt(ctx, "%s:\n", ae + 1);
+
+	/* Trim to the live prefix: [0,live) now holds the sorted live rows, the dead tail is dropped.
+	 * count=live, free list empty, and every slot's gen cleared to 0 (live) so the dropped tail is clean
+	 * frontier for future inserts and no stale dead-bit hides a reused slot. (cgep already points at the
+	 * count field; free_count is static struct index field_count+2.) */
+	buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", live, cgep);
+	char *fcgep = gen_value_name(ctx);
+	buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n", fcgep, arch_name,
+	                  arch_name, base_buf, arch->field_count + 2);
+	buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", fcgep);
+	{
+		char *gi = gen_value_name(ctx);
+		emit_alloca(ctx, "  %s = alloca i64\n", gi);
+		buffer_append_fmt(ctx, "  store i64 0, i64* %s\n", gi);
+		char *gc = gen_value_name(ctx), *gb = gen_value_name(ctx), *ge = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  br label %s\n", gc);
+		buffer_append_fmt(ctx, "%s:\n", gc + 1);
+		char *cgi = gen_value_name(ctx), *glt = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = load i64, i64* %s\n", cgi, gi);
+		buffer_append_fmt(ctx, "  %s = icmp slt i64 %s, %s\n", glt, cgi, count);
+		buffer_append_fmt(ctx, "  br i1 %s, label %s, label %s\n", glt, gb, ge);
+		buffer_append_fmt(ctx, "%s:\n", gb + 1);
+		char *ggep = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = getelementptr i32, i32* %s, i64 %s\n", ggep, genbase, cgi);
+		buffer_append_fmt(ctx, "  store i32 0, i32* %s\n", ggep);
+		char *ngi = gen_value_name(ctx);
+		buffer_append_fmt(ctx, "  %s = add i64 %s, 1\n", ngi, cgi);
+		buffer_append_fmt(ctx, "  store i64 %s, i64* %s\n", ngi, gi);
+		buffer_append_fmt(ctx, "  br label %s\n", gc);
+		buffer_append_fmt(ctx, "%s:\n", ge + 1);
+	}
 	free(tmp);
 	free(cptr);
 	free(cty);
@@ -4633,8 +4859,19 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, cn, cn, cn);
 				strcpy(result_buf, loaded);
 			}
+		} else if (find_query_decl(ctx, name) || (ctx->sem_ctx && (semantic_is_type_alias(ctx->sem_ctx, name) ||
+		                                                           semantic_is_enum_type(ctx->sem_ctx, name)))) {
+			/* A COMPILE-TIME entity used as the base of a larger construct: a named query (`insert(Movers{…})`,
+			 * `Movers.pos[0]`) or a type/enum name (`fd.stdin`). It has no runtime value of its own and the
+			 * enclosing construct resolves it — the placeholder is dead, not a failure. */
+			strcpy(result_buf, "0");
 		} else {
-			/* undefined variable, use 0 */
+			/* A name with no binding, no const, no archetype, and no compile-time meaning. Yielding `0` here is
+			 * how an unresolved name became an INTEGER constant in a float/tuple slot — invalid IR blamed on
+			 * the LLVM verifier instead of on this name, and (where the slot is an int) a silently wrong
+			 * value. */
+			fprintf(stderr, "Error: '%s' has no value in this context\n", name);
+			ctx->had_error = 1;
 			strcpy(result_buf, "0");
 		}
 		break;
@@ -5568,6 +5805,66 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	case HIR_EXPR_INDEX: {
+		/* WHOLE tuple-group column GATHER `Pool.vec[i]` (`Body.lv[R.i]`): a tuple group has no single field —
+		 * it is stored flattened as `lv_x`/`lv_y` — so load each lane at the index and pack a `{T,…}` value.
+		 * Without this the read fell through to the scalar path and yielded one float where a tuple was
+		 * expected. Scalar and per-component gathers (`Body.lv.x[i]`) take the ordinary path below. */
+		if (expr->data.index.index_count == 1 && expr->data.index.base->kind == HIR_EXPR_FIELD) {
+			const char *garch = NULL;
+			HirExpr *gb = expr->data.index.base;
+			if (is_pool_col_field(ctx, gb, &garch) && garch) {
+				HirArchetypeDecl *gad = find_archetype_decl(ctx, garch);
+				int lidx[8];
+				const char *lty[8];
+				int nl = gad ? arch_tuple_group_lanes(gad, gb->data.field.field_name, lidx, lty, 8) : 0;
+				int direct = 0;
+				for (int f = 0; gad && f < gad->field_count; f++)
+					if (gad->fields[f]->kind == FIELD_COLUMN &&
+					    strcmp(gad->fields[f]->name, gb->data.field.field_name) == 0)
+						direct = 1;
+				if (nl > 0 && !direct) {
+					char gidx[256];
+					codegen_expression(ctx, expr->data.index.indices[0], gidx);
+					char gi64[256];
+					emit_index_i64(ctx, gidx, expr->data.index.indices[0], gi64);
+					int gstatic = get_arch_static_capacity(ctx, garch) > 0;
+					char gbase[256];
+					emit_query_pool_ptr(ctx, garch, gstatic, gbase, sizeof(gbase));
+					char aggty[256];
+					int n = snprintf(aggty, sizeof(aggty), "{");
+					for (int l = 0; l < nl; l++)
+						n += snprintf(aggty + n, sizeof(aggty) - n, "%s%s", l ? ", " : " ", lty[l]);
+					snprintf(aggty + n, sizeof(aggty) - n, " }");
+					char cur[256];
+					strcpy(cur, "undef");
+					for (int l = 0; l < nl; l++) {
+						char *cp = gen_value_name(ctx);
+						if (gstatic)
+							buffer_append_fmt(ctx,
+							                  "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, "
+							                  "i64 %s\n",
+							                  cp, garch, garch, gbase, lidx[l], gi64);
+						else {
+							char *cb = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  cb, garch, garch, gbase, lidx[l]);
+							char *cl = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", cl, lty[l], lty[l], cb);
+							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", cp, lty[l], lty[l], cl,
+							                  gi64);
+						}
+						char *lv = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", lv, lty[l], lty[l], cp);
+						char *ni = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, lty[l], lv, l);
+						strcpy(cur, ni);
+					}
+					strcpy(result_buf, cur);
+					return;
+				}
+			}
+		}
+
 		/* Each-field column read: f[i] where f is the current each_field
 		 * binding. Resolve to a load from the matching archetype column. */
 		if (ctx->current_each_field_binding && ctx->current_each_field_target && ctx->current_archetype_param &&
@@ -7640,7 +7937,9 @@ static int rhs_forces_scalar(CodegenContext *ctx, const HirExpr *e) {
  * (a float literal, a float column/singleton read) is left untouched. Returns the operand to use. */
 static const char *float_promote_operand(CodegenContext *ctx, const HirExpr *rhs, const char *buf, char *out,
                                          size_t outsz) {
-	if (rhs && rhs->kind == HIR_EXPR_LITERAL && strchr(buf, '.') == NULL && strchr(buf, '%') == NULL) {
+	if (rhs && rhs->kind == HIR_EXPR_LITERAL &&
+	    (rhs->resolved.tag == HIR_TYPE_INT || rhs->resolved.tag == HIR_TYPE_CHAR) && strchr(buf, '.') == NULL &&
+	    strchr(buf, '%') == NULL) {
 		snprintf(out, outsz, "%s.0", buf);
 		return out;
 	}
@@ -12700,20 +12999,51 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 		 * to read the count/base from that global. A `[1]` singleton in a join broadcasts as a scalar. */
 		/* Pick the archetype(s) to operate on: the non-singleton driver columns determine them (a query may
 		 * match several same-shape archetypes); a query over only singletons drives over the first. */
+		/* Which archetypes the query SELECTS and which column DRIVES the loop are different questions. Match
+		 * on the FULL column set whenever some archetype owns every one of them: the query is then
+		 * self-contained and each column discriminates. Dropping the `[1]` columns before matching is only
+		 * right for a genuine cross-pool broadcast join (no single archetype has them all) — otherwise a
+		 * marker living in a `[1]` pool is dropped from the match and every sibling that merely shares the
+		 * remaining column sweeps in (`query { mrk, pos }` matching `pos`-only entities). */
 		const char *cols[256];
 		int ncol = 0;
-		for (int p = 0; p < sys->param_count && ncol < 256; p++) {
-			const char *owner = arch_owning_col(ctx, sys->params[p]->name);
-			if (owner && get_arch_static_capacity(ctx, owner) == 1)
-				continue; /* singleton column — broadcast, not a driver */
-			cols[ncol++] = sys->params[p]->name;
+		{
+			const char *allc[256];
+			int nall = 0;
+			for (int p = 0; p < sys->param_count && nall < 256; p++)
+				allc[nall++] = sys->params[p]->name;
+			const char *tmp[16];
+			if (nall > 0 && query_match_archs(ctx, allc, nall, tmp, 16) > 0)
+				for (int p = 0; p < nall && ncol < 256; p++)
+					cols[ncol++] = allc[p];
 		}
+		if (ncol == 0)
+			for (int p = 0; p < sys->param_count && ncol < 256; p++) {
+				const char *owner = arch_owning_col(ctx, sys->params[p]->name);
+				if (owner && get_arch_static_capacity(ctx, owner) == 1)
+					continue; /* singleton column — broadcast, not a driver */
+				cols[ncol++] = sys->params[p]->name;
+			}
 		if (ncol == 0 && sys->param_count > 0)
 			cols[ncol++] = sys->params[0]->name;
 		const char *archs[16];
 		int na = ncol > 0 ? query_match_archs(ctx, cols, ncol, archs, 16) : 0;
 		int prev_columnar = ctx->in_columnar_system;
 		ctx->in_columnar_system = 1;
+		/* A self-join `system (query {…} as All)` — its outer query is the fold DOMAIN, not a per-archetype
+		 * driver. Record its columns so `reduce(+, All.col)` can span EVERY matching archetype (below), and
+		 * run the body exactly ONCE: the nested `map (… as me)` already iterates all element archetypes, so
+		 * repeating per outer archetype would just re-run (and clobber) the whole join. */
+		const char *prev_qb_cols[32];
+		int prev_qb_ncol = ctx->qbinder_ncol, prev_qb_multi = ctx->qbinder_multi;
+		for (int qc = 0; qc < prev_qb_ncol && qc < 32; qc++)
+			prev_qb_cols[qc] = ctx->qbinder_cols[qc];
+		if (sys->query_binder) {
+			ctx->qbinder_ncol = ncol < 32 ? ncol : 32;
+			for (int qc = 0; qc < ctx->qbinder_ncol; qc++)
+				ctx->qbinder_cols[qc] = cols[qc];
+			ctx->qbinder_multi = (na > 1);
+		}
 		for (int ai = 0; ai < na; ai++) {
 			const char *arch_name = archs[ai];
 			HirArchetypeDecl *arch = find_archetype_decl(ctx, arch_name);
@@ -12788,7 +13118,15 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 			pop_value_scope(ctx);
 			ctx->qbinder_name = prev_qbn;
 			ctx->qbinder_arch = prev_qba;
+			/* Self-join: the body (its nested `map … as me`) already spans every element archetype and the
+			 * fold spans every domain archetype — so run it ONCE, not once per matching outer archetype. */
+			if (sys->query_binder)
+				break;
 		}
+		ctx->qbinder_ncol = prev_qb_ncol;
+		ctx->qbinder_multi = prev_qb_multi;
+		for (int qc = 0; qc < prev_qb_ncol && qc < 32; qc++)
+			ctx->qbinder_cols[qc] = prev_qb_cols[qc];
 		ctx->in_columnar_system = prev_columnar;
 	} else {
 		codegen_body_fused(ctx, sys->stmts, sys->stmt_count);
@@ -12820,14 +13158,28 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
 	 * rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine which
 	 * archetype(s) we fan over (a query may still match several same-shape archetypes). */
+	/* Match on the FULL column set whenever some archetype owns every one of them (the query is
+	 * self-contained); only a genuine cross-pool broadcast join drops the `[1]` columns first. See the
+	 * columnar-system path above for why: dropping a `[1]`-owned marker makes the query over-match. */
 	const char *cols[256];
 	int ncol = 0;
-	for (int p = 0; p < param_count && ncol < 256; p++) {
-		const char *owner = arch_owning_col(ctx, params[p]->name);
-		if (owner && get_arch_static_capacity(ctx, owner) == 1)
-			continue; /* singleton column — broadcast, not a loop driver */
-		cols[ncol++] = params[p]->name;
+	{
+		const char *allc[256];
+		int nall = 0;
+		for (int p = 0; p < param_count && nall < 256; p++)
+			allc[nall++] = params[p]->name;
+		const char *tmp[16];
+		if (nall > 0 && query_match_archs(ctx, allc, nall, tmp, 16) > 0)
+			for (int p = 0; p < nall && ncol < 256; p++)
+				cols[ncol++] = allc[p];
 	}
+	if (ncol == 0)
+		for (int p = 0; p < param_count && ncol < 256; p++) {
+			const char *owner = arch_owning_col(ctx, params[p]->name);
+			if (owner && get_arch_static_capacity(ctx, owner) == 1)
+				continue; /* singleton column — broadcast, not a loop driver */
+			cols[ncol++] = params[p]->name;
+		}
 	/* A query over ONLY singletons has no non-singleton driver. Prefer an archetype that owns EVERY query
 	 * column (a self-contained singleton, e.g. a UI element) and fan just it — do NOT fall back to the
 	 * first column alone, which would also match a SIBLING singleton that shares that column but lacks the
@@ -12904,6 +13256,12 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 		 * (auto-indexed at %row); a SINGLETON column as a broadcast scalar loaded at index 0. */
 		for (int p = 0; p < param_count; p++) {
 			const char *param_name = params[p]->name;
+			/* Does the FANNED archetype own this column? If so, bind from ITS OWN storage (the field path
+			 * below) even when another archetype also declares the same shared component. Only a column the
+			 * fanned archetype LACKS is a genuine cross-pool broadcast from its (singleton) owner. Without
+			 * this guard a component shared across archetypes was always read from the FIRST-declared owner
+			 * (arch_owning_col), so a map over B read A's value — silently corrupting a shared `len`/`pos`/
+			 * `color` across sibling archetypes (and spinning a shared, read-back loop counter forever). */
 			const char *owner = arch_owning_col(ctx, param_name);
 			if (owner && !arch_has_col(arch, param_name) && get_arch_static_capacity(ctx, owner) == 1) {
 				bind_singleton_col(ctx, param_name, owner);

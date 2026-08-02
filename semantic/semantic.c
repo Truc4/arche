@@ -1096,6 +1096,7 @@ static TypeId sem_expand_tuple_nominal(SemanticContext *ctx, TypeId tid);
 static int sem_insert_is_fallible(SemanticContext *ctx, SyntaxView call, const char *arch_name);
 static ParamSummary sem_param_summary_node(SyntaxView p);
 static int proc_param_is_inout(DeclSummary *proc, int param_idx);
+static int proc_out_param_is_inout(DeclSummary *proc, int out_idx);
 
 /* By-reference aggregate param types: arrays are passed by reference (borrowed read-only by
  * default), so mutating one through a non-`move` param is a purity violation. Scalars are by
@@ -1859,6 +1860,24 @@ static TypeId index_base_type_id(SemanticContext *ctx, SyntaxView v) {
 		 * that scalar (a column field's own type_id is the scalar, not the array). */
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
 		TypeId ft = archetype_field_type_id(ctx, idnt, fld);
+		/* A GROUPED subfield (`T.p.x[0]`, `p(x,y)::float`) reaches here with TWO field segments. Looking up
+		 * only the LAST one asks for a column named `x`, which no archetype has, so the element typed as
+		 * UNKNOWN and codegen defaulted it to int — `a := T.p.x[0]; a*a` emitted `mul i32` on a float.
+		 * Columns are stored FLATTENED (`p_x`), the same convention sem_arch_covers_col uses, so join the
+		 * group and the subfield and look that up. */
+		if (ft == TYID_UNKNOWN && nf >= 2) {
+			char *grp = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 2));
+			if (grp && fld) {
+				size_t n = strlen(grp) + 1 + strlen(fld) + 1;
+				char *flat = malloc(n);
+				if (flat) {
+					snprintf(flat, n, "%s_%s", grp, fld);
+					ft = archetype_field_type_id(ctx, idnt, flat);
+					free(flat);
+				}
+			}
+			free(grp);
+		}
 		free(fld);
 		if (ft != TYID_UNKNOWN)
 			bt = tyid_of_slice(ctx->ty_arena, ft);
@@ -1995,8 +2014,29 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 		int nf = sv_count(v, SN_FIELD_NAME);
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
 		int prop = is_len_prop(fld) || is_pool_extent_prop(fld);
+		if (prop) {
+			free(fld);
+			return tyid_of_prim(ctx->ty_arena, PRIM_INT);
+		}
+		TypeId bt = sem_expr_type_id(ctx, base_subexpr(v));
+		/* A MEMBER of a TUPLE-valued base (`mkv(a, b).x`, `f().y`) is the MEMBER's type, not the tuple's.
+		 * Returning the base type here typed `v := mkv(…).x` as the whole 2-vector, the `:=` bind fell back
+		 * to the int default, and it only detonated where a context forced the type (a `select` arm) — as
+		 * `'%vN' defined with type 'float' but expected 'i32'`. A named tuple local (`w.x`) already resolved
+		 * correctly via archetype_field_type_id; only a computed base reached this branch. */
+		if (fld && tyid_kind(ctx->ty_arena, bt) == TYK_TUPLE) {
+			int cnt = tyid_tuple_count(ctx->ty_arena, bt);
+			for (int i = 0; i < cnt; i++) {
+				const char *fn = tyid_tuple_field_name(ctx->ty_arena, bt, i);
+				if (fn && strcmp(fn, fld) == 0) {
+					TypeId mt = tyid_tuple_field_type(ctx->ty_arena, bt, i);
+					free(fld);
+					return mt;
+				}
+			}
+		}
 		free(fld);
-		return prop ? tyid_of_prim(ctx->ty_arena, PRIM_INT) : sem_expr_type_id(ctx, base_subexpr(v));
+		return bt;
 	}
 	int nf = sv_count(v, SN_FIELD_NAME);
 	char *idnt = sv_resolved_name(ctx, v);
@@ -2009,6 +2049,24 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 			r = tyid_of_prim(ctx->ty_arena, PRIM_INT); /* `me.id` — intrinsic pool-row identity */
 		else if (nf == 1)
 			r = archetype_field_type_id(ctx, idnt, fld);
+		else if (nf >= 2) {
+			/* A GROUPED subfield read (`me.cor.x`, `T.p.x`): columns are stored FLATTENED (`cor_x`), so join
+			 * the group and the subfield. Without this the member typed as UNKNOWN and a `:=` bind of it fell
+			 * back to int — `ms := select(me.cor.x > 1.0, me.cor.x, 1.0)` produced an i32 local holding a
+			 * float, which the `rigid` device worked around by routing the value through a reciprocal twice.
+			 * Mirrors the same flattening in index_base_type_id for the indexed form. */
+			char *grp = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 2));
+			if (grp && fld) {
+				size_t n = strlen(grp) + 1 + strlen(fld) + 1;
+				char *flat = malloc(n);
+				if (flat) {
+					snprintf(flat, n, "%s_%s", grp, fld);
+					r = archetype_field_type_id(ctx, idnt, flat);
+					free(flat);
+				}
+			}
+			free(grp);
+		}
 		free(fld);
 	}
 	free(idnt);
@@ -3869,6 +3927,18 @@ static void analyze_statement(SemanticContext *ctx, SyntaxView v) {
 				free(an);
 			}
 		}
+
+		/* W0032 inout_outarg_colon_bind: `(name:)` declares a NEW binding, but an IN-OUT out-param's value
+		 * IS the in-arg's place — there is nothing to declare, and the binding ends up naming nothing. */
+		if (mb_callee_proc)
+			for (int t = 0; t < mbt_count && t < mb_callee_proc->out_param_count; t++) {
+				if (!mbt[t].is_new || !mbt[t].name || strcmp(mbt[t].name, "_") == 0)
+					continue;
+				if (!proc_out_param_is_inout(mb_callee_proc, t))
+					continue;
+				const char *pn = mb_callee_proc->out_params[t].name;
+				sem_emit_lint_inout_outarg_colon_bind(ctx, loc, mbt[t].name, pn ? pn : mbt[t].name);
+			}
 
 		/* bind the targets (new shadows; existing must be live) */
 		for (int i = 0; i < mbt_count; i++) {
@@ -6763,6 +6833,20 @@ static void sem_check_policies(SemanticContext *ctx) {
 
 /* True if in-param `param_idx` is an in-out param: its name also appears in the out-list.
  * Mirrors codegen's proc_out_param_is_inout (codegen.c). An in-out's out-param shadows it. */
+/* True if OUT-param `out_idx` is the out half of an in-out pair: its name also appears in the IN-list.
+ * The out-index mirror of proc_param_is_inout (and of codegen's proc_out_param_is_inout). */
+static int proc_out_param_is_inout(DeclSummary *proc, int out_idx) {
+	if (!proc || out_idx < 0 || out_idx >= proc->out_param_count)
+		return 0;
+	const char *on = proc->out_params[out_idx].name;
+	if (!on)
+		return 0;
+	for (int i = 0; i < proc->param_count; i++)
+		if (proc->params[i].name && strcmp(proc->params[i].name, on) == 0)
+			return 1;
+	return 0;
+}
+
 static int proc_param_is_inout(DeclSummary *proc, int param_idx) {
 	if (!proc || param_idx < 0 || param_idx >= proc->param_count)
 		return 0;
@@ -8206,17 +8290,7 @@ static void sem_apply_impl_renames(SemanticContext *ctx) {
 /* The binding LHS name: the IDENT immediately before the first top-level `:` of the decl.
  * Skips any leading `@decorator` / `@allow(slug)` idents (which precede the name). */
 static SynText sem_binding_name(SyntaxView d) {
-	SynText last = {NULL, 0};
-	for (int i = 0; i < d.node->child_count; i++) {
-		SyntaxElem *e = &d.node->children[i];
-		if (e->tag != SE_TOKEN)
-			continue;
-		if (e->as.token.kind == TOK_COLON)
-			break;
-		if (e->as.token.kind == TOK_IDENT)
-			last = (SynText){d.src + e->as.token.offset, e->as.token.length};
-	}
-	return last;
+	return sv_decl_name(d);
 }
 
 /* True if the decl is decorated (its first token is `@`). A decorator with args — `@allow(x)`,
@@ -8372,6 +8446,82 @@ int semantic_collect_link_libs(const SyntaxNode *root, const char *root_src, cha
 		return -1;
 	for (int m = 0; m < g_sem_module_count; m++)
 		if (sem_collect_link_from_root(g_sem_modules[m].root, g_sem_modules[m].src, out, &n, cap) < 0)
+			return -1;
+	return n;
+}
+
+/* Looser than a #link lib name: a cc flag carries -, /, ., =, +, :, , (e.g. -I/usr/include/gtk-3.0). Still
+ * reject anything a shell could act on — the cc command runs via system() — so no spaces/quotes/;|&$`()<>*?~. */
+static int sem_cflag_ok(const char *s, size_t n) {
+	if (n == 0)
+		return 0;
+	for (size_t i = 0; i < n; i++) {
+		char c = s[i];
+		if (!((c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '.' || c == '_' ||
+		      c == '-' || c == '/' || c == '=' || c == '+' || c == ':' || c == ','))
+			return 0;
+	}
+	return 1;
+}
+
+/* Gather the quoted flags of every `#cflags` region in one syntax root into out[] (deduped). Mirrors
+ * sem_collect_link_from_root but distinguishes #cflags via TOK_HASH_CFLAGS and validates with sem_cflag_ok. */
+static int sem_collect_cflags_from_root(const SyntaxNode *root, const char *src, char out[][64], int *pn, int cap) {
+	if (!root)
+		return 0;
+	for (int i = 0; i < root->child_count; i++) {
+		if (root->children[i].tag != SE_NODE)
+			continue;
+		const SyntaxNode *cn = root->children[i].as.node;
+		if (cn->kind != SN_REGION)
+			continue;
+		if (!sv_has_token((SyntaxView){cn, src}, TOK_HASH_CFLAGS))
+			continue;
+		for (int j = 0; j < cn->child_count; j++) {
+			if (cn->children[j].tag != SE_TOKEN || cn->children[j].as.token.kind != TOK_STRING)
+				continue;
+			size_t L = cn->children[j].as.token.length;
+			size_t off = cn->children[j].as.token.offset;
+			if (L >= 2) { /* strip the surrounding quotes */
+				off += 1;
+				L -= 2;
+			}
+			const char *flag = src + off;
+			if (!sem_cflag_ok(flag, L)) {
+				fprintf(stderr, "Error: invalid #cflags flag \"%.*s\" — only [A-Za-z0-9._+=:,/-] allowed\n", (int)L,
+				        flag);
+				return -1;
+			}
+			if (L > 63)
+				L = 63;
+			char tmp[64];
+			memcpy(tmp, flag, L);
+			tmp[L] = '\0';
+			int dup = 0;
+			for (int k = 0; k < *pn; k++)
+				if (strcmp(out[k], tmp) == 0) {
+					dup = 1;
+					break;
+				}
+			if (dup)
+				continue;
+			if (*pn >= cap) {
+				fprintf(stderr, "Error: too many #cflags flags (max %d)\n", cap);
+				return -1;
+			}
+			memcpy(out[*pn], tmp, L + 1);
+			(*pn)++;
+		}
+	}
+	return 0;
+}
+
+int semantic_collect_cflags(const SyntaxNode *root, const char *root_src, char out[][64], int cap) {
+	int n = 0;
+	if (sem_collect_cflags_from_root(root, root_src, out, &n, cap) < 0)
+		return -1;
+	for (int m = 0; m < g_sem_module_count; m++)
+		if (sem_collect_cflags_from_root(g_sem_modules[m].root, g_sem_modules[m].src, out, &n, cap) < 0)
 			return -1;
 	return n;
 }
@@ -10362,7 +10512,7 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 		return ds;
 	}
 	SyntaxView rhs_type = sem_type_at(dv, 0);
-	if (sv_present(rhs_type) && !sv_has_token(dv, TOK_LPAREN) && !sv_present(sem_node_at_expr(dv, 0)) &&
+	if (sv_present(rhs_type) && !sv_has_group_paren(dv) && !sv_present(sem_node_at_expr(dv, 0)) &&
 	    (sv_kind(rhs_type) == SN_TYPE_ARRAY || sv_kind(rhs_type) == SN_TYPE_SHAPED_ARRAY)) {
 		/* A bare `::` array type in VALUE position (`buf :: [4]char`, no value expr) — a component whose column
 		 * carries the FULL array type. The scalar-name alias path would drop the `[N]`, so keep the interned
@@ -10371,7 +10521,7 @@ static DeclSummary *decl_summary_const_node(SemanticContext *ctx, SyntaxView dv)
 		ds->const_value_loc = sem_node_loc(rhs_type.node);
 		return ds;
 	}
-	if (!decorated && sv_has_token(dv, TOK_LPAREN)) {
+	if (sv_has_group_paren(dv)) {
 		/* tuple group: type_value = a tuple of the parenthesized suffix names. EITHER a shape `pos(x,y) :: T`
 		 * (a shared type), OR a named-vector CONSTANT `CENTER(X, Y) :: (320.0, 240.0)` — a tuple VALUE. In the
 		 * value form the member type is inferred from the first element and the value is recorded so the const

@@ -1,0 +1,42 @@
+// RED bug-capture: a DECORATOR silently stops a tuple-group component from being a tuple group.
+//
+// Both the semantic pass and lowering classify `name(x, y) :: T` as a group by asking whether the decl has a
+// `(` token — and both first bail out if the decl is decorated, because a decorator with arguments
+// (`@allow(slug)`, `@implements(dev.foo)`) contributes a `(` of its own that must not be mistaken for the
+// group paren. The bail-out is too broad: it drops the decl on the presence of ANY `(` rather than one
+// FOLLOWING the decl's name, so a decorated group stops flattening to `p_x`/`p_y` and the archetype loses
+// the columns. No diagnostic is emitted — the decl simply stops meaning what it says.
+//
+// This is also why `@implements` can never bind a vector component: the decorator it needs is exactly the
+// thing that stops the component being a vector.
+//
+// Here the decorated `p(x, y)` must behave identically to the undecorated `q(x, y)` beside it.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { fmt }
+
+@allow(unused_static_const)
+p(x, y) :: float;
+q(x, y) :: float;
+
+T :: arche { p, q }
+[4]T(1);
+
+seed :: system {
+  T.p.x = { 3.0 };
+  T.p.y = { 4.0 };
+  T.q.x = { 6.0 };
+  T.q.y = { 8.0 };
+}
+
+// whole-group arithmetic — only valid if `p` really is a 2-vector
+scale :: map (query { p, q })(p) {
+  p = p + q;
+}
+
+verify :: system eff {
+  fmt.assert(T.p.x[0] > 8.99 && T.p.x[0] < 9.01, "decorated tuple group lost its x lane\n")();
+  fmt.assert(T.p.y[0] > 11.99 && T.p.y[0] < 12.01, "decorated tuple group lost its y lane\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, scale, verify })

@@ -56,10 +56,31 @@
     const { instance } = await WebAssembly.instantiate(bytes, Object.assign({}, wasi.imports, { env }));
     const ex = instance.exports;
     rt._mem = wasi.memory = ex.memory;
-    if (typeof ex.arche_frame === "function") { // reactor: init once, then a frame per rAF
+    if (typeof ex.arche_frame === "function") { // reactor: init once, then fixed-timestep sim per rAF
       if (typeof ex._initialize === "function") ex._initialize();
       if (typeof ex.arche_run === "function") ex.arche_run();
-      const tick = () => { if (rt._stopped) return; try { ex.arche_frame(); } catch (e) { rt._stopped = true; return; } rt._raf = requestAnimationFrame(tick); };
+      // arche_frame advances the world by a FIXED step AND renders in the SAME call — the two cannot be split
+      // from JS. Driving it once per rAF is perfectly smooth but ties world speed to refresh rate: a 120Hz
+      // display runs fast, and a rAF burst after a stall lurches ahead. An accumulator that SKIPS callbacks to
+      // hold 60/s trades that for uneven frame pacing — visibly choppy while the world is moving. So instead we
+      // render on EVERY callback (never skip a 60Hz frame — smooth) and only enforce a FLOOR between frames:
+      // callbacks arriving faster than 1/MIN_DT (a high-refresh panel, or a burst) are dropped, which caps the
+      // runaway speed without stuttering the common path. Never more than one arche_frame per callback.
+      const MIN_DT = 12; // ms; frame floor (~83fps ceiling) — below 60Hz's 16.7ms, so 60Hz never skips
+      const now = () => (typeof performance !== "undefined" && performance.now ? performance.now() : Date.now());
+      let lastFrame = now() - MIN_DT;
+      const tick = () => {
+        if (rt._stopped) return;
+        const t = now();
+        if (t - lastFrame >= MIN_DT) {
+          lastFrame = t;
+          const probe = global.__archeProbe; // opt-in perf hook: (arche_frame ms, callback ts). No-op when unset.
+          const f0 = probe ? now() : 0;
+          try { ex.arche_frame(); } catch (e) { rt._stopped = true; return; }
+          if (probe) { try { probe(now() - f0, t); } catch (e) {} }
+        }
+        rt._raf = requestAnimationFrame(tick);
+      };
       rt._raf = requestAnimationFrame(tick);
     } else { // command: run once
       try { ex._start(); } catch (e) { if (!(e instanceof WasiExit) || e.code !== 0) { rt.stdout = wasi.stdout; throw e; } }

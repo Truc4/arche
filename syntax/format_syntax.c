@@ -590,10 +590,14 @@ void format_syntax(FILE *out, const SyntaxNode *root, const char *src) {
 				nl = 1;
 				/* one trailing comma before the closer (past any trailing comment) — EXCEPT a query-header
 				 * paren (`each (query {…})`, `system(…)`, `map(…)`), which holds a SINGLE `query{…}`, not a
-				 * comma-list: a trailing comma there is invalid syntax (re-parse fails → empty output). */
-				add_trailing_comma = (prev_noncomment != TOK_COMMA) && f->parent != SN_EACH_EXPR &&
-				                     f->parent != SN_SYSTEM_EXPR && f->parent != SN_MAP_EXPR &&
-				                     f->parent != SN_MAP_DECL && f->parent != SN_QUERY_EXPR;
+				 * comma-list: a trailing comma there is invalid syntax (re-parse fails → empty output).
+				 * An EMPTY list has no item to attach the comma to — `prev_noncomment` is still the opener,
+				 * so a long `fmt.assert(…)()` broke its empty out-list into `(,\n)`, which does not re-parse
+				 * ("Expected out-argument name") and made the formatter non-idempotent. Same guard the
+				 * trailing-comment branch below already carries. */
+				add_trailing_comma = (prev_noncomment != TOK_COMMA) && prev_noncomment != f->opener &&
+				                     f->parent != SN_EACH_EXPR && f->parent != SN_SYSTEM_EXPR &&
+				                     f->parent != SN_MAP_EXPR && f->parent != SN_MAP_DECL && f->parent != SN_QUERY_EXPR;
 			} else if (f->closer == TOK_RBRACE) {
 				space = 1; /* `{ … }` interior space; `)` hugs */
 			}

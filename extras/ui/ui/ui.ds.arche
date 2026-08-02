@@ -4,12 +4,40 @@ view(w, h)   :: int;
 mouse(x, y)  :: int;
 
 len        :: int;
+sublen     :: int; // length of a panel's `sub` (subtitle) string; see the panel device
 cursor     :: int;
 submit     :: int;
 key        :: int;
-clicked    :: int;
+clicked    :: int; // rising edge: went down THIS frame
+held       :: int; // level: is down RIGHT NOW. `clicked` alone cannot express hold-to-repeat (a movement pad).
 wasdown    :: int;
 mouse_down :: int;
+
+/// Which DEPTH an element renders at: a portable z ordinal on one scale shared by every drawable (widgets AND
+/// the world's bodies), higher = nearer the viewer. The backend merely ECHOES it — on the web straight into a
+/// CSS `z-index`, on the framebuffer into paint order — so draw order is decided entirely by the driver, never
+/// by a per-backend constant. `SPLIT_Z` is the surface cut: `z < SPLIT_Z` renders on the BACKGROUND surface
+/// (behind the world's foreground), `z >= SPLIT_Z` on the FOREGROUND surface. Backends that composite over DOM
+/// still render the two sides in separate passes (`render_bg` / `render`) around `gfx.split`; the pass a row
+/// belongs to is decided by `z` against `SPLIT_Z`, not a stored flag.
+z :: int;
+
+/// The surface cut on the shared `z` scale. `z < SPLIT_Z` → background surface; `z >= SPLIT_Z` → foreground
+/// surface. The gfx foreground canvas's own stacking sits AT this value, so a body's z deciding its surface and
+/// a widget's z deciding whether the fg canvas occludes it are the same comparison. Single source of truth for
+/// the split: the driver passes it to `gfx.layers`, and the native `window` backends read it for pass membership.
+SPLIT_Z :: 500;
+
+/// A stable per-element id, owned by the driver. Elements are rows in a pool, and a pool has no natural
+/// identity a BACKEND can key on — the DOM button host needs it to map a row to its own <button> element, and
+/// a driver needs it to tell one button from another (which one was clicked?). Without it the DOM backend can
+/// only ever manage a single element.
+bid :: int;
+
+// Theme — the DRIVER owns the palette (0xRRGGBB) and seeds it per element; every backend renders these
+// instead of hardcoding its own colours. `bg`/`fg` are the element's fill + text/foreground colour.
+bg :: int;
+fg :: int;
 
 PAD     :: 18;
 GAP     :: 14;

@@ -257,6 +257,11 @@ typedef enum {
 	                                      in the body (nor any nested fan) — a dead write-back binding, e.g. a
 	                                      `(col:)` out-binder shadows the queried column so the write lands on a
 	                                      throwaway local. W0031. */
+	SEM_LINT_inout_outarg_colon_bind,  /* a call colon-binds (`(name:)`, declare-new) an out-arg whose callee
+	                                      out-param is IN-OUT (it shadows an in-param). An in-out's value IS the
+	                                      in-arg's place, so there is nothing to declare: the binding produces
+	                                      no value at all. Write the existing place — `f(n, _)(place)`. ERROR by
+	                                      default; `@allow(inout_outarg_colon_bind)` opts out. W0032. */
 
 	SEM_DIAG_KIND_COUNT
 } SemDiagKind;
@@ -469,6 +474,8 @@ SemDiag *sem_emit_lint_func_impure(SemanticContext *ctx, SourceLoc loc, const ch
 SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_unused_use(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_inout_redundant_arg(SemanticContext *ctx, SourceLoc loc, const char *name);
+SemDiag *sem_emit_lint_inout_outarg_colon_bind(SemanticContext *ctx, SourceLoc loc, const char *target,
+                                               const char *param);
 SemDiag *sem_emit_lint_inout_param_shadow(SemanticContext *ctx, SourceLoc loc, const char *name);
 SemDiag *sem_emit_lint_unused_function(SemanticContext *ctx, SourceLoc loc, const char *name, const char *module_path);
 SemDiag *sem_emit_lint_unused_static_const(SemanticContext *ctx, SourceLoc loc, const char *kind, const char *name,

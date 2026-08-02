@@ -1,0 +1,56 @@
+// RED (bug capture): binding a VECTOR COMPONENT to a scalar local mis-types the local as i32.
+//
+//   v := mkv(A.a[0], 0.0).x;         // v is inferred i32, not float
+//   lo = select(v < lo, v, lo);      // ⇒ opt: '%vN' defined with type 'float' but expected 'i32'
+//
+// Same for a plain read through a vec local (`w := someVec.x`). The value itself is a float — only the
+// LOCAL's inferred type is wrong — so it detonates at LLVM verification, not in the front end, and only when
+// the local reaches a context that forces a type (a `select` ARM). A `select` whose other arm is a literal
+// (`select(v < 5.0, v, 9.0)`) accidentally types correctly off the literal, which is why this hid for so long.
+//
+// The tuple group and its constructor are declared HERE rather than imported from the `vec` device: the bug
+// is in the language, not in any device, and this file lives under tests/unit/language/ where no arche.toml
+// puts extras/ on the module path — importing `vec` made the test unbuildable for a reason unrelated to
+// what it captures.
+//
+// Workaround while it stood: keep the value in a vec local and use `.x` INLINE at each use site
+// (`vv := mkv(a, 0.0); lo = select(vv.x < lo, vv.x, lo);`) — never bind the component to its own scalar.
+// tests/extras/rigid_quiet.arche and the rigid device carry that workaround.
+//
+// Expected once fixed: prints `lo=3.000000`.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "lo=3.000000"
+#import { fmt os }
+
+v2(x, y) :: float;
+a        :: float;
+lo       :: float;
+A        :: arche { a }
+B        :: arche { lo }
+
+[4]A(2);
+[1]B(1);
+
+mkv :: func(px: float, py: float) -> v2 {
+  return (px, py);
+}
+
+seed :: system {
+  A.a  = { 3.0, 7.0 };
+  B.lo = { 1000000.0 };
+}
+
+// min-reduce a gathered value into a column. The `:=` bind of `.x` is the bug.
+samp :: map (query { lo })(lo) {
+  v := mkv(A.a[0], 0.0).x;
+  lo = select(v < lo, v, lo);
+}
+
+chk :: system eff {
+  map (query { lo }) eff {
+    fmt.printf("lo=%f\n", lo);
+    fmt.fflush(0)(_:);
+    os.exit(0)(_:);
+  };
+}
+
+#run seq({ seed, samp, chk })

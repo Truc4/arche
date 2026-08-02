@@ -1,0 +1,19 @@
+// Regression: a pool-seed initializer with a `float` value that is NOT exactly representable in f32
+// (e.g. 0.2) is emitted by cg_float_const as an LLVM HEX-float constant (0x...). The seed path floatizes
+// integer literals by appending ".0"; it must NOT do that to a hex-float literal (which produced invalid
+// IR `store float 0x...0`). Exactly-representable seeds (0.5, 0.625) and round values dodged it, so this
+// escaped until a rigid-body device seeded restitution/omega with 0.2/0.3. Fixed in float_promote_operand
+// (guard the ".0" append to INT/CHAR literals only).
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { fmt }
+w :: float;
+T :: arche { w }
+[4]T(1);
+seed :: system {
+  T.w = { 0.2 };
+}
+verify :: system eff {
+  fmt.assert(T.w[0] > 0.199 && T.w[0] < 0.201, "non-representable float seed corrupted\n")();
+  fmt.printf("ok\n");
+}
+#run seq({ seed, verify })

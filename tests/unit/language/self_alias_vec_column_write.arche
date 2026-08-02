@@ -1,0 +1,40 @@
+// RED until a vec column written from an RHS that reads it more than once resolves correctly. In one
+// kernel statement `r = norm(r + perp(r)*k)` the destination `r` self-aliases: `perp(r)` and the bare `r`
+// are two reads of the column being written, and codegen updates the lanes in place, so the y-lane read
+// sees the already-written x-lane. Result: after a pure ROTATION (which must preserve length) `|r|` grows
+// each step instead of staying 1. `pos = pos + vel` (one read) is safe; the multi-read-through-a-func case
+// is not. Workaround (used in the `rigid` device): a temp — `t := r + perp(r)*k; r = norm(t)`.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { fmt }
+r(x, y) :: float;
+T       :: arche { r }
+[4]T(1);
+
+perp :: func(v: r) -> r {
+  return (0.0 - v.y, v.x);
+}
+norm :: func(v: r) -> r {
+  l := sqrt(v.x * v.x + v.y * v.y);
+  return v * (1.0 / l);
+}
+rlen :: func(a: float, b: float) -> float {
+  return sqrt(a * a + b * b);
+}
+
+seed :: system {
+  T.r.x = { 1.0 };
+  T.r.y = { 0.0 };
+}
+
+// spin by a small angle — a rotation, so |r| must remain 1 after every step. Self-aliases today.
+spin :: map (query { r })(r) {
+  r = norm(r + perp(r) * 0.2);
+}
+
+verify :: system eff {
+  len := rlen(T.r.x[0], T.r.y[0]);
+  fmt.assert(len > 0.999 && len < 1.001, "self-aliased vec write broke length invariant\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, spin, spin, spin, spin, spin, verify })

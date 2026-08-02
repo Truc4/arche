@@ -1,0 +1,41 @@
+// A `map` whose query matches MULTIPLE archetypes must handle a FUNC CALL taking a vec (tuple-group) COLUMN
+// as its argument. Here `mag(v)` is called on the `v` column of a map that matches both `A` and `B`; each
+// body should be normalised (A.x: 3/5 = 0.6, B.x: 6/10 = 0.6).
+//
+// RED until fixed: in a multi-archetype map, a func call on a vec column mis-lowers — the vec argument is
+// read as an int (the emitted IR does `sitofp i32 <the {float,float}>` / "integer constant must have integer
+// type"), so it fails to build. A SINGLE-archetype map is fine; only the multi-archetype case breaks. Found
+// building the `rigid` device: `rest`'s `vec.len(lvel)` broke the portfolio (5 rigid archetypes) build; the
+// workaround is inline arithmetic (`lvel.x*lvel.x + lvel.y*lvel.y`) instead of the func call.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { fmt }
+v(x, y) :: float;
+mk      :: int;
+A       :: arche { v }
+B       :: arche { v, mk }
+[4]A(1);
+[4]B(1);
+
+mag :: func(a: v) -> float {
+  return sqrt(a.x * a.x + a.y * a.y);
+}
+
+seed :: system {
+  A.v.x = { 3.0 };
+  A.v.y = { 4.0 };
+  B.v.x = { 6.0 };
+  B.v.y = { 8.0 };
+  B.mk  = { 0 };
+}
+
+norm :: map (query { v })(v) {
+  v = v * (1.0 / mag(v));
+}
+
+verify :: system eff {
+  fmt.assert(A.v.x[0] > 0.59 && A.v.x[0] < 0.61, "A not normalised\n")();
+  fmt.assert(B.v.x[0] > 0.59 && B.v.x[0] < 0.61, "B not normalised\n")();
+  fmt.printf("ok\n");
+}
+
+#run seq({ seed, norm, verify })

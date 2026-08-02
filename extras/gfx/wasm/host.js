@@ -27,6 +27,21 @@
       gl_FragColor = vec4(t.b, t.g, t.r, 1.0);
     }`;
 
+  // The FOREGROUND surface's shader. Same swizzle, but pure black is TRANSPARENT rather than opaque, so the
+  // layer composites over the DOM instead of hiding it. The framebuffer int carries no alpha channel (it is
+  // 0x00RRGGBB — the high byte is always 0), so "was this pixel drawn?" has to be keyed off the colour, and
+  // black is the sentinel `split` clears to. Nothing in a scene is usually pure #000000; if a driver needs it,
+  // one unit off (#010101) is indistinguishable and opaque.
+  const FS_KEY = `
+    precision mediump float;
+    varying vec2 v_uv;
+    uniform sampler2D u_tex;
+    void main() {
+      vec4 t = texture2D(u_tex, v_uv);
+      float lit = step(0.5 / 255.0, max(t.r, max(t.g, t.b)));
+      gl_FragColor = vec4(t.b * lit, t.g * lit, t.r * lit, lit);
+    }`;
+
   function compile(gl, type, src) {
     const s = gl.createShader(type);
     gl.shaderSource(s, src);
@@ -48,28 +63,82 @@
       if (!c) c = host.querySelector && host.querySelector("canvas");
       if (!c) { c = document.createElement("canvas"); host.appendChild(c); }
       this.canvas = c;
-      // preserveDrawingBuffer keeps the last frame readable via gl.readPixels (the e2e reads it); alpha:false
-      // + no depth/antialias is the cheapest surface for a 2D blit.
-      this.gl = c.getContext("webgl", {
-        preserveDrawingBuffer: true, alpha: false, antialias: false, depth: false, stencil: false,
-      });
-      if (!this.gl) throw new Error("WebGL is not available");
+      // TWO SURFACES. The background canvas sits under the host's DOM; the foreground one sits over it, and is
+      // transparent wherever the driver drew nothing. That sandwich is the whole point — see gfx.arche's
+      // `split`. A driver that never calls `split` only ever touches the background one, and the foreground
+      // canvas stays empty and invisible.
+      //
+      // preserveDrawingBuffer keeps the last frame readable via gl.readPixels (the e2e reads it); no
+      // depth/antialias is the cheapest surface for a 2D blit.
+      const mkSurface = (canvas, alpha) => {
+        const gl = canvas.getContext("webgl", {
+          preserveDrawingBuffer: true, alpha: alpha, premultipliedAlpha: false,
+          antialias: false, depth: false, stencil: false,
+        });
+        if (!gl) throw new Error("WebGL is not available");
+        return { canvas: canvas, gl: gl, tex: null, texW: 0, texH: 0, alpha: alpha };
+      };
+      this.bg = mkSurface(c, false);
+      // The foreground canvas mirrors the background one's geometry exactly and never takes input — pointer
+      // events must fall THROUGH it to the DOM and the background canvas beneath, or it would swallow every
+      // click in the world.
+      //
+      // The two canvases' stacking is NOT hardcoded here: the driver sets it via gfx_be_layers (gfx.arche's
+      // `layers`), so the host owns no z-index constant. The foreground canvas ends up at the driver's SPLIT_Z,
+      // leaving room for the DOM (scenery text, background panels) to stack underneath it in the driver's own
+      // z order — the whole point of the split: those layers must be occluded by the world's foreground, and
+      // DOM over a single canvas never can be.
+      let fc = document.getElementById("gfx-fg");
+      if (!fc) {
+        fc = document.createElement("canvas");
+        fc.id = "gfx-fg";
+        fc.style.cssText = "position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;";
+        (c.parentNode || host).appendChild(fc);
+      }
+      this.fg = mkSurface(fc, true);
+      if (c.style) { c.style.position = c.style.position || "absolute"; }
+      this.cur = this.bg; // the surface the next present lands on; `split` flips it
+      // CACHE the pointer-coarseness. A driver reads this every frame (often several times), and building a
+      // fresh MediaQueryList per call is not free — under browser device EMULATION, which intercepts and
+      // overrides media queries, it is dramatically not free. Evaluate once and let the browser tell us when it
+      // changes; that is what the change event is for.
+      this.coarse = 0;
+      if (typeof matchMedia === "function") {
+        const mq = matchMedia("(pointer: coarse)");
+        this.coarse = mq.matches ? 1 : 0;
+        const onChange = (e) => { this.coarse = e.matches ? 1 : 0; };
+        if (mq.addEventListener) mq.addEventListener("change", onChange);
+        else if (mq.addListener) mq.addListener(onChange);
+      }
       this.w = 0; this.h = 0; this.renderH = 0;
-      this.texW = 0; this.texH = 0;
       this.handle = 1n; // opaque window handle: arche `window` lowers to i64 → crosses as BigInt
-      this.tex = null; this.frames = 0;
-      this.keys = { left: false, right: false }; // ←/→ (or A/D) held state, read by gfx_be_axis_x
+      this.frames = 0;
+      this.keys = { left: false, right: false, up: false, down: false }; // held state, read by gfx_be_axis_x/y
       this.keyQueue = [];                          // discrete presses, drained by gfx_be_key
       // Named-key → code map; MUST match gfx_x11.c's XLookupString bytes + GFX_KEY_* sentinels.
       const NAMED = { Enter: 13, Backspace: 8, Tab: 9, Escape: 27, ArrowLeft: 1000, ArrowRight: 1001, ArrowUp: 1002, ArrowDown: 1003 };
-      const set = (down) => (e) => {
-        // If a text field is focused (e.g. an embedded editor <textarea>), let it own the keyboard — don't
-        // steal a/d/arrows for movement or preventDefault typing. Movement resumes when the canvas/body is focused.
+      // Does a foreign TEXT FIELD own the keyboard? (An embedded editor <textarea>, say.) Exposed to the
+      // driver as gfx_be_text_focus so it can hold a real focus flag — see gfx.arche's `text_focus`.
+      this.textFocused = () => {
         const ae = document.activeElement;
-        if (ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable)) return;
+        return !!(ae && (ae.tagName === "TEXTAREA" || ae.tagName === "INPUT" || ae.isContentEditable));
+      };
+      const set = (down) => (e) => {
+        // A focused text field OWNS the keyboard: never steal a/d/arrows for movement, never preventDefault
+        // its typing. But the KEYUP must still clear the held axis. The guard used to early-return on keyup
+        // too, so holding → and then clicking into the <textarea> mid-hold swallowed the keyup and left
+        // keys.right stuck true — axis_x returned +1 forever and the player walked away with no key held.
+        // Releases are always safe to observe; only presses are the text field's to keep.
+        if (this.textFocused()) {
+          if (down) return;
+          this.keys.left = false; this.keys.right = false; this.keys.up = false; this.keys.down = false;
+          return;
+        }
         const k = e.key;
-        if (k === "ArrowLeft" || k === "a" || k === "A") this.keys.left = down;
-        else if (k === "ArrowRight" || k === "d" || k === "D") this.keys.right = down;
+        if (k === "ArrowLeft") this.keys.left = down;
+        else if (k === "ArrowRight") this.keys.right = down;
+        else if (k === "ArrowUp" || k === " ") this.keys.up = down;
+        else if (k === "ArrowDown") this.keys.down = down;
         if (down) {
           let code = NAMED[k];
           if (code === undefined && k.length === 1) code = k.charCodeAt(0);
@@ -88,10 +157,17 @@
         this.mx = Math.round((e.clientX - r.left) * (c.width / (r.width || 1)));
         this.my = Math.round((e.clientY - r.top) * (c.height / (r.height || 1)));
       };
+      // A Touch has clientX/clientY just like a MouseEvent, so the same conversion serves both.
+      const toRenderTouch = (t) => toRender(t);
       if (typeof c.addEventListener === "function") {
         c.addEventListener("mousemove", toRender);
         c.addEventListener("mousedown", (e) => { toRender(e); if (e.button === 0) this.mdown = 1; });
         addEventListener("mouseup", (e) => { if (e.button === 0) this.mdown = 0; });
+      }
+      // Touch releases anywhere end the press — a finger can leave the canvas before lifting.
+      if (typeof addEventListener === "function") {
+        addEventListener("touchend", () => { this.mdown = 0; }, { passive: true });
+        addEventListener("touchcancel", () => { this.mdown = 0; }, { passive: true });
       }
 
       // Horizontal scroll accumulator (render px), drained by gfx_be_scroll — fed by the mouse WHEEL and a TOUCH
@@ -120,6 +196,12 @@
         c.addEventListener("touchstart", (e) => {
           stopMomentum(); // a fresh touch grabs the world — kill any in-flight fling
           if (e.touches.length) { const r = c.getBoundingClientRect(); lastTouchX = (e.touches[0].clientX - r.left) * scaleX(); samples = [{ x: lastTouchX, t: nowMs() }]; }
+          // A touch on the canvas is a POINTER PRESS on the world, not just a scroll gesture. Without this,
+          // `mdown` is only ever written by mouse events, so on a phone nothing can observe a press on the
+          // world: a driver could never take keyboard focus BACK from an embedded <textarea> (it has no click
+          // edge to react to) and the player would stay dead forever. The scroll/fling accumulation above is
+          // untouched — a swipe both pans the world AND counts as touching it, which is what you want.
+          if (e.touches.length) { toRenderTouch(e.touches[0]); this.mdown = 1; }
         }, { passive: false });
         c.addEventListener("touchmove", (e) => {
           if (e.touches.length) {
@@ -131,6 +213,7 @@
             const t = nowMs();
             samples.push({ x: tx, t });
             while (samples.length > 2 && t - samples[0].t > 80) samples.shift(); // keep only the last ~80ms
+            toRenderTouch(e.touches[0]); // keep the pointer position live under a dragging finger
           }
           e.preventDefault();
         }, { passive: false });
@@ -170,17 +253,18 @@
         let w = Math.round(self.renderH * window.innerWidth / ch);
         if (w < 1) w = 1;
         if (w > MAXW) w = MAXW;
-        if (w === self.w && self.canvas.height === self.renderH) return;
+        if (w === self.w && self.bg.canvas.height === self.renderH) return;
         self.w = w; self.h = self.renderH;
-        self.canvas.width = w; self.canvas.height = self.renderH;
+        // Both surfaces must stay identical, or the two halves of the frame would not line up.
+        for (const su of [self.bg, self.fg]) { su.canvas.width = w; su.canvas.height = self.renderH; }
       };
 
       // Build the shader program, fullscreen-quad buffer, and framebuffer texture. Once per open.
-      const initGL = (w, h) => {
-        const gl = self.gl;
+      const initGL = (su, w, h) => {
+        const gl = su.gl;
         const prog = gl.createProgram();
         gl.attachShader(prog, compile(gl, gl.VERTEX_SHADER, VS));
-        gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, FS));
+        gl.attachShader(prog, compile(gl, gl.FRAGMENT_SHADER, su.alpha ? FS_KEY : FS));
         gl.linkProgram(prog);
         if (!gl.getProgramParameter(prog, gl.LINK_STATUS)) {
           throw new Error("gfx program link failed: " + gl.getProgramInfoLog(prog));
@@ -193,9 +277,9 @@
         gl.enableVertexAttribArray(loc);
         gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
         gl.uniform1i(gl.getUniformLocation(prog, "u_tex"), 0);
-        self.tex = gl.createTexture();
+        su.tex = gl.createTexture();
         gl.activeTexture(gl.TEXTURE0);
-        gl.bindTexture(gl.TEXTURE_2D, self.tex);
+        gl.bindTexture(gl.TEXTURE_2D, su.tex);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
@@ -207,17 +291,18 @@
       // Upload the live w×h region straight from wasm memory and draw it. Recompute the byte view each call:
       // wasm memory can grow and detach its ArrayBuffer, so read rt.memory() lazily. Realloc the texture on
       // resize, else refill in place. No per-pixel JS — the GPU does the swizzle.
-      const present = (pxPtr, w, h) => {
-        const gl = self.gl;
+      const present = (su, pxPtr, w, h) => {
+        const gl = su.gl;
         const bytes = new Uint8Array(rt.memory().buffer, pxPtr, w * h * 4);
-        gl.bindTexture(gl.TEXTURE_2D, self.tex);
-        if (w !== self.texW || h !== self.texH) {
+        gl.bindTexture(gl.TEXTURE_2D, su.tex);
+        if (w !== su.texW || h !== su.texH) {
           gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
           gl.viewport(0, 0, w, h);
-          self.texW = w; self.texH = h;
+          su.texW = w; su.texH = h;
         } else {
           gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, w, h, gl.RGBA, gl.UNSIGNED_BYTE, bytes);
         }
+        if (su.alpha) { gl.clearColor(0, 0, 0, 0); gl.clear(gl.COLOR_BUFFER_BIT); }
         gl.drawArrays(gl.TRIANGLE_STRIP, 0, 4);
       };
 
@@ -232,22 +317,60 @@
           self.renderH = h;
           rt.renderH = h; // share the render-height scale reference with other hosts (editor/screen place seams)
           sizeToWindow();
-          initGL(self.w, self.h);
+          initGL(self.bg, self.w, self.h);
+          initGL(self.fg, self.w, self.h);
           return self.handle;
         },
         gfx_be_w() { return self.w; },
         gfx_be_h() { return self.h; },
         gfx_be_present(_win, pxPtr, w, h) {
-          present(pxPtr, w, h);
+          present(self.cur, pxPtr, w, h);
+          self.cur = self.bg; // next frame starts on the background surface again
           self.frames++;
           if (self.frames === 1) self.canvas.dataset.status = "live"; // first painted frame (e2e signal)
         },
         gfx_be_poll() { return 1; }, // the tab is always open; native inserts Closed here to exit
         gfx_be_axis_x() { return (self.keys.right ? 1 : 0) - (self.keys.left ? 1 : 0); },
+        gfx_be_axis_y() { return (self.keys.down ? 1 : 0) - (self.keys.up ? 1 : 0); },
         gfx_be_key() { return self.keyQueue.length ? self.keyQueue.shift() : 0; },
         gfx_be_mouse_x() { return self.mx; },
         gfx_be_mouse_y() { return self.my; },
         gfx_be_mouse_down() { return self.mdown; },
+        gfx_be_text_focus() { return self.textFocused() ? 1 : 0; },
+        // Is this a TOUCH device? `pointer: coarse` is the standard test — it asks about the primary input's
+        // precision, not the screen size, so a narrow desktop window stays "fine" and a landscape phone stays
+        // "coarse". A driver uses it to show on-screen controls; native backends report 0 (they have a mouse).
+        // Everything so far belongs to the BACKGROUND: present it, then wipe the framebuffer to the
+        // transparent sentinel (black) so the rest of the frame composites over the DOM rather than hiding it.
+        // The zeroing is the only per-pixel work the host does, and it is a plain fill.
+        gfx_be_split(_win, pxPtr, w, h) {
+          present(self.bg, pxPtr, w, h);
+          // Zero the framebuffer so the foreground pass composites over the DOM (black = transparent sentinel).
+          // Fill as u32 (one write per pixel, not four) — the u8 fill of this ~9MB buffer sat on a slow path and
+          // was ~40% of the frame; the widened fill drops onto the engine's memset fast path. pxPtr is the base
+          // of the wasm int framebuffer, so it is 4-byte aligned as Uint32Array requires.
+          new Uint32Array(rt.memory().buffer, pxPtr, w * h).fill(0);
+          self.cur = self.fg;
+        },
+        // The driver's ONE source of truth for stacking: echo bgz/fgz onto the two canvases, and publish fgz as
+        // rt._splitZ so the DOM element hosts (panel/button/embed/…) derive "am I below the foreground canvas?"
+        // from the same number instead of a private constant.
+        gfx_be_layers(_win, bgz, fgz) {
+          self.bg.canvas.style.zIndex = bgz;
+          self.fg.canvas.style.zIndex = fgz;
+          rt._splitZ = fgz;
+          return 0;
+        },
+        gfx_be_coarse_pointer() { return self.coarse; },
+        // Take the keyboard back for the world: blur the focused text field and focus the canvas. Also clear
+        // the held axis — the blur means we will never see the keyup for anything currently held.
+        gfx_be_release_text() {
+          if (!self.textFocused()) return 0;
+          document.activeElement.blur();
+          if (self.canvas.focus) self.canvas.focus();
+          self.keys.left = false; self.keys.right = false;
+          return 1;
+        },
         gfx_be_scroll() { const s = self.scroll; self.scroll = 0; return s; }, // drain-and-clear
         gfx_be_close() {},
       };

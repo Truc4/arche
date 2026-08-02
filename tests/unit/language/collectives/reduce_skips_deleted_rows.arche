@@ -1,0 +1,43 @@
+// RED bug-capture: a `reduce` over a pool folds rows that have been DELETED. `delete` tombstones a row (it
+// flips the generation sign bit and pushes the slot onto the free list) but does NOT decrement the pool's
+// `count`, and the fold loop walks `[0, count)` with no liveness check — unlike the `each`/map fan, which
+// does skip tombstoned rows. So a freed row keeps contributing its stale column value to every fold.
+//
+// Here three rows are inserted (1, 2, 4) and the row holding 2 is deleted, so the fold must see 5. Today it
+// sees 7 — the tombstoned row's value is still in the column and the fold has no way to know.
+//
+// This is a correctness hole for any pool that mixes `delete` with a self-join: in the `rigid` device a
+// deleted body would remain a PHANTOM COLLIDER, folded into every other body's contact reduce with stale
+// geometry, and it is the blocker for any design that migrates entities between pools.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { fmt }
+
+v   :: float;
+tot :: float;
+B   :: arche { v }
+S   :: arche { tot }
+
+[8]B ?abort;
+[1]S(1);
+
+fill :: system eff {
+  insert(B { v: 1.0 })(_:);
+  insert(B { v: 2.0 })(h:);
+  insert(B { v: 4.0 })(_:);
+  delete(h)(_:);
+}
+
+sum :: system (query { v } as All) {
+  map (query { tot })(tot) {
+    tot = reduce(+, All.v);
+  };
+}
+
+verify :: system eff {
+  map (query { tot }) eff {
+    fmt.assert(tot > 4.99 && tot < 5.01, "reduce folded a deleted row\n")();
+    fmt.printf("ok\n");
+  };
+}
+
+#run seq({ fill, sum, verify })

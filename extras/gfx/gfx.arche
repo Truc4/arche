@@ -11,11 +11,27 @@ dims :: func(h: window) -> Eff(int, int) {
   return zip(gfx_be_w(h), gfx_be_h(h));
 }
 
-/// The window's horizontal input axis as one Eff: -1 while a left key (←/A) is held, +1 while a right key
-/// (→/D) is held, 0 otherwise. A step system binds it — `gfx.axis_x(handle)(dx:)` — and folds `dx` into a
-/// position. Backends that have no keyboard wired (headless, wayland) report 0.
+/// The window's horizontal input axis as one Eff: -1 while ← is held, +1 while → is held, 0 otherwise. A step
+/// system binds it — `gfx.axis_x(handle)(dx:)` — and folds `dx` into a position. Backends with no keyboard
+/// wired (headless, wayland) report 0.
+///
+/// The key set is part of the CONTRACT, not a per-backend detail: ARROWS ONLY (plus Space on `axis_y`). WASD
+/// was tried and removed. Letter keys are PRINTABLE, so a backend has to track them ALONGSIDE its key dispatch
+/// rather than inside it, or it swallows the keystrokes an editor needs — and the two backends promptly
+/// drifted doing exactly that, leaving A/D working on the web and dead natively. Arrows carry no such tax.
 axis_x :: func(h: window) -> Eff(int) {
   return gfx_be_axis_x(h);
+}
+
+/// The window's VERTICAL input axis, the symmetric partner to `axis_x`: -1 while ↑ or Space is held, +1 while
+/// ↓ is held, 0 otherwise. World +y is down, so "up" is negative — the same convention as the screen.
+///
+/// This exists because HELD is not the same question as PRESSED, and `key` can only answer the latter. `key`
+/// is a drained queue fed by OS auto-repeat (~30/s), so against a 60fps loop roughly every other frame finds
+/// it empty. A driver polling `key` for a held jump therefore jumps only about HALF the times you land while
+/// holding it — a coin flip, not a bug you can tune away. Level state has to come from level state.
+axis_y :: func(h: window) -> Eff(int) {
+  return gfx_be_axis_y(h);
 }
 
 /// The next discrete key press as one Eff — the typed ASCII byte (Enter=13, Backspace=8, Tab=9…) or a
@@ -45,6 +61,36 @@ scroll :: func(h: window) -> Eff(int) {
   return gfx_be_scroll(h);
 }
 
+/// WHO OWNS THE KEYBOARD — 1 if a native TEXT FIELD outside gfx currently has focus, 0 if gfx does.
+///
+/// A driver that embeds a real text widget (the web backend's editor is an actual DOM <textarea>) has two
+/// consumers for one keyboard, and gfx CANNOT arbitrate it alone: on the web the browser routes keys straight
+/// into the focused element, so gfx never sees them, and the driver never sees them either. `axis_x` and `key`
+/// therefore go SILENT whenever a text field owns the keyboard — which is correct, but leaves the driver
+/// unable to tell "no key is pressed" from "someone else is getting the keys". This reports which it is, so a
+/// driver can hold a real focus flag and gate its own input (don't walk the player while the user is typing).
+///
+/// Backends with no foreign text widget (x11 / wayland / headless) always report 0: gfx owns the keyboard,
+/// and focus is entirely the driver's business.
+text_focus :: func(h: window) -> Eff(int) {
+  return gfx_be_text_focus(h);
+}
+
+/// RELEASE the keyboard back to gfx: blur whatever text field holds it and focus the gfx surface. Returns 1 if
+/// it actually took focus back, 0 if gfx already had it. The driver calls this when the user clicks away from
+/// an embedded text widget — the counterpart to `text_focus`. A no-op (0) on backends with no text widget.
+release_text :: func(h: window) -> Eff(int) {
+  return gfx_be_release_text(h);
+}
+
+/// Is the primary pointer COARSE — i.e. is this a touch device? Standard CSS `pointer: coarse`, which asks
+/// about the input's PRECISION, not the screen size: a narrow desktop window stays fine-pointered, and a phone
+/// held in landscape stays coarse. A driver uses this to decide whether to show on-screen controls, since a
+/// touch device has no keyboard. Backends with a real mouse (x11 / wayland / headless) always report 0.
+coarse_pointer :: func(h: window) -> Eff(int) {
+  return gfx_be_coarse_pointer(h);
+}
+
 /// Fill the framebuffer buffer with the window's `bg` colour (0xRRGGBB). The framebuffer + window are `[1]`
 /// singletons; the outer system binds the shared buffer, the nested fan iterates the (one) window for `bg`/dims.
 clear :: system (query { framebuffer })(framebuffer) eff {
@@ -63,6 +109,37 @@ present :: system (query { framebuffer }) eff {
     dims(handle)(w:, h:);
     gfx_be_present(handle, framebuffer, w, h)(_:);
   };
+}
+
+/// LAYER BREAK. Everything drawn before `split` lands on a BACKGROUND surface; everything after it lands on a
+/// FOREGROUND surface composited over the top. Between the two sits whatever the host stacks there — on the web
+/// that is the DOM (text, panels, widgets), which otherwise ALWAYS paints above a canvas and can never be
+/// occluded by it.
+///
+/// Without this a driver embedding DOM UI has an impossible ordering problem: a DOM panel must sit BEHIND the
+/// bodies drawn on top of it, and a DOM sign must sit BEHIND the walls it is standing near — but DOM over one
+/// opaque canvas can only ever be all-above or all-below. Splitting the canvas gives the DOM a middle to live
+/// in, and makes the web's depth order match the native one exactly.
+///
+/// `split` presents what has been drawn so far to the background surface and CLEARS the framebuffer to
+/// transparent, so the second half of the frame composites rather than overwrites. Backends with no DOM (x11 /
+/// wayland / headless) have nothing to sandwich and no ordering problem: `split` is a NO-OP there, the frame
+/// accumulates in one buffer, and plain draw order already gives the right answer. A driver that never calls
+/// `split` is unaffected — everything simply presents to the background surface as before.
+split :: system (query { framebuffer })(framebuffer) eff {
+  map (query { handle }) eff {
+    dims(handle)(w:, h:);
+    gfx_be_split(handle, framebuffer, w, h)(framebuffer);
+  };
+}
+
+/// Publish the two compositing surfaces' stacking to the backend: `bgz` for the BACKGROUND canvas, `fgz` for
+/// the FOREGROUND one. `fgz` is the z the split falls at (a driver's `SPLIT_Z`), so a DOM widget's z decides
+/// whether the foreground canvas occludes it by the SAME comparison a body's z uses to pick its surface — one
+/// number line for the whole stack, with no per-backend stacking constant. A driver calls this once at boot.
+/// Backends with no stacked surfaces (x11 / wayland / headless) have nothing to order and treat it as a no-op.
+layers :: func(h: window, bgz: int, fgz: int) -> Eff(int) {
+  return gfx_be_layers(h, bgz, fgz);
 }
 
 /// A window-close event as data: empty while open, one row once closed. The driver owns `[1]Closed` and

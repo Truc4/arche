@@ -1,0 +1,341 @@
+// MULTI-BODY QUIET test — the scene that actually caught the permanent 1px buzz, and the one the single-body
+// tests structurally COULD NOT catch. It is a verbatim copy of the portfolio demo's physics scene: 6 boxes +
+// 4 circles + a static bin + a static player, at the demo's real coordinates and parameters, across FOUR
+// archetypes (the solver's self-join fans over all of them).
+//
+// Two bugs lived here, both invisible to a lone box on a floor:
+//   1. contact_impulse mass-split only body A, so the two bodies of a pair computed different effective mass
+//      `kn`, hence different `jn` — impulses that were NOT equal and opposite. A box on the STATIC floor hid
+//      this (a static body's mb.x is 0); only DYNAMIC-vs-DYNAMIC pairs (a ball resting on a box) exposed it,
+//      and those pumped momentum forever.
+//   2. No relax pass: the soft bias injects separating velocity to push penetration out, `integrate` uses it,
+//      and the surplus stays in lvel/spin into the next substep. A settled body never reaches a fixed point.
+// Both are pair-interaction bugs, so ONLY a multi-body scene reveals them. Before the fixes, bodies held a
+// PERMANENT limit cycle: 0.5-3px of travel still going at frame 8000. After, the scene decays to rest.
+//
+// A THIRD bug lived here too, and it is the one that kept ANGULAR velocity off zero forever:
+//   3. MASS-SPLITTING WAS A NO-OP. The split factor was divided into the inverse mass in BOTH the effective
+//      mass AND the impulse application, so it cancelled algebraically: k' = k/n  =>  jn' = n*jn  =>
+//      dv = -n_hat*(n*jn)*(ma/n) = -n_hat*jn*ma, i.e. exactly the UNSPLIT result. Every contact point applied
+//      the FULL correction as if it were the only contact. Tonge 2012 (the paper mass-splitting comes from)
+//      says: split the mass in the EFFECTIVE MASS only, apply the impulse with the FULL inverse mass.
+//      Consequence for a box flat on the floor: its two bottom corners have the SAME friction Jacobian row
+//      (rtA = +40 at both), so the tangential system is rank-1 solved twice at gain 1.0 => the Jacobi
+//      iteration factor is 1 - 2 = -1 EXACTLY. vt -> -vt, magnitude preserved, forever. And because both
+//      corners' friction torques ADD (unlike the normal torques, which cancel), that undamped mode carries
+//      angular velocity. omega could never decay -- it was sitting on a marginally-stable eigenvalue.
+//
+// A FOURTH bug lived here, and only here — no single-body test and no synthetic corner reproduces it:
+//   4. THE COULOMB CONE COLLAPSED ON SETTLED CONTACTS. Friction was clamped to `mu * jn` where `jn` is the
+//      CURRENT pass's normal CORRECTION, not the normal impulse the contact is carrying. In the relax pass
+//      bias=0, so a settled contact's target normal velocity is 0, `jn0 <= 0`, and the non-attractive clamp
+//      drives jn to 0 — a zero-width cone, so friction could not act at all. Residual tangential velocity
+//      then survived every pass and bodies crept forever at constant velocity: box0, wedged in a 3-contact
+//      corner, drifted 2^-12 px/frame indefinitely (0.0244 px per 100 frames, 0.244 per 1000 — linear in
+//      the window, so drift, not a limit cycle). It is invisible to a settle test (the body rests at the
+//      right HEIGHT) and to any single-frame check. Adding relax passes only slowed it (0.0183 with three).
+//      Bounding the cone by the CARRIED impulse (contact_impulse's `jnl`) stops it dead.
+//
+// With the split applied correctly each contact asks for ~1/n of the impulse, the friction gain drops to 1,
+// the iteration factor becomes 0, and the scene reaches EXACT rest. Hence the thresholds below are ~zero:
+// every body must be motionless to within 0.01px. There is a long legitimate transient first (the balls roll
+// around the bin for ~90s -- a disc has no rolling resistance), so the window is late.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt os }
+
+GRAV     :: 0.4;
+GDT      :: 0.05;
+BINVI    :: 0.0016;
+BREST    :: 0.12;
+BFRIC    :: 0.45;
+PHALF    :: 51.0;
+PLAYER_Y :: 1089.0;
+
+c         :: float;
+Clock     :: arche { c }
+tlo(x, y) :: float;
+thi(x, y) :: float; // per-box (pos.y, rot.y) min/max over the settled window
+bc        :: float; // per-box frame counter (a nested pure map is not a column transform)
+// Distinct trailing columns per archetype: identical component sets collide as the same SHAPE. The demo has
+// the same split (bsx../qsx../sflag/ppx), so this stays faithful.
+qtag :: float;
+stag :: float;
+ptag :: float;
+
+Box    :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, tlo, thi, bc }
+Ball   :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, qtag, tlo, thi, bc }
+Solid  :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, stag }
+Player :: arche { pos, lvel, spin, rot, ext, mi, mat, dimp, dang, cor, ptag }
+
+[8]Box(6);
+[6]Ball(4);
+[4]Solid(4);
+[4]RBody; // storage floor, exactly as the demo declares it
+[2]Player(1); // 1 live row + 1 DEAD row, exactly as the demo declares it
+[1]Clock(1);
+
+seed :: system {
+  Box.pos.x  = { 120.0, 250.0, 380.0, 500.0, 200.0, 440.0 };
+  Box.pos.y  = { 320.0, 260.0, 360.0, 280.0, 520.0, 560.0 };
+  Box.lvel.x = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.lvel.y = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.spin.x = { 0.02, -0.03, 0.04, -0.02, 0.03, -0.04 };
+  Box.spin.y = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.rot.x  = { 1.0, 0.924, 0.707, 0.383, 0.0, 0.831 };
+  Box.rot.y  = { 0.0, 0.383, 0.707, 0.924, 1.0, 0.556 };
+  Box.ext.x  = { 44.0, 36.0, 52.0, 40.0, 48.0, 34.0 };
+  Box.ext.y  = { 44.0, 36.0, 40.0, 40.0, 30.0, 34.0 };
+  Box.mi.x   = { 1.0, 1.0, 1.0, 1.0, 1.0, 1.0 };
+  Box.mi.y   = { BINVI, BINVI, BINVI, BINVI, BINVI, BINVI };
+  Box.mat.x  = { BREST, BREST, BREST, BREST, BREST, BREST };
+  Box.mat.y  = { BFRIC, BFRIC, BFRIC, BFRIC, BFRIC, BFRIC };
+  Box.dimp.x = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.dimp.y = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.dang.x = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.dang.y = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.cor.x  = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Box.cor.y  = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+
+  Ball.pos.x  = { 160.0, 340.0, 480.0, 560.0 };
+  Ball.pos.y  = { 240.0, 300.0, 220.0, 340.0 };
+  Ball.lvel.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.lvel.y = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.spin.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.spin.y = { 1.0, 1.0, 1.0, 1.0 };
+  Ball.rot.x  = { 1.0, 1.0, 1.0, 1.0 };
+  Ball.rot.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.ext.x  = { 38.0, 30.0, 44.0, 26.0 };
+  Ball.ext.y  = { 38.0, 30.0, 44.0, 26.0 };
+  Ball.mi.x   = { 1.0, 1.0, 1.0, 1.0 };
+  Ball.mi.y   = { BINVI, BINVI, BINVI, BINVI };
+  Ball.mat.x  = { BREST, BREST, BREST, BREST };
+  Ball.mat.y  = { BFRIC, BFRIC, BFRIC, BFRIC };
+  Ball.dimp.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.dimp.y = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.dang.x = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.dang.y = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.cor.x  = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.cor.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.qtag   = { 0.0, 0.0, 0.0, 0.0 };
+  Ball.tlo.x  = { 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
+  Ball.tlo.y  = { 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
+  Ball.thi.x  = { -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
+  Ball.thi.y  = { -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
+  Ball.bc     = { 0.0, 0.0, 0.0, 0.0 };
+
+  Solid.pos.x  = { 340.0, 30.0, 650.0, 340.0 };
+  Solid.pos.y  = { 1190.0, 670.0, 670.0, 190.0 };
+  Solid.lvel.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.lvel.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.spin.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.spin.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.rot.x  = { 1.0, 1.0, 1.0, 1.0 };
+  Solid.rot.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.ext.x  = { 320.0, 10.0, 10.0, 320.0 };
+  Solid.ext.y  = { 50.0, 480.0, 480.0, 10.0 };
+  Solid.mi.x   = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.mi.y   = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.mat.x  = { 0.1, 0.1, 0.1, 0.1 };
+  Solid.mat.y  = { 0.5, 0.5, 0.5, 0.5 };
+  Solid.dimp.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.dimp.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.dang.x = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.dang.y = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.cor.x  = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.cor.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Solid.stag   = { 0.0, 0.0, 0.0, 0.0 };
+
+  Player.pos.x  = { 2100.0 };
+  Player.pos.y  = { PLAYER_Y };
+  Player.lvel.x = { 0.0 };
+  Player.lvel.y = { 0.0 };
+  Player.spin.x = { 0.0 };
+  Player.spin.y = { 0.0 };
+  Player.rot.x  = { 1.0 };
+  Player.rot.y  = { 0.0 };
+  Player.ext.x  = { PHALF };
+  Player.ext.y  = { PHALF };
+  Player.mi.x   = { 0.0 };
+  Player.mi.y   = { 0.0 };
+  Player.mat.x  = { 0.1 };
+  Player.mat.y  = { 0.5 };
+  Player.dimp.x = { 0.0 };
+  Player.dimp.y = { 0.0 };
+  Player.dang.x = { 0.0 };
+  Player.dang.y = { 0.0 };
+  Player.cor.x  = { 0.0 };
+  Player.cor.y  = { 0.0 };
+  Player.ptag   = { 0.0 };
+
+  Box.tlo.x = { 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
+  Box.tlo.y = { 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0, 1000000.0 };
+  Box.thi.x = { -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
+  Box.thi.y = { -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0, -1000000.0 };
+  Box.bc    = { 0.0, 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Clock.c   = { 0.0 };
+}
+
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y + GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
+
+sub :: func() -> Schedule {
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
+}
+
+// Track the (pos.y, rot.y) min/max of each Box across the settled window (its own counter: a nested pure map
+// is not a column transform).
+sample :: map (query { pos, rot, cor, tlo, thi, bc })(tlo, thi, bc) {
+  bc = bc + 1.0;
+  live := select(bc > 5899.5, 1.0, 0.0);
+  tlo.x = select(live > 0.5 && pos.y < tlo.x, pos.y, tlo.x);
+  thi.x = select(live > 0.5 && pos.y > thi.x, pos.y, thi.x);
+  tlo.y = select(live > 0.5 && pos.x < tlo.y, pos.x, tlo.y); // .y slot tracks the pos.x range
+  thi.y = select(live > 0.5 && pos.x > thi.y, pos.x, thi.y);
+}
+
+// Every body must be QUIET in the settled window: peak-to-peak travel under a tenth of a pixel. This is the
+// question the old tests never asked — they sampled a single frame against a +-1px window, which a body locked
+// in a 1px limit cycle passes every time.
+report :: system eff {
+  map (query { c }) eff {
+    if (c > 5999.5) {
+      b0 := vec.mk(Box.thi.x[0] - Box.tlo.x[0], Box.thi.y[0] - Box.tlo.y[0]);
+      b1 := vec.mk(Box.thi.x[1] - Box.tlo.x[1], Box.thi.y[1] - Box.tlo.y[1]);
+      b2 := vec.mk(Box.thi.x[2] - Box.tlo.x[2], Box.thi.y[2] - Box.tlo.y[2]);
+      b3 := vec.mk(Box.thi.x[3] - Box.tlo.x[3], Box.thi.y[3] - Box.tlo.y[3]);
+      b4 := vec.mk(Box.thi.x[4] - Box.tlo.x[4], Box.thi.y[4] - Box.tlo.y[4]);
+      b5 := vec.mk(Box.thi.x[5] - Box.tlo.x[5], Box.thi.y[5] - Box.tlo.y[5]);
+      q0 := vec.mk(Ball.thi.x[0] - Ball.tlo.x[0], Ball.thi.y[0] - Ball.tlo.y[0]);
+      q1 := vec.mk(Ball.thi.x[1] - Ball.tlo.x[1], Ball.thi.y[1] - Ball.tlo.y[1]);
+      q2 := vec.mk(Ball.thi.x[2] - Ball.tlo.x[2], Ball.thi.y[2] - Ball.tlo.y[2]);
+      q3 := vec.mk(Ball.thi.x[3] - Ball.tlo.x[3], Ball.thi.y[3] - Ball.tlo.y[3]);
+      // .x = vertical (pos.y) swing — the BUZZ. This is the bug: it must be deeply sub-pixel.
+      fmt.assert(
+        b0.x < 0.01,
+        "box0 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b1.x < 0.01,
+        "box1 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b2.x < 0.01,
+        "box2 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b3.x < 0.01,
+        "box3 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b4.x < 0.01,
+        "box4 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        b5.x < 0.01,
+        "box5 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q0.x < 0.01,
+        "ball0 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q1.x < 0.01,
+        "ball1 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q2.x < 0.01,
+        "ball2 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      fmt.assert(
+        q3.x < 0.01,
+        "ball3 never comes to REST (still moving vertically at frame 5900)\n",
+      )();
+      // .y = horizontal (pos.x) swing — residual creep/roll. Bounded, not zero (see HONEST BOUNDS above).
+      fmt.assert(
+        b0.y < 0.01,
+        "box0 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b1.y < 0.01,
+        "box1 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b2.y < 0.01,
+        "box2 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b3.y < 0.01,
+        "box3 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b4.y < 0.01,
+        "box4 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        b5.y < 0.01,
+        "box5 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q0.y < 0.01,
+        "ball0 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q1.y < 0.01,
+        "ball1 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q2.y < 0.01,
+        "ball2 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.assert(
+        q3.y < 0.01,
+        "ball3 never comes to REST (still creeping horizontally at frame 5900)\n",
+      )();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
+}
+
+#run seq(
+  {
+    seed,
+    forever(
+      seq(
+        {
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          tick,
+          sample,
+          report,
+        },
+      ),
+    ),
+  },
+)

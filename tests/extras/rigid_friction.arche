@@ -1,0 +1,103 @@
+// Driver test for Coulomb FRICTION: a box resting on a wide floor is given a sideways velocity (vx=6) and
+// must be DECELERATED to a stop by friction (μ=0.5) within a bounded slide — not glide forever. The tangent
+// impulse (clamped to μ·normal-impulse) bleeds vx to ≈0 over ~90px. A frictionless run would keep vx=6 and
+// slide unboundedly, so |vx|→0 with a bounded travel proves friction acted.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt os }
+
+GDT   :: 0.05;
+c     :: float;
+Clock :: arche { c }
+
+[4]RBody(2);
+[1]Clock(1);
+seed :: system {
+  RBody.pos.x  = { 0.0, 0.0 };
+  RBody.pos.y  = { 41.0, -1000.0 };
+  RBody.lvel.x = { 6.0, 0.0 };
+  RBody.lvel.y = { 0.0, 0.0 };
+  RBody.spin.x = { 0.0, 0.0 };
+  RBody.spin.y = { 0.0, 0.0 };
+  RBody.rot.x  = { 1.0, 1.0 };
+  RBody.rot.y  = { 0.0, 0.0 };
+  RBody.ext.x  = { 40.0, 4000.0 };
+  RBody.ext.y  = { 40.0, 1000.0 };
+  RBody.mi.x   = { 1.0, 0.0 };
+  RBody.mi.y   = { 0.0009375, 0.0 };
+  RBody.mat.x  = { 0.0, 0.0 };
+  RBody.mat.y  = { 0.5, 0.5 };
+  RBody.dimp.x = { 0.0, 0.0 };
+  RBody.dimp.y = { 0.0, 0.0 };
+  RBody.dang.x = { 0.0, 0.0 };
+  RBody.dang.y = { 0.0, 0.0 };
+  RBody.cor.x  = { 0.0, 0.0 };
+  RBody.cor.y  = { 0.0, 0.0 };
+  Clock.c      = { 0.0 };
+}
+
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
+
+sub :: func() -> Schedule {
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
+}
+
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 89.5) {
+      fmt.assert(
+        RBody.lvel.x[0] > -0.2 && RBody.lvel.x[0] < 0.2,
+        "friction should bring vx from 6 to ~0\n",
+      )();
+      fmt.assert(
+        RBody.pos.x[0] > 60.0 && RBody.pos.x[0] < 130.0,
+        "box should slide a bounded distance (~90px), not forever\n",
+      )();
+      fmt.assert(RBody.pos.y[0] > 39.0 && RBody.pos.y[0] < 41.5, "box stays on the floor\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
+}
+
+#run seq(
+  {
+    seed,
+    forever(
+      seq(
+        {
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          sub(),
+          tick,
+          check,
+        },
+      ),
+    ),
+  },
+)

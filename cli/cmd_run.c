@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/file.h> /* flock — one session owns the shared hot dir */
 #include <sys/stat.h>
 #include <sys/wait.h>
 #include <time.h>
@@ -277,14 +278,35 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	 * Don't clobber an explicit ARCHE_HOT_DIR (the lit/test harness sets its own). */
 	int hot = !args_has(&p, R_WHOLE_PROGRAM) && !use_gpu; /* GPU run is non-hot (see above) */
 	char hotdir[1200];
+	int hot_private = 0; /* we took a per-process dir (a concurrent session already owns the shared one) */
 	if (hot && !getenv("ARCHE_HOT_DIR")) {
+		/* ONE session may own the shared dir. The hot dir holds each device's live `unit_N.so`, and the
+		 * running host polls those paths and re-dlopens on change — so two sessions sharing it publish over
+		 * each other and a host ends up loading a library built for a different program (unit indices map to
+		 * different devices), which segfaults. Sharing is still what we want for the normal single-session
+		 * case: it is how a later `arche run` reuses `unit_N.so` instead of relinking every device.
+		 * So: take the dir if it is free, else fall back to a private one. flock is released by the kernel
+		 * on process exit, so an interrupted or killed run leaves no stale lock behind. */
 		snprintf(hotdir, sizeof(hotdir), "%s/build/.arche-hot", proj);
+		char mk[1300];
+		snprintf(mk, sizeof(mk), "mkdir -p %s", hotdir);
+		if (system(mk) != 0)
+			fprintf(stderr, "%s: warning: could not create %s\n", g_prog, hotdir);
+		char lockp[1300];
+		snprintf(lockp, sizeof(lockp), "%s/.lock", hotdir);
+		/* Deliberately NOT closed: the lock is held for this process's lifetime. */
+		int lk = open(lockp, O_CREAT | O_RDWR, 0644);
+		if (lk < 0 || flock(lk, LOCK_EX | LOCK_NB) != 0) {
+			snprintf(hotdir, sizeof(hotdir), "%s/build/.arche-hot-%ld", proj, (long)getpid());
+			hot_private = 1;
+		}
 		setenv("ARCHE_HOT_DIR", hotdir, 1);
 	}
 
 	/* Dev state inspector: the host (built with inspect.o in hot mode) serves its live pools on this Unix
-	 * socket, under the same dir the watcher manages. `arche inspect` connects here. One socket per project
-	 * (running two sessions of the same project simultaneously collides — last one wins). */
+	 * socket, under the same dir the watcher manages. `arche inspect` connects here. It follows the hot dir,
+	 * so the session that owns the shared dir owns the project's socket and a concurrent session gets its
+	 * own under the private dir — no collision. */
 	if (hot && !getenv("ARCHE_INSPECT_SOCK")) {
 		const char *hd = getenv("ARCHE_HOT_DIR");
 		char sock[1300];
@@ -399,6 +421,14 @@ int run_run(int argc, char **argv, const GlobalOpts *g) {
 	unlink(exe);
 	unlink(exe_run);
 	rmdir(dir);
+	/* A PRIVATE hot dir belongs to this run alone — nothing can reuse it, so don't leave it behind. The
+	 * shared dir is kept on purpose: that is what lets the next run skip relinking each device. */
+	if (hot_private) {
+		char rm[1300];
+		snprintf(rm, sizeof(rm), "rm -rf %s", getenv("ARCHE_HOT_DIR"));
+		if (system(rm) != 0)
+			fprintf(stderr, "%s: warning: could not remove %s\n", g_prog, getenv("ARCHE_HOT_DIR"));
+	}
 	if (WIFEXITED(status))
 		return WEXITSTATUS(status);
 	if (WIFSIGNALED(status))

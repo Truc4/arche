@@ -206,6 +206,7 @@ static const SemDiagDesc g_table[SEM_DIAG_KIND_COUNT] = {
 	[SEM_LINT_pool_index_outside_query]      = { "W0029", "pool_index_outside_query",      CLASS_LINT, 1 },
 	[SEM_LINT_proc_not_primitive]            = { "W0030", "proc_not_primitive",            CLASS_LINT, 1 },
 	[SEM_LINT_dead_write_binding]            = { "W0031", "dead_write_binding",            CLASS_LINT, 1 },
+	[SEM_LINT_inout_outarg_colon_bind]       = { "W0032", "inout_outarg_colon_bind",       CLASS_LINT, 1 },
 };
 /* clang-format on */
 
@@ -243,6 +244,10 @@ static void ensure_init(void) {
 	 * hard ERROR by default — pool values come from a query/map/system selector, never `[i]`. A lint (tunable
 	 * via `--pool-index=warn|allow` / `@allow(pool_index_outside_query)`) for scaffolding that must reach in. */
 	g_werror[SEM_LINT_pool_index_outside_query] = 1;
+	/* W0032 inout_outarg_colon_bind: colon-binding an IN-OUT out-arg is an ERROR by default — it has no
+	 * meaning (an in-out's value is the in-arg's place, so there is nothing to declare) and it used to bind
+	 * nothing at all, silently. `@allow(inout_outarg_colon_bind)` opts out. */
+	g_werror[SEM_LINT_inout_outarg_colon_bind] = 1;
 	g_init_done = 1;
 }
 
@@ -1194,6 +1199,15 @@ SemDiag *sem_emit_lint_unused_local(SemanticContext *ctx, SourceLoc loc, const c
 SemDiag *sem_emit_lint_unused_use(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_unused_use, loc, "module '%s' is imported but none of its symbols are used", name);
 }
+SemDiag *sem_emit_lint_inout_outarg_colon_bind(SemanticContext *ctx, SourceLoc loc, const char *target,
+                                               const char *param) {
+	return sem_emit_(ctx, SEM_LINT_inout_outarg_colon_bind, loc,
+	                 "'%s:' declares a new binding for out-param '%s', which is IN-OUT (it shadows an in-param) "
+	                 "— its value IS the in-arg's place, so there is nothing to declare and the binding yields "
+	                 "no value; write the existing place instead: `f(…, _)(%s)`",
+	                 target, param, param);
+}
+
 SemDiag *sem_emit_lint_inout_redundant_arg(SemanticContext *ctx, SourceLoc loc, const char *name) {
 	return sem_emit_(ctx, SEM_LINT_inout_redundant_arg, loc,
 	                 "in-out call repeats '%s' in the in-slot; write `_` to mark the shadowed in-position: "

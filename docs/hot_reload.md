@@ -55,6 +55,37 @@ IR and asserts **zero** `arche_hot_resolve`.
 The reload integration tests are timing-sensitive (a live build + reload, possibly under heavy parallel CI
 load), so each retries once: a real regression fails every attempt, a scheduling blip does not.
 
+## Concurrent sessions: one owns the shared dir
+
+The hot dir holds each device's live `unit_N.so`, and the running host polls those paths and re-dlopens on
+change. Two sessions sharing it would therefore publish over each other, and a host would load a library
+built for a different program — unit indices map to different devices, so this segfaults rather than
+misbehaving quietly.
+
+**One session owns `<project>/build/.arche-hot` at a time.** `arche run` takes an exclusive `flock` on
+`<hotdir>/.lock`; a session that cannot take it falls back to `<project>/build/.arche-hot-<pid>` and
+removes that tree on exit. So:
+
+- the normal single-session workflow is unchanged and keeps reusing `unit_N.so` across runs — that reuse
+  is the point of a stable dir, since the `cc -shared` link dominates reload latency;
+- a second concurrent session (another developer, a second terminal, a parallel test runner) is isolated
+  automatically, with no environment set up by the caller;
+- `flock` is released by the kernel on process exit, so an interrupted or killed run leaves no stale lock.
+
+The inspect socket lives under the hot dir, so it follows the same rule: the owning session serves the
+project's socket, a concurrent one serves its own.
+
+An explicit `ARCHE_HOT_DIR` still wins and is *not* locked — pointing two processes at one dir is
+supported (the integration tests and `tests/unit/compiler/per_unit/singleton_read.arche` do exactly that).
+For that case the runtime's reload copy is per-process: `ensure_loaded` copies to
+`<path>.hot.<pid>.<gen>` before `dlopen`, so two hosts at the same generation cannot truncate each other's
+image mid-load.
+
+Guarded by `tests/unit/runtime/hot_concurrent_run.py` (64 concurrent runs of one project, default
+environment). Note that a crashed host is easy to miss: the SIGSEGV handler
+(`runtime/stack_check.c`) prints `stack overflow` for **any** segfault and exits **0** — a deliberate
+choice (see `tests/unit/language/errors/stack_overflow.arche`) — so the only symptom is missing stdout.
+
 ## Deferred rebuild work (why / why-not)
 
 These are intentionally **not** done. They are tracked here and in a `TODO` block in `cli/cmd_run.c`.

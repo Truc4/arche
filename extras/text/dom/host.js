@@ -45,34 +45,42 @@
 
       const place = (rec) => {
         const s = scale();
-        rec.el.style.left = rec.x * s + "px";
+        // CENTRE-anchor. The driver hands `x` already offset to the LEFT edge by half the BITMAP width
+        // (`tx = centre - len*size/2`), which centres perfectly on the framebuffer backend. But a browser font
+        // renders a DIFFERENT (proportional) width, so left-anchoring here left every run off-centre by a
+        // per-string amount. Recover the true centre (`x + len*size/2`) and pin the span to it with
+        // translateX(-50%), so DOM text centres exactly like the framebuffer regardless of the rendered width.
+        rec.el.style.left = rec.cx * s + "px";
         rec.el.style.top = rec.y * s + "px";
         rec.el.style.fontSize = rec.size * s + "px";
       };
 
       return {
-        // text_be_draw(x, y, sPtr, n, size, color): a []char lowers to (ptr, len) = (sPtr, n). REUSE the
+        // text_be_draw(x, y, sPtr, n, size, color, z): a []char lowers to (ptr, len) = (sPtr, n). REUSE the
         // pooled span at the cursor, update in place, advance. Rewriting textContent only on change keeps a
         // text selection alive across the per-frame redraw. Decode from wasm memory each call (it can grow and
-        // detach its ArrayBuffer). color is 0xRRGGBB.
-        text_be_draw(x, y, sPtr, n, size, color) {
+        // detach its ArrayBuffer). color is 0xRRGGBB. `z` is the driver's depth ordinal: the overlay div is
+        // position:fixed and so is its own stacking context, so the div carries z (its runs share one depth)
+        // to place scenery text in the ROOT stack — above the background canvas, below the panels above it.
+        text_be_draw(x, y, sPtr, n, size, color, z) {
           ensureLayer();
+          self.layer.style.zIndex = z;
           const str = self._dec.decode(new Uint8Array(rt.memory().buffer, sPtr, n));
           let rec = self.spans[self._cursor];
           if (!rec) {
             const el = document.createElement("span");
             // Absolutely positioned; the layer is pointer-events:none so empty areas pass through to the canvas,
             // but each span opts back IN so the text is highlightable/selectable (whitespace:pre keeps spaces).
-            el.style.cssText = "position:absolute;pointer-events:auto;user-select:text;-webkit-user-select:text;cursor:text;white-space:pre;";
+            el.style.cssText = "position:absolute;pointer-events:auto;user-select:text;-webkit-user-select:text;cursor:text;white-space:pre;transform:translateX(-50%);";
             self.layer.appendChild(el);
-            rec = { x: 0, y: 0, size: 0, text: null, el };
+            rec = { x: 0, y: 0, cx: 0, size: 0, text: null, el };
             self.spans[self._cursor] = rec;
           }
           self._cursor++;
           if (rec.el.style.display === "none") rec.el.style.display = "";
           if (rec.text !== str) { rec.el.textContent = str; rec.text = str; }
           rec.el.style.color = "#" + ((color >>> 0) & 0xffffff).toString(16).padStart(6, "0");
-          rec.x = x; rec.y = y; rec.size = size;
+          rec.x = x; rec.y = y; rec.size = size; rec.cx = x + (n * size) / 2;
           place(rec);
         },
         // text_be_clear(): BEGIN a frame — keep the pooled nodes (a selection on a reused span survives), hide

@@ -1,0 +1,23 @@
+/// Datasheet for `paint`. Driver provides the command-buffer storage; the `native` backend dispatches. These
+/// are the command columns it reads (a RECT|TEXTRUN flattened union) + the arena + the z-window.
+// RUN: true
+CK_RECT    :: 0;
+CK_TEXTRUN :: 1;
+ckind      :: int;
+crx        :: int;
+cry        :: int;
+crw        :: int;
+crh        :: int;
+ccolor     :: int;
+ctoff      :: int;
+ctlen      :: int;
+ctsz       :: int;
+cclx0      :: int;
+ccly0      :: int;
+cclx1      :: int;
+ccly1      :: int;
+cnl        :: int;
+ach        :: char;
+boff       :: int;
+zlo        :: int;
+zhi        :: int;

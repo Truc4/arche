@@ -1,18 +1,41 @@
 #module
+// Every seam is keyed by `bid`. A pool ROW has no identity a backend can key on, and this host owns a REAL
+// <button> element per row — without the key it could only ever manage ONE. It used to do exactly that: a
+// hardcoded getElementById("ui-button") plus a single shared `clicked` flag, so a second Button row silently
+// repositioned the same element and drained the same flag.
 #foreign
-button_be_label :: proc(s: []char, n: int)(s: []char);
+button_be_label :: proc(bid: int, z: int, s: []char, n: int, x: int, y: int, w: int, h: int)(
+  s: []char,
+);
+// Two seams, not one returning a pair: a foreign proc crosses the wasm ABI with a SINGLE return value, and
+// nothing else in the device library returns a tuple from one.
 #foreign
-button_be_poll :: proc()(clicked: int);
+button_be_clicked :: proc(bid: int)(c: int);
+#foreign
+button_be_held :: proc(bid: int)(h: int);
 
+// A button belongs to a PANEL, and a panel has a depth — so a button has one too. A control on a background
+// panel must sit at that panel's depth, not float in front of the whole world.
+//
+// Unlike the framebuffer backend, DOM has no draw ORDER to sit inside: depth is a z-index, which the host reads
+// straight off `z`. So one pass places every button regardless of side, and `render_bg` is empty — it exists
+// only so a driver can schedule the same systems against either backend.
 render :: system eff {
-  map (query { label, len }) eff {
-    button_be_label(label, len)(_:);
+  map (query { bid, z, label, len, screen, size }) eff {
+    button_be_label(bid, z, label, len, screen.x, screen.y, size.w, size.h)(_:);
   };
 }
 
+render_bg :: system eff {
+}
+
+// `clicked` = the rising edge (went down this frame); `held` = the level (is down right now). A movement pad
+// needs the level — an edge would step the player once per tap instead of walking for as long as it is held.
 poll :: system eff {
-  map (query { clicked })(clicked) eff {
-    button_be_poll()(c:);
+  map (query { bid, clicked, held })(clicked, held) eff {
+    button_be_clicked(bid)(c:);
+    button_be_held(bid)(h:);
     clicked = c;
+    held    = h;
   };
 }

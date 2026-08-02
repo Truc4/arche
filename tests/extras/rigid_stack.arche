@@ -1,0 +1,87 @@
+// Driver test: a 3-box tower settles SOLID under the substepped TGS-Soft solve — the case the old Jacobi
+// solver could only leave compressed & jittering (documented limitation). Here the soft-constraint velocity
+// bias + per-body mass-splitting + 8 substeps settle it dead: boxes rest at ~40/120/200 (each 80 apart),
+// gaps within ~0.1px of 80 (<0.2% compression), top box at rest, all upright. No positional pass.
+// RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
+#import { rigid vec fmt os }
+
+GDT   :: 0.05;
+c     :: float;
+Clock :: arche { c }
+
+[8]RBody(4);
+[1]Clock(1);
+seed :: system {
+  RBody.pos.x  = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.pos.y  = { -1000.0, 50.0, 140.0, 230.0 };
+  RBody.lvel.x = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.lvel.y = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.spin.x = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.spin.y = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.rot.x  = { 1.0, 1.0, 1.0, 1.0 };
+  RBody.rot.y  = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.ext.x  = { 4000.0, 40.0, 40.0, 40.0 };
+  RBody.ext.y  = { 1000.0, 40.0, 40.0, 40.0 };
+  RBody.mi.x   = { 0.0, 1.0, 1.0, 1.0 };
+  RBody.mi.y   = { 0.0, 0.0009375, 0.0009375, 0.0009375 };
+  RBody.mat.x  = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.mat.y  = { 0.3, 0.3, 0.3, 0.3 };
+  RBody.dimp.x = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.dimp.y = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.dang.x = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.dang.y = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.cor.x  = { 0.0, 0.0, 0.0, 0.0 };
+  RBody.cor.y  = { 0.0, 0.0, 0.0, 0.0 };
+  Clock.c      = { 0.0 };
+}
+
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
+
+sub :: func() -> Schedule {
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
+}
+
+check :: system eff {
+  map (query { c }) eff {
+    if (c > 199.5) {
+      g12 := RBody.pos.y[2] - RBody.pos.y[1];
+      g23 := RBody.pos.y[3] - RBody.pos.y[2];
+      fmt.assert(g12 > 79.0 && g12 < 81.0, "bottom gap must stay ~80 (no compression)\n")();
+      fmt.assert(g23 > 79.0 && g23 < 81.0, "top gap must stay ~80 (no compression)\n")();
+      fmt.assert(RBody.pos.y[1] > 39.0 && RBody.pos.y[1] < 41.0, "bottom box rests at ~40\n")();
+      fmt.assert(RBody.lvel.y[3] > -0.05 && RBody.lvel.y[3] < 0.05, "top box settles to rest\n")(
+      );
+      fmt.assert(RBody.spin.x[1] > -0.02 && RBody.spin.x[1] < 0.02, "boxes stay upright\n")();
+      fmt.printf("ok\n");
+      fmt.fflush(0)(_:);
+      os.exit(0)(_:);
+    }
+  };
+}
+
+#run seq(
+  {
+    seed,
+    forever(seq({ sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(), tick, check })),
+  },
+)
