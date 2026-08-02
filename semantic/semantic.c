@@ -1859,6 +1859,24 @@ static TypeId index_base_type_id(SemanticContext *ctx, SyntaxView v) {
 		 * that scalar (a column field's own type_id is the scalar, not the array). */
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
 		TypeId ft = archetype_field_type_id(ctx, idnt, fld);
+		/* A GROUPED subfield (`T.p.x[0]`, `p(x,y)::float`) reaches here with TWO field segments. Looking up
+		 * only the LAST one asks for a column named `x`, which no archetype has, so the element typed as
+		 * UNKNOWN and codegen defaulted it to int — `a := T.p.x[0]; a*a` emitted `mul i32` on a float.
+		 * Columns are stored FLATTENED (`p_x`), the same convention sem_arch_covers_col uses, so join the
+		 * group and the subfield and look that up. */
+		if (ft == TYID_UNKNOWN && nf >= 2) {
+			char *grp = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 2));
+			if (grp && fld) {
+				size_t n = strlen(grp) + 1 + strlen(fld) + 1;
+				char *flat = malloc(n);
+				if (flat) {
+					snprintf(flat, n, "%s_%s", grp, fld);
+					ft = archetype_field_type_id(ctx, idnt, flat);
+					free(flat);
+				}
+			}
+			free(grp);
+		}
 		free(fld);
 		if (ft != TYID_UNKNOWN)
 			bt = tyid_of_slice(ctx->ty_arena, ft);
@@ -1995,8 +2013,29 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 		int nf = sv_count(v, SN_FIELD_NAME);
 		char *fld = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 1));
 		int prop = is_len_prop(fld) || is_pool_extent_prop(fld);
+		if (prop) {
+			free(fld);
+			return tyid_of_prim(ctx->ty_arena, PRIM_INT);
+		}
+		TypeId bt = sem_expr_type_id(ctx, base_subexpr(v));
+		/* A MEMBER of a TUPLE-valued base (`mkv(a, b).x`, `f().y`) is the MEMBER's type, not the tuple's.
+		 * Returning the base type here typed `v := mkv(…).x` as the whole 2-vector, the `:=` bind fell back
+		 * to the int default, and it only detonated where a context forced the type (a `select` arm) — as
+		 * `'%vN' defined with type 'float' but expected 'i32'`. A named tuple local (`w.x`) already resolved
+		 * correctly via archetype_field_type_id; only a computed base reached this branch. */
+		if (fld && tyid_kind(ctx->ty_arena, bt) == TYK_TUPLE) {
+			int cnt = tyid_tuple_count(ctx->ty_arena, bt);
+			for (int i = 0; i < cnt; i++) {
+				const char *fn = tyid_tuple_field_name(ctx->ty_arena, bt, i);
+				if (fn && strcmp(fn, fld) == 0) {
+					TypeId mt = tyid_tuple_field_type(ctx->ty_arena, bt, i);
+					free(fld);
+					return mt;
+				}
+			}
+		}
 		free(fld);
-		return prop ? tyid_of_prim(ctx->ty_arena, PRIM_INT) : sem_expr_type_id(ctx, base_subexpr(v));
+		return bt;
 	}
 	int nf = sv_count(v, SN_FIELD_NAME);
 	char *idnt = sv_resolved_name(ctx, v);
@@ -2009,6 +2048,24 @@ static TypeId field_type_id(SemanticContext *ctx, SyntaxView v) {
 			r = tyid_of_prim(ctx->ty_arena, PRIM_INT); /* `me.id` — intrinsic pool-row identity */
 		else if (nf == 1)
 			r = archetype_field_type_id(ctx, idnt, fld);
+		else if (nf >= 2) {
+			/* A GROUPED subfield read (`me.cor.x`, `T.p.x`): columns are stored FLATTENED (`cor_x`), so join
+			 * the group and the subfield. Without this the member typed as UNKNOWN and a `:=` bind of it fell
+			 * back to int — `ms := select(me.cor.x > 1.0, me.cor.x, 1.0)` produced an i32 local holding a
+			 * float, which the `rigid` device worked around by routing the value through a reciprocal twice.
+			 * Mirrors the same flattening in index_base_type_id for the indexed form. */
+			char *grp = sem_cv_dup(sv_child_at(v, SN_FIELD_NAME, nf - 2));
+			if (grp && fld) {
+				size_t n = strlen(grp) + 1 + strlen(fld) + 1;
+				char *flat = malloc(n);
+				if (flat) {
+					snprintf(flat, n, "%s_%s", grp, fld);
+					r = archetype_field_type_id(ctx, idnt, flat);
+					free(flat);
+				}
+			}
+			free(grp);
+		}
 		free(fld);
 	}
 	free(idnt);

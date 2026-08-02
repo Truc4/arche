@@ -39,10 +39,19 @@ pull :: system (query { i } as R) {
 }
 
 verify :: system eff {
-  // body0 should pull row1's lv=(5,12); body1 should pull row0's lv=(3,4).
+  // `reduce` folds over the WHOLE `R` domain, so every body sums the gather over both Ref rows:
+  // lv[Ref.i[0]] + lv[Ref.i[1]] = lv[1] + lv[0] = (5,12) + (3,4) = (8,16). (Pairing each body with one
+  // Ref row instead needs an `me.id` guard inside the summand — see
+  // tests/extras/rigid_cross_pool_gather_reduce.arche, which does exactly that.)
+  // Both lanes are asserted on purpose: a gather that read lane x twice would give (8,8), which is
+  // precisely how this mis-compiled before — every lane loaded the x column.
   fmt.assert(
-    Body.sink.x[0] > 4.9 && Body.sink.x[0] < 5.1,
-    "whole-2-vec fold-index gather broken\n",
+    Body.sink.x[0] > 7.9 && Body.sink.x[0] < 8.1,
+    "whole-2-vec fold-index gather: x lane wrong\n",
+  )();
+  fmt.assert(
+    Body.sink.y[0] > 15.9 && Body.sink.y[0] < 16.1,
+    "whole-2-vec fold-index gather: y lane wrong (both lanes read column x?)\n",
   )();
   fmt.printf("ok\n");
 }

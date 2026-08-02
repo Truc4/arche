@@ -6,45 +6,81 @@
 // RUN: %arche build --pool-index=allow -o %t %s && %t | grep -qxF "ok"
 #import { rigid vec fmt os }
 
-GDT :: 0.05;
-c :: float;
+GDT   :: 0.05;
+c     :: float;
 Clock :: arche { c }
 
 [8]RBody(5);
 [1]Clock(1);
 seed :: system {
   //               floor      lone     pairL    pairR    ball-on-box(box=idx? no, ball idx4 over box idx? use floor)
-  RBody.pos.x  = { 0.0,      200.0,   -60.0,   20.0,    400.0   };
-  RBody.pos.y  = { -1000.0,  200.0,   150.0,   150.0,   150.0   };
-  RBody.lvel.x = { 0.0,0.0,0.0,0.0,0.0 };  RBody.lvel.y = { 0.0,0.0,0.0,0.0,0.0 };
-  RBody.spin.x = { 0.0,0.0,0.0,0.0,0.0 };  RBody.spin.y = { 0.0, 1.0, 1.0, 1.0, 1.0 };   // .y=1 ⇒ circle
-  RBody.rot.x  = { 1.0,1.0,1.0,1.0,1.0 };  RBody.rot.y  = { 0.0,0.0,0.0,0.0,0.0 };
-  RBody.ext.x  = { 4000.0, 40.0,40.0,40.0,30.0 };  RBody.ext.y  = { 1000.0, 40.0,40.0,40.0,30.0 };
-  RBody.mi.x   = { 0.0, 1.0,1.0,1.0,1.0 };  RBody.mi.y   = { 0.0, 0.0009375,0.0009375,0.0009375,0.00167 };
-  RBody.mat.x  = { 0.0,0.0,0.0,0.0,0.0 };  RBody.mat.y  = { 0.5,0.5,0.5,0.5,0.5 };
-  RBody.dimp.x = { 0.0,0.0,0.0,0.0,0.0 };  RBody.dimp.y = { 0.0,0.0,0.0,0.0,0.0 };
-  RBody.dang.x = { 0.0,0.0,0.0,0.0,0.0 };  RBody.dang.y = { 0.0,0.0,0.0,0.0,0.0 };
-  RBody.cor.x  = { 0.0,0.0,0.0,0.0,0.0 };  RBody.cor.y  = { 0.0,0.0,0.0,0.0,0.0 };
-  Clock.c = { 0.0 };
+  RBody.pos.x  = { 0.0, 200.0, -60.0, 20.0, 400.0 };
+  RBody.pos.y  = { -1000.0, 200.0, 150.0, 150.0, 150.0 };
+  RBody.lvel.x = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.lvel.y = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.spin.x = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.spin.y = { 0.0, 1.0, 1.0, 1.0, 1.0 }; // .y=1 ⇒ circle
+  RBody.rot.x  = { 1.0, 1.0, 1.0, 1.0, 1.0 };
+  RBody.rot.y  = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.ext.x  = { 4000.0, 40.0, 40.0, 40.0, 30.0 };
+  RBody.ext.y  = { 1000.0, 40.0, 40.0, 40.0, 30.0 };
+  RBody.mi.x   = { 0.0, 1.0, 1.0, 1.0, 1.0 };
+  RBody.mi.y   = { 0.0, 0.0009375, 0.0009375, 0.0009375, 0.00167 };
+  RBody.mat.x  = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.mat.y  = { 0.5, 0.5, 0.5, 0.5, 0.5 };
+  RBody.dimp.x = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.dimp.y = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.dang.x = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.dang.y = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.cor.x  = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  RBody.cor.y  = { 0.0, 0.0, 0.0, 0.0, 0.0 };
+  Clock.c      = { 0.0 };
 }
 
-grav :: map (query { lvel, mi })(lvel) { lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0); }
-tick :: map (query { c })(c) { c = c + 1.0; }
+grav :: map (query { lvel, mi })(lvel) {
+  lvel.y = lvel.y - GDT * select(mi.x > 0.0, 1.0, 0.0);
+}
+tick :: map (query { c })(c) {
+  c = c + 1.0;
+}
 
 sub :: func() -> Schedule {
-  return seq({ grav, rigid.contacts, rigid.solve_lin, rigid.solve_ang, rigid.apply,
-               rigid.solve_lin, rigid.solve_ang, rigid.apply, rigid.integrate,
-               rigid.solve_lin_relax, rigid.solve_ang_relax, rigid.apply });
+  return seq(
+    {
+      grav,
+      rigid.contacts,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.solve_lin,
+      rigid.solve_ang,
+      rigid.apply,
+      rigid.integrate,
+      rigid.solve_lin_relax,
+      rigid.solve_ang_relax,
+      rigid.apply,
+    },
+  );
 }
 
 check :: system eff {
   map (query { c }) eff {
     if (c > 249.5) {
       sep := RBody.pos.x[3] - RBody.pos.x[2];
-      fmt.assert(RBody.pos.y[1] > 39.0 && RBody.pos.y[1] < 41.0, "lone ball should rest at its radius (y~40)\n")();
-      fmt.assert(sep > 79.0 && sep < 81.0, "two balls should settle radius+radius (~80) apart\n")();
-      fmt.assert(RBody.pos.y[2] > 39.0 && RBody.pos.y[2] < 41.0, "balls rest level on the floor\n")();
-      fmt.assert(RBody.pos.y[4] > 29.0 && RBody.pos.y[4] < 31.0, "small ball (r=30) should rest at y~30\n")();
+      fmt.assert(
+        RBody.pos.y[1] > 39.0 && RBody.pos.y[1] < 41.0,
+        "lone ball should rest at its radius (y~40)\n",
+      )();
+      fmt.assert(sep > 79.0 && sep < 81.0, "two balls should settle radius+radius (~80) apart\n")(
+      );
+      fmt.assert(
+        RBody.pos.y[2] > 39.0 && RBody.pos.y[2] < 41.0,
+        "balls rest level on the floor\n",
+      )();
+      fmt.assert(
+        RBody.pos.y[4] > 29.0 && RBody.pos.y[4] < 31.0,
+        "small ball (r=30) should rest at y~30\n",
+      )();
       fmt.printf("ok\n");
       fmt.fflush(0)(_:);
       os.exit(0)(_:);
@@ -52,6 +88,9 @@ check :: system eff {
   };
 }
 
-#run seq({ seed, forever(seq({
-  sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(),
-  tick, check })) })
+#run seq(
+  {
+    seed,
+    forever(seq({ sub(), sub(), sub(), sub(), sub(), sub(), sub(), sub(), tick, check })),
+  },
+)

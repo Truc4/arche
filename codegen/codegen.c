@@ -3133,6 +3133,11 @@ static void emit_fold(CodegenContext *ctx, HirExpr *col, const char *op, int is_
 	const char *ty;
 	int is_float;
 	if (!emit_collective_column(ctx, col, colptr, count, &ty, &is_float)) {
+		/* No resolvable column to fold. Report it: silently yielding `0` here emits an INTEGER constant into
+		 * whatever slot the fold's result feeds, so a float/tuple context produced invalid IR that only the
+		 * LLVM verifier caught, far from the cause. */
+		fprintf(stderr, "Error: %s(…) has no foldable column — its argument does not resolve to a pool column\n", op);
+		ctx->had_error = 1;
 		strcpy(result_buf, "0");
 		return;
 	}
@@ -3420,6 +3425,18 @@ static HirExpr *find_fold_pool_field(CodegenContext *ctx, HirExpr *e) {
 	}
 	case HIR_EXPR_UNARY:
 		return find_fold_pool_field(ctx, e->data.unary.operand);
+	case HIR_EXPR_INDEX: {
+		/* A GATHER `Pool.col[Q.idx]`: the fold domain is the pool whose column supplies the INDEX (`Q.idx`),
+		 * not the pool being gathered from — so look in the index expression FIRST. `Body.lv.x[P.pa]` already
+		 * worked only because a sibling argument mentioned `P.pa` directly; when the gather is the sole
+		 * summand (`grab(Body.lv[R.i])`) the domain is reachable nowhere else. */
+		for (int i = 0; i < e->data.index.index_count; i++) {
+			HirExpr *ix = find_fold_pool_field(ctx, e->data.index.indices[i]);
+			if (ix)
+				return ix;
+		}
+		return find_fold_pool_field(ctx, e->data.index.base);
+	}
 	case HIR_EXPR_CALL: {
 		for (int i = 0; i < e->data.call.arg_count; i++) {
 			HirExpr *a = find_fold_pool_field(ctx, e->data.call.args[i]);
@@ -3489,6 +3506,13 @@ static void emit_fold_expr(CodegenContext *ctx, HirExpr *sumexpr, const char *op
 		archs[0] = arch;
 		narch = 1;
 	} else {
+		/* The summand names no pool column, so there is no fold DOMAIN. Report it rather than yielding `0`:
+		 * an integer constant in a float/tuple slot is invalid IR diagnosed far from here. */
+		fprintf(stderr,
+		        "Error: %s(…) has no fold domain — its summand reads no pool column (a whole-vector gather "
+		        "`Pool.vec[i]` is not yet a recognised domain)\n",
+		        op);
+		ctx->had_error = 1;
 		strcpy(result_buf, "0");
 		return;
 	}
@@ -4835,8 +4859,19 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 				buffer_append_fmt(ctx, "  %s = load %%struct.%s*, %%struct.%s** @archetype_%s\n", loaded, cn, cn, cn);
 				strcpy(result_buf, loaded);
 			}
+		} else if (find_query_decl(ctx, name) || (ctx->sem_ctx && (semantic_is_type_alias(ctx->sem_ctx, name) ||
+		                                                           semantic_is_enum_type(ctx->sem_ctx, name)))) {
+			/* A COMPILE-TIME entity used as the base of a larger construct: a named query (`insert(Movers{…})`,
+			 * `Movers.pos[0]`) or a type/enum name (`fd.stdin`). It has no runtime value of its own and the
+			 * enclosing construct resolves it — the placeholder is dead, not a failure. */
+			strcpy(result_buf, "0");
 		} else {
-			/* undefined variable, use 0 */
+			/* A name with no binding, no const, no archetype, and no compile-time meaning. Yielding `0` here is
+			 * how an unresolved name became an INTEGER constant in a float/tuple slot — invalid IR blamed on
+			 * the LLVM verifier instead of on this name, and (where the slot is an int) a silently wrong
+			 * value. */
+			fprintf(stderr, "Error: '%s' has no value in this context\n", name);
+			ctx->had_error = 1;
 			strcpy(result_buf, "0");
 		}
 		break;
@@ -5770,6 +5805,66 @@ static void codegen_expression(CodegenContext *ctx, HirExpr *expr, char *result_
 	}
 
 	case HIR_EXPR_INDEX: {
+		/* WHOLE tuple-group column GATHER `Pool.vec[i]` (`Body.lv[R.i]`): a tuple group has no single field —
+		 * it is stored flattened as `lv_x`/`lv_y` — so load each lane at the index and pack a `{T,…}` value.
+		 * Without this the read fell through to the scalar path and yielded one float where a tuple was
+		 * expected. Scalar and per-component gathers (`Body.lv.x[i]`) take the ordinary path below. */
+		if (expr->data.index.index_count == 1 && expr->data.index.base->kind == HIR_EXPR_FIELD) {
+			const char *garch = NULL;
+			HirExpr *gb = expr->data.index.base;
+			if (is_pool_col_field(ctx, gb, &garch) && garch) {
+				HirArchetypeDecl *gad = find_archetype_decl(ctx, garch);
+				int lidx[8];
+				const char *lty[8];
+				int nl = gad ? arch_tuple_group_lanes(gad, gb->data.field.field_name, lidx, lty, 8) : 0;
+				int direct = 0;
+				for (int f = 0; gad && f < gad->field_count; f++)
+					if (gad->fields[f]->kind == FIELD_COLUMN &&
+					    strcmp(gad->fields[f]->name, gb->data.field.field_name) == 0)
+						direct = 1;
+				if (nl > 0 && !direct) {
+					char gidx[256];
+					codegen_expression(ctx, expr->data.index.indices[0], gidx);
+					char gi64[256];
+					emit_index_i64(ctx, gidx, expr->data.index.indices[0], gi64);
+					int gstatic = get_arch_static_capacity(ctx, garch) > 0;
+					char gbase[256];
+					emit_query_pool_ptr(ctx, garch, gstatic, gbase, sizeof(gbase));
+					char aggty[256];
+					int n = snprintf(aggty, sizeof(aggty), "{");
+					for (int l = 0; l < nl; l++)
+						n += snprintf(aggty + n, sizeof(aggty) - n, "%s%s", l ? ", " : " ", lty[l]);
+					snprintf(aggty + n, sizeof(aggty) - n, " }");
+					char cur[256];
+					strcpy(cur, "undef");
+					for (int l = 0; l < nl; l++) {
+						char *cp = gen_value_name(ctx);
+						if (gstatic)
+							buffer_append_fmt(ctx,
+							                  "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d, "
+							                  "i64 %s\n",
+							                  cp, garch, garch, gbase, lidx[l], gi64);
+						else {
+							char *cb = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = getelementptr %%struct.%s, %%struct.%s* %s, i32 0, i32 %d\n",
+							                  cb, garch, garch, gbase, lidx[l]);
+							char *cl = gen_value_name(ctx);
+							buffer_append_fmt(ctx, "  %s = load %s*, %s** %s\n", cl, lty[l], lty[l], cb);
+							buffer_append_fmt(ctx, "  %s = getelementptr %s, %s* %s, i64 %s\n", cp, lty[l], lty[l], cl,
+							                  gi64);
+						}
+						char *lv = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = load %s, %s* %s\n", lv, lty[l], lty[l], cp);
+						char *ni = gen_value_name(ctx);
+						buffer_append_fmt(ctx, "  %s = insertvalue %s %s, %s %s, %d\n", ni, aggty, cur, lty[l], lv, l);
+						strcpy(cur, ni);
+					}
+					strcpy(result_buf, cur);
+					return;
+				}
+			}
+		}
+
 		/* Each-field column read: f[i] where f is the current each_field
 		 * binding. Resolve to a load from the matching archetype column. */
 		if (ctx->current_each_field_binding && ctx->current_each_field_target && ctx->current_archetype_param &&
@@ -12904,14 +12999,31 @@ static void codegen_system_decl(CodegenContext *ctx, HirKernelDecl *sys, int dec
 		 * to read the count/base from that global. A `[1]` singleton in a join broadcasts as a scalar. */
 		/* Pick the archetype(s) to operate on: the non-singleton driver columns determine them (a query may
 		 * match several same-shape archetypes); a query over only singletons drives over the first. */
+		/* Which archetypes the query SELECTS and which column DRIVES the loop are different questions. Match
+		 * on the FULL column set whenever some archetype owns every one of them: the query is then
+		 * self-contained and each column discriminates. Dropping the `[1]` columns before matching is only
+		 * right for a genuine cross-pool broadcast join (no single archetype has them all) — otherwise a
+		 * marker living in a `[1]` pool is dropped from the match and every sibling that merely shares the
+		 * remaining column sweeps in (`query { mrk, pos }` matching `pos`-only entities). */
 		const char *cols[256];
 		int ncol = 0;
-		for (int p = 0; p < sys->param_count && ncol < 256; p++) {
-			const char *owner = arch_owning_col(ctx, sys->params[p]->name);
-			if (owner && get_arch_static_capacity(ctx, owner) == 1)
-				continue; /* singleton column — broadcast, not a driver */
-			cols[ncol++] = sys->params[p]->name;
+		{
+			const char *allc[256];
+			int nall = 0;
+			for (int p = 0; p < sys->param_count && nall < 256; p++)
+				allc[nall++] = sys->params[p]->name;
+			const char *tmp[16];
+			if (nall > 0 && query_match_archs(ctx, allc, nall, tmp, 16) > 0)
+				for (int p = 0; p < nall && ncol < 256; p++)
+					cols[ncol++] = allc[p];
 		}
+		if (ncol == 0)
+			for (int p = 0; p < sys->param_count && ncol < 256; p++) {
+				const char *owner = arch_owning_col(ctx, sys->params[p]->name);
+				if (owner && get_arch_static_capacity(ctx, owner) == 1)
+					continue; /* singleton column — broadcast, not a driver */
+				cols[ncol++] = sys->params[p]->name;
+			}
 		if (ncol == 0 && sys->param_count > 0)
 			cols[ncol++] = sys->params[0]->name;
 		const char *archs[16];
@@ -13046,14 +13158,28 @@ static void codegen_each_fan(CodegenContext *ctx, HirParam **params, int param_c
 	/* Split the (possibly joined) columns: a column whose owning pool is a `[1]` singleton broadcasts; the
 	 * rest belong to the DRIVER pool whose row count drives the loop. The driver columns determine which
 	 * archetype(s) we fan over (a query may still match several same-shape archetypes). */
+	/* Match on the FULL column set whenever some archetype owns every one of them (the query is
+	 * self-contained); only a genuine cross-pool broadcast join drops the `[1]` columns first. See the
+	 * columnar-system path above for why: dropping a `[1]`-owned marker makes the query over-match. */
 	const char *cols[256];
 	int ncol = 0;
-	for (int p = 0; p < param_count && ncol < 256; p++) {
-		const char *owner = arch_owning_col(ctx, params[p]->name);
-		if (owner && get_arch_static_capacity(ctx, owner) == 1)
-			continue; /* singleton column — broadcast, not a loop driver */
-		cols[ncol++] = params[p]->name;
+	{
+		const char *allc[256];
+		int nall = 0;
+		for (int p = 0; p < param_count && nall < 256; p++)
+			allc[nall++] = params[p]->name;
+		const char *tmp[16];
+		if (nall > 0 && query_match_archs(ctx, allc, nall, tmp, 16) > 0)
+			for (int p = 0; p < nall && ncol < 256; p++)
+				cols[ncol++] = allc[p];
 	}
+	if (ncol == 0)
+		for (int p = 0; p < param_count && ncol < 256; p++) {
+			const char *owner = arch_owning_col(ctx, params[p]->name);
+			if (owner && get_arch_static_capacity(ctx, owner) == 1)
+				continue; /* singleton column — broadcast, not a loop driver */
+			cols[ncol++] = params[p]->name;
+		}
 	/* A query over ONLY singletons has no non-singleton driver. Prefer an archetype that owns EVERY query
 	 * column (a self-contained singleton, e.g. a UI element) and fan just it — do NOT fall back to the
 	 * first column alone, which would also match a SIBLING singleton that shares that column but lacks the

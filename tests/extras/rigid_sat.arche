@@ -11,22 +11,56 @@
 
 [4]RBody(1);
 seed :: system {
-  RBody.pos.x={0.0}; RBody.pos.y={0.0};
-  RBody.lvel.x={0.0}; RBody.lvel.y={0.0}; RBody.spin.x={0.0}; RBody.spin.y={0.0};
-  RBody.rot.x={1.0}; RBody.rot.y={0.0}; RBody.ext.x={1.0}; RBody.ext.y={1.0};
-  RBody.mi.x={1.0}; RBody.mi.y={1.0}; RBody.mat.x={0.0}; RBody.mat.y={0.0};
-  RBody.dimp.x={0.0}; RBody.dimp.y={0.0}; RBody.dang.x={0.0}; RBody.dang.y={0.0}; RBody.cor.x={0.0}; RBody.cor.y={0.0};
+  RBody.pos.x  = { 0.0 };
+  RBody.pos.y  = { 0.0 };
+  RBody.lvel.x = { 0.0 };
+  RBody.lvel.y = { 0.0 };
+  RBody.spin.x = { 0.0 };
+  RBody.spin.y = { 0.0 };
+  RBody.rot.x  = { 1.0 };
+  RBody.rot.y  = { 0.0 };
+  RBody.ext.x  = { 1.0 };
+  RBody.ext.y  = { 1.0 };
+  RBody.mi.x   = { 1.0 };
+  RBody.mi.y   = { 1.0 };
+  RBody.mat.x  = { 0.0 };
+  RBody.mat.y  = { 0.0 };
+  RBody.dimp.x = { 0.0 };
+  RBody.dimp.y = { 0.0 };
+  RBody.dang.x = { 0.0 };
+  RBody.dang.y = { 0.0 };
+  RBody.cor.x  = { 0.0 };
+  RBody.cor.y  = { 0.0 };
 }
 
 verify :: system eff {
-  hit  := rigid.sat(vec.mk(0.0, 0.0), vec.mk(1.0, 0.0), vec.mk(1.0, 1.0),
-                    vec.mk(1.5, 0.0), vec.mk(1.0, 0.0), vec.mk(1.0, 1.0));
-  gap  := rigid.sat(vec.mk(0.0, 0.0), vec.mk(1.0, 0.0), vec.mk(1.0, 1.0),
-                    vec.mk(3.0, 0.0), vec.mk(1.0, 0.0), vec.mk(1.0, 1.0));
-  rothit := rigid.sat(vec.mk(0.0, 0.0), vec.mk(1.0, 0.0), vec.mk(1.0, 1.0),
-                      vec.mk(2.2, 0.0), vec.mk(0.70711, 0.70711), vec.mk(1.0, 1.0));
+  hit := rigid.sat(
+    vec.mk(0.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+    vec.mk(1.5, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+  );
+  gap := rigid.sat(
+    vec.mk(0.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+    vec.mk(3.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+  );
+  rothit := rigid.sat(
+    vec.mk(0.0, 0.0),
+    vec.mk(1.0, 0.0),
+    vec.mk(1.0, 1.0),
+    vec.mk(2.2, 0.0),
+    vec.mk(0.70711, 0.70711),
+    vec.mk(1.0, 1.0),
+  );
   fmt.assert(hit.z > 0.49 && hit.z < 0.51, "overlap penetration should be ~0.5\n")();
-  fmt.assert(hit.x > 0.99 && hit.y > -0.01 && hit.y < 0.01, "overlap normal should be ~(1,0)\n")();
+  fmt.assert(hit.x > 0.99 && hit.y > -0.01 && hit.y < 0.01, "overlap normal should be ~(1,0)\n")(
+  );
   fmt.assert(gap.z < 0.0, "disjoint boxes should report negative penetration\n")();
   fmt.assert(rothit.z > 0.0, "rotated corner should still overlap\n")();
   fmt.printf("ok\n");

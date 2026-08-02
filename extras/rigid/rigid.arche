@@ -690,11 +690,8 @@ supports :: system (query { pos, rot, ext, spin } as All) {
 solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
   map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dimp } as me)(dimp) {
     if (me.mi.x > 0.0) {
-      // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
-      // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
-      // tests/unit/language/vec_component_local_type.arche); the divide forces float.
-      msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms  := 1.0 / msi;
+      // ms = the body's active-contact COUNT, as a float.
+      ms := select(me.cor.x > 1.0, me.cor.x, 1.0);
       dimp = reduce(
         +,
         imp_lin(
@@ -742,11 +739,8 @@ solve_lin :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
 solve_lin_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
   map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dimp } as me)(dimp) {
     if (me.mi.x > 0.0) {
-      // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
-      // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
-      // tests/unit/language/vec_component_local_type.arche); the divide forces float.
-      msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms  := 1.0 / msi;
+      // ms = the body's active-contact COUNT, as a float.
+      ms := select(me.cor.x > 1.0, me.cor.x, 1.0);
       dimp = reduce(
         +,
         imp_lin(
@@ -781,11 +775,8 @@ solve_lin_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as 
 solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
   map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dang } as me)(dang) {
     if (me.mi.y > 0.0) {
-      // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
-      // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
-      // tests/unit/language/vec_component_local_type.arche); the divide forces float.
-      msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms  := 1.0 / msi;
+      // ms = the body's active-contact COUNT, as a float.
+      ms := select(me.cor.x > 1.0, me.cor.x, 1.0);
       dang = reduce(
         +,
         imp_ang(
@@ -820,11 +811,8 @@ solve_ang :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
 solve_ang_relax :: system (query { pos, rot, ext, lvel, spin, mi, mat, cor } as All) {
   map (query { pos, rot, ext, lvel, spin, mi, mat, cor, dang } as me)(dang) {
     if (me.mi.y > 0.0) {
-      // ms = the body's active-contact COUNT, as a float. Routed through the reciprocal twice on purpose: a
-      // bare `select(me.cor.x > 1.0, me.cor.x, 1.0)` binds the local as i32 (compiler bug — see
-      // tests/unit/language/vec_component_local_type.arche); the divide forces float.
-      msi := 1.0 / select(me.cor.x > 1.0, me.cor.x, 1.0);
-      ms  := 1.0 / msi;
+      // ms = the body's active-contact COUNT, as a float.
+      ms := select(me.cor.x > 1.0, me.cor.x, 1.0);
       dang = reduce(
         +,
         imp_ang(

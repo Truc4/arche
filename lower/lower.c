@@ -2563,6 +2563,24 @@ static void group_suffix_names(HirExpr *e, const char *suffix) {
  * the user writes the vector once instead of hand-expanding each axis. Each component clones the RHS and
  * suffixes its bare group references. Statements are replaced in place by a BLOCK (codegen + the later
  * tuple_rewrite pass both recurse into blocks). */
+/* True if `e` denotes a WHOLE tuple group as a value: a bare group column (`r`), a pool group column
+ * (`Body.lv`), or either of those gathered by an index (`Body.lv[R.i]`). Passing one to a call means the
+ * callee's parameter is the tuple, so the call cannot be split by name-suffixing. */
+static int expr_is_whole_group_ref(HirExpr *e) {
+	if (!e)
+		return 0;
+	switch (e->kind) {
+	case HIR_EXPR_NAME:
+		return e->data.name.name && tgroup_lookup(e->data.name.name) != NULL;
+	case HIR_EXPR_FIELD:
+		return e->data.field.field_name && tgroup_lookup(e->data.field.field_name) != NULL;
+	case HIR_EXPR_INDEX:
+		return expr_is_whole_group_ref(e->data.index.base);
+	default:
+		return 0;
+	}
+}
+
 /* True if `e` produces its tuple from something other than bare group COLUMNS — a self-read marker (`me.vel`)
  * or a tuple LOCAL (`steer`). Such an RHS can't be split by suffixing names per component; codegen writes it
  * lane-wise instead (`nvel_x = value.x; nvel_y = value.y`). */
@@ -2585,11 +2603,30 @@ static int expr_needs_tuple_value_write(HirExpr *e) {
 		return expr_needs_tuple_value_write(e->data.binary.left) || expr_needs_tuple_value_write(e->data.binary.right);
 	case HIR_EXPR_UNARY:
 		return expr_needs_tuple_value_write(e->data.unary.operand);
-	case HIR_EXPR_CALL:
-		for (int i = 0; i < e->data.call.arg_count; i++)
-			if (expr_needs_tuple_value_write(e->data.call.args[i]))
+	case HIR_EXPR_CALL: {
+		/* A COLLECTIVE (`reduce`/`scan`/`sort`) takes its group argument as the fold DOMAIN, not as a value:
+		 * codegen folds it lane-wise into per-lane accumulators, so it stays suffixable and must not be
+		 * hoisted into a tuple temp. */
+		const char *cn = (e->data.call.callee && e->data.call.callee->kind == HIR_EXPR_NAME)
+		                     ? e->data.call.callee->data.name.name
+		                     : NULL;
+		int is_collective = cn && (strcmp(cn, "reduce") == 0 || strcmp(cn, "scan") == 0 || strcmp(cn, "sort") == 0);
+		for (int i = 0; i < e->data.call.arg_count; i++) {
+			HirExpr *a = e->data.call.args[i];
+			if (expr_needs_tuple_value_write(a))
 				return 1;
+			if (is_collective)
+				continue;
+			/* A bare GROUP column passed as a WHOLE vector (`perp(r)`, `mag(v)`): the callee takes the tuple,
+			 * so the call must be evaluated ONCE as a value and its lanes extracted. Suffixing it per
+			 * component would hand the callee a single lane (`perp(r_x)`) — the tuple argument then packs
+			 * from names that do not exist (`r_x_x`, `r_x_y`) and every lane reads column x. Passing a group
+			 * where a scalar is wanted is a type error, so a group argument always means whole-value. */
+			if (expr_is_whole_group_ref(a))
+				return 1;
+		}
 		return 0;
+	}
 	default:
 		return 0;
 	}
@@ -2635,8 +2672,23 @@ static void expand_group_assigns_list(HirStmt **stmts, int count) {
 		 * (`pos = pos + vel`) suffixes bare names per component as before (which vectorizes). */
 		int value_write = expr_needs_tuple_value_write(s->data.assign_stmt.value);
 		HirStmt *blk = hir_stmt_create(HIR_STMT_BLOCK);
-		blk->data.block.stmts = calloc(g->nsuf ? g->nsuf : 1, sizeof(HirStmt *));
+		blk->data.block.stmts = calloc((g->nsuf ? g->nsuf : 1) + 1, sizeof(HirStmt *));
 		blk->data.block.count = 0;
+		/* A value write binds the RHS to a TEMP first, so every lane reads ONE evaluation. Cloning the RHS
+		 * per lane instead lets a self-aliasing write read its own half-updated column: `r = norm(r + …)`
+		 * would store `r_x`, then re-evaluate the RHS for `r_y` against the NEW `r_x` — the y lane sees the
+		 * already-written x lane, and a pure rotation stops preserving length. */
+		char tmpname[64] = {0};
+		if (value_write) {
+			static int g_tuple_write_tmp = 0;
+			snprintf(tmpname, sizeof(tmpname), "__gw%d", g_tuple_write_tmp++);
+			HirStmt *bs = hir_stmt_create(HIR_STMT_BIND);
+			bs->data.bind_stmt.names = calloc(1, sizeof(char *));
+			bs->data.bind_stmt.names[0] = dupz(tmpname);
+			bs->data.bind_stmt.name_count = 1;
+			bs->data.bind_stmt.value = hir_expr_deep_clone(s->data.assign_stmt.value);
+			blk->data.block.stmts[blk->data.block.count++] = bs;
+		}
 		for (int j = 0; j < g->nsuf; j++) {
 			HirStmt *cs = hir_stmt_create(HIR_STMT_ASSIGN);
 			cs->data.assign_stmt.op = s->data.assign_stmt.op;
@@ -2646,8 +2698,10 @@ static void expand_group_assigns_list(HirStmt **stmts, int count) {
 			cs->data.assign_stmt.target = ct;
 			HirExpr *cv;
 			if (value_write) {
+				HirExpr *tv = hir_expr_create(HIR_EXPR_NAME);
+				tv->data.name.name = dupz(tmpname);
 				cv = hir_expr_create(HIR_EXPR_FIELD);
-				cv->data.field.base = hir_expr_deep_clone(s->data.assign_stmt.value);
+				cv->data.field.base = tv;
 				cv->data.field.field_name = dupz(g->suffix[j]);
 			} else {
 				cv = hir_expr_deep_clone(s->data.assign_stmt.value);

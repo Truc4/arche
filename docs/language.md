@@ -865,7 +865,7 @@ window :: opaque;
 sound  :: opaque;
 
 #foreign {
-  window_open    :: proc(own title: []char, w: int, h: int)(w: window);   // out-only w = C return
+  window_open    :: proc(own title: []char, width: int, height: int)(w: window);  // out-only w = C return
   window_present :: proc(w: window, fb: []int, width: int, height: int)(fb: []int);  // fb in-out
   window_close   :: proc(own w: window)();
 }
