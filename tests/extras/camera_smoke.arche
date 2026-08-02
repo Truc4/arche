@@ -1,7 +1,14 @@
 // Driver smoke test for the `camera` device. eye=(100,50), zoom=2, viewport centre=(240,180): a world
 // point (110,50) maps to screen (20,0)*2 + centre = (260,180); follow((100,50) → (200,50), k=0.5) eases
 // the eye x to 150. Confirms the transforms and the shared `vec` `pos`.
-// RUN: %arche run %s | grep -qxF "s=260.0 180.0 eyex=150.0"
+// `arche run` is HOT: it publishes each imported device's `.so` under ARCHE_HOT_DIR and the host polls
+// that path and re-dlopens on change. The default hot dir is per-PROJECT (`<proj>/build/.arche-hot`), so
+// two `arche run` tests in this directory — this one and demo.arche — otherwise share it: one run's device
+// `.so` lands under the other's running host, which re-dlopens it mid-flight and SIGSEGVs (the handler
+// prints "stack overflow" and exits 0, so the only symptom is missing output). Give each run its own hot
+// and cache dir, as tests/unit/compiler/per_unit/singleton_read.arche already does.
+// RUN: rm -rf %t.hot %t.cache && mkdir -p %t.hot
+// RUN: env ARCHE_HOT_DIR=%t.hot ARCHE_CACHE_DIR=%t.cache %arche run %s | grep -qxF "s=260.0 180.0 eyex=150.0"
 #import { camera vec fmt }
 
 [1]Camera(1);
