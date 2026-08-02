@@ -55,6 +55,36 @@ IR and asserts **zero** `arche_hot_resolve`.
 The reload integration tests are timing-sensitive (a live build + reload, possibly under heavy parallel CI
 load), so each retries once: a real regression fails every attempt, a scheduling blip does not.
 
+## Known bug: concurrent `arche run` of one project collides
+
+**Two `arche run` sessions of the same project crash each other.** The hot dir defaults to
+`<project>/build/.arche-hot` — per PROJECT, not per process — so every concurrent run publishes its
+device `.so` files over the same paths, and each host, which polls those paths and re-dlopens on change,
+loads artifacts belonging to the other. The host then SIGSEGVs mid-call.
+
+Publishing is already atomic (pid-tagged temp + `rename`, `compile/compile.c`), so this is not a torn
+file: the `.so` that gets loaded is complete and correct — it just belongs to a different host. Atomicity
+cannot fix a shared destination.
+
+Two things hide it:
+
+- the SIGSEGV handler (`runtime/stack_check.c`) prints `stack overflow` for **any** segfault and exits
+  **0** — a deliberate choice (see `tests/unit/language/errors/stack_overflow.arche`) — so a crashed run
+  reports success and the only symptom is missing stdout;
+- a fast machine usually wins the race. It first surfaced in CI on a 2-core runner, as
+  `extras/camera_smoke.arche` failing on a commit that passed locally 40/40.
+
+Red capture: `tests/unit/runtime/hot_concurrent_run.py`. It sets no `ARCHE_HOT_DIR`/`ARCHE_CACHE_DIR` on
+purpose — the default is what users get — and currently fails a handful of runs out of 64.
+
+`tests/unit/compiler/per_unit/singleton_read.arche` passes its own `ARCHE_HOT_DIR`/`ARCHE_CACHE_DIR`.
+That makes *that test* deterministic; it is not a fix, and the `%arche run` tests under `tests/extras/`
+are deliberately left un-isolated so the suite keeps exercising the real configuration.
+
+The fix is to stop two sessions sharing a live artifact directory — e.g. a per-process hot dir for a
+one-shot `run`, keeping a stable dir only where a watch session genuinely reuses build products across
+invocations.
+
 ## Deferred rebuild work (why / why-not)
 
 These are intentionally **not** done. They are tracked here and in a `TODO` block in `cli/cmd_run.c`.

@@ -1,0 +1,41 @@
+// RED bug-capture: colon-binding an IN-OUT out-param at a call site silently produces nothing.
+//
+// An out-param that SHADOWS an in-param (the same name in both lists) is the in-out form: the caller's
+// place goes in and comes back out. `fill :: proc(n: int, buf: []char)(buf: []char)` is declared exactly
+// that way on purpose, and the supported call under-applies the in-slot and writes back into an existing
+// place: `fill(3, _)(b)`.
+//
+// `(name:)` means something else — declare a NEW local and bind the out into it. For an in-out out-param
+// there is no new place to declare (the value IS the in-arg's place), so the binding degenerates: the
+// name has no value anywhere afterwards. Nothing diagnoses this. Before codegen's unresolved-name
+// fallback became a hard error it was fully silent — the reference lowered to the constant `0` and the
+// program ran with a plausible wrong value.
+//
+// That is how `window_open :: proc(own title: []char, w: int, h: int)(w: window)` in docs/language.md
+// stayed broken: `w` was the WIDTH in the in-list and the WINDOW in the out-list, so the out silently
+// became an in-out of an unrelated `int`, `window_open(…)(w:)` bound nothing, and the example passed `0`
+// to `window_present`/`window_close` as the window handle. Renaming the in-param to `width` fixed that
+// declaration; nothing stops the next one.
+//
+// Note the failure does NOT depend on the two types differing — this test shadows `[]char` with `[]char`
+// and still gets no value. The trigger is the colon on an in-out out-arg.
+//
+// What SHOULD happen: reject the colon-bind where it is written, pointing at the in-out out-param and
+// naming the fix (`f(n, _)(place)` — write an existing place, no colon). See also
+// tests/unit/language/errors/inout_redundant_arg*.arche for the neighbouring in-out call lints.
+//
+// Expected once fixed: an error at the CALL (line 30) naming `nb`/`buf` and the in-out binding.
+// RUN: %arche build -o %t %s > %t.out 2>&1 ; grep -qiE "in-?out" %t.out
+#import { fmt }
+
+#foreign {
+  fill :: proc(n: int, buf: []char)(buf: []char);
+}
+
+entry :: system eff {
+  b: [8]char;
+  fill(3, b)(nb:);
+  fmt.printf("%d\n", nb.length);
+}
+
+#run entry
